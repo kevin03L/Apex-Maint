@@ -295,4 +295,4 @@ Phase 1 : les dépôts utilisent provisoirement `sqlx::query` / `query_as` et `F
 
 ## Avancement des phases 8 à 10
 
-Phase 8 : backend en cours, migration `0009_exploitation.sql`, validation boîte noire bloquée par `icacls` (code 5) ; voir [API-PHASE-8](API-PHASE-8.md). Phases 9 et 10 non entamées, en attente de la validation complète de la phase 8.
+Phase 8 : exploitation (sauvegardes, restauration, service Windows/systemd, utilitaire) ; Phase 9 : TLS et file hors-ligne. Phase 10 : liaison Supervision terminée (migration 0011_integration.sql, clés de service, ingestion compteurs et statuts, limitation, purges, [API-PHASE-10](API-PHASE-10.md)).

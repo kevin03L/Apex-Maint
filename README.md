@@ -55,4 +55,4 @@ Consultez le texte intégral dans le fichier [LICENSE](LICENSE) à la racine du 
 
 ## Avancement du backend d'exploitation
 
-Phase 8 : première implémentation en cours (migration 0009, archives, outils de fichiers, service et utilitaire) ; validation bloquée par les ACL Windows, détails et limites dans [API-PHASE-8](docs/API-PHASE-8.md). Phases 9 et 10 non entamées.
+Phase 8 : exploitation (sauvegardes, restauration, service Windows/systemd, utilitaire) ; Phase 9 : TLS et file hors-ligne. Phase 10 : liaison Supervision terminée (migration 0011, clés de service, ingestion compteurs et statuts, purges, [API-PHASE-10](docs/API-PHASE-10.md)).

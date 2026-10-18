@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/integration/keys/:id/revoke", post(revoke))
         .route("/integration/events", get(events))
         .route("/integration/statuses", get(statuses))
+        .route("/equipments/:id/supervision-status", get(equipment_status))
         .route("/equipments/:id/supervision-history", get(history))
         .route("/equipments/:id/external-ref", patch(equipment_ref))
         .route("/counters/:id/external-ref", patch(counter_ref))
@@ -226,6 +227,14 @@ async fn statuses(
         )
         .await?,
     ))
+}
+async fn equipment_status(
+    State(s): State<AppState>,
+    Extension(p): Extension<Session>,
+    Path(id): Path<String>,
+) -> Result<Json<Option<integration::ExternalStatus>>, ApiError> {
+    let page = integration::statuses(&s.pool, &p.actor, Some(&id), None, None, 1).await?;
+    Ok(Json(page.items.into_iter().next()))
 }
 async fn history(
     State(s): State<AppState>,

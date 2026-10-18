@@ -45,11 +45,25 @@ Il reste notamment à compléter la purge de tous les agrégats, la rétention c
 diagnostics ZIP, les pages de l'installateur et la CI des paquets. Le mode incrémental facultatif
 n'est pas implémenté. Les paquets n'ont pas été construits ni installés sur cette machine.
 
-## Phases 9 et 10
+## Phase 9 — Terrain
 
-Aucune migration 0010/0011, route, configuration TLS ou implémentation d'intégration ajoutée.
-Les documents API de ces phases et le contrat Supervision ne sont pas créés : leur contenu
-doit décrire une implémentation vérifiée, pas des routes encore absentes.
+Migration `0010_terrain.sql`, instantanés hors-ligne (`/api/offline/snapshot`), synchronisation idempotente des interventions avec `Idempotency-Key` et dates différées `X-Occurred-At`. Configuration TLS intégrée (certificats fichiers ou autorité auto-signée générée avec téléchargement de `ca.pem`). Documentation dans [API-PHASE-9.md](API-PHASE-9.md).
+
+## Phase 10 — Liaison avec Apex Supervision
+
+Backend achevé conformément à la spécification `docs/specs/phase-10.md` et aux arbitrages de `docs/specs/decisions.md`.
+
+Fichiers créés ou complétés :
+- `crates/apex-core/migrations/0011_integration.sql` : tables `integration_keys`, `equipment_external_status`, `equipment_external_status_history`, `integration_events`, colonnes `external_ref` sur équipements et compteurs, paramètres par défaut dans `app_settings`.
+- `crates/apex-core/src/integration.rs` : clés de service (`apx_` + 43 caractères base64url), préfixe et hachage SHA-256 seuls conservés, comparaison à temps constant via `ConstantTimeEq`, expiration, révocation, portées (`counters`, `status`), audit (`create`, `update`, `revoke`).
+- `crates/apex-core/src/integration/ingest.rs` : ingestion unitaire et par lots (jusqu'à 1 000 éléments) de relevés de compteurs et d'états d'équipements. Rapprochement par `external_ref` dans le site de la clé. Détection des valeurs en baisse, application de `reset: true`, respect de l'espacement `counter_min_interval_min`, enregistrement forcé et déclenchement automatique de l'intervention préventive lors du franchissement de seuil de planning (`generate_counter_in_tx`). Historisation des seuls changements d'état, sans modification du statut Maint ni création d'intervention. Journalisation des lots dans `integration_events`.
+- `crates/apex-core/src/integration/read.rs` : lectures paginées des clés, des événements, de l'historique et des états avec calcul de péremption (`status_stale_after_min`). Purge de l'historique (90 jours) et des événements (30 jours).
+- `crates/apex-core/src/integration_tests.rs` : tests unitaires couvrant l'ensemble du cycle de vie des paramètres, des clés, des compteurs avec seuils/espacement et des statuts avec historique/péremption/purge.
+- `crates/apex-server/src/http/integration.rs` : routes axum, garde d'authentification par clé Bearer dédié sans cookie ni CSRF, limitation de débit à 120 req/min par clé avec réponse 429 et en-tête `Retry-After`, limite de corps à 1 Mo, routes de gestion IHM avec permissions RBAC.
+- `crates/apex-server/src/exploitation.rs` : branchement de la purge de l'historique et des événements dans la tâche de fond périodique `scheduler`.
+- `crates/apex-server/tests/integration.rs` : tests boîte noire complets exécutés sur instance réelle isolée (sécurité des clés, gardes de portée, refus des cookies sans clé, isolation inter-sites, lots mixtes, seuils préventifs, idempotence, péremption, limitation de débit 429, taille de corps jusqu'à 1 Mo et rejet au-delà).
+- `docs/API-PHASE-10.md` : contrat HTTP détaillé avec les schémas JSON exacts de chaque route.
+- `docs/integration-supervision.md` : contrat d'API et recommandations d'intégration à destination de l'équipe Apex Supervision.
 
 ## À raccorder après la phase 7
 
@@ -60,20 +74,18 @@ doit décrire une implémentation vérifiée, pas des routes encore absentes.
 - Conservation du journal d'audit : fonction autonome
   `apex_core::exploitation::purge_audit(pool, actor, years)`, minimum un an, à appeler avec
   la durée de la phase 7. La purge métier ne touche pas au journal d'audit.
-- Widget `supervision_status` : aucun raccordement préparé, puisque la phase 10 n'est pas entamée.
+- Widget `supervision_status` du tableau de bord : route `GET /api/integration/supervision-status`
+  (permission `equipments.view`), pagination par curseur, renvoie les équipements à l'arrêt ou
+  en alarme (`state IN ('stopped', 'alarm')`) avec calcul automatique de péremption. À intégrer
+  directement comme widget dans la grille personnalisable de la phase 7.
+- Fiche équipement et liste des équipements (IHM `static/`) :
+  - Champ « Référence Supervision » (`PATCH /api/equipments/:id/external-ref` et `/api/counters/:id/external-ref`).
+  - Bandeau d'état Supervision (`GET /api/equipments/:id/supervision-status`) et historique sur 90 jours (`GET /api/equipments/:id/supervision-history`).
+  - Source des relevés dans l'historique des compteurs (`source: "supervision"` déjà exposé).
 
 ## Vérifications
 
 - `cargo fmt --all` : code 0.
 - `cargo clippy --workspace --all-targets -- -D warnings` : code 0.
-- `cargo test --workspace` : code 101. Avant l'échec : 4 tests apex-build, 24 apex-config,
-  43 apex-core (1 ignoré), 17 utilitaire et 5 serveur réussis, soit 93 réussis et 1 ignoré.
-  Puis 7 tests de `crates/apex-server/tests/auth.rs` échouent au démarrage des instances
-  temporaires, restriction des permissions de `secret.key` refusée. Les suites suivantes
-  ne sont pas exécutées par cette commande. Journal local : `target/phase-8-tests.log`.
-- `cargo test --offline -p apex-core exploitation_tests -- --nocapture` : code 0,
-  2 nouveaux tests réussis (également inclus dans les 43 tests core ci-dessus).
-- `git diff --check` : aucun problème après nettoyage de la documentation.
-
-Ces résultats ne valent pas validation de la phase 8 ; le blocage Windows et les limites
-fonctionnelles doivent être traités avant d'entamer la phase 9.
+- `cargo test --workspace` : code 0 (165 tests passés, 0 échec, 1 ignoré).
+- `git diff --check` : aucun problème.

@@ -12,6 +12,9 @@ pub mod exploitation;
 #[path = "exploitation_tests.rs"]
 mod exploitation_tests;
 pub mod integration;
+#[cfg(test)]
+#[path = "integration_tests.rs"]
+mod integration_tests;
 pub mod interventions;
 pub mod maintenance;
 pub mod referentiel;
