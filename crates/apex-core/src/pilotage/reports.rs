@@ -186,7 +186,8 @@ pub async fn report(
     }
     check(pool, actor, f).await?;
     let (from, to) = period(f)?;
-    let data = data(pool, actor, name, f, from, to).await?;
+    let mut data = data(pool, actor, name, f, from, to).await?;
+    enrich(pool, &mut data).await?;
     Ok(json!({"report":name,"from":from.to_rfc3339(),"to":to.to_rfc3339(),"data":data}))
 }
 async fn data(
@@ -407,5 +408,60 @@ pub async fn widget(
         }
         _ => return Err(MaintError::NotFound("Widget".into())),
     };
+    let mut result = result;
+    enrich(pool, &mut result).await?;
     Ok(json!({"widget":name,"from":from.to_rfc3339(),"to":to.to_rfc3339(),"data":result}))
+}
+
+/// Complète les lignes qui ne portent qu'un identifiant : code et nom de l'équipement, nom de
+/// l'utilisateur. Les identifiants viennent de requêtes déjà limitées au périmètre de l'acteur.
+async fn enrich(pool: &SqlitePool, data: &mut Value) -> Result<(), MaintError> {
+    let mut equipments: std::collections::HashMap<String, (String, String)> = Default::default();
+    let mut users: std::collections::HashMap<String, String> = Default::default();
+    let Some(sections) = data.as_object_mut() else {
+        return Ok(());
+    };
+    for section in sections.values_mut() {
+        let Some(items) = section.as_array_mut() else {
+            continue;
+        };
+        for item in items.iter_mut() {
+            let Some(row) = item.as_object_mut() else {
+                continue;
+            };
+            if let Some(id) = row
+                .get("equipment_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                if !equipments.contains_key(&id) {
+                    let found: Option<(String, String)> =
+                        sqlx::query_as("SELECT code,name FROM equipments WHERE id=?")
+                            .bind(&id)
+                            .fetch_optional(pool)
+                            .await?;
+                    equipments.insert(id.clone(), found.unwrap_or_default());
+                }
+                let (code, name) = &equipments[&id];
+                row.insert("equipment_code".into(), json!(code));
+                row.insert("equipment_name".into(), json!(name));
+            }
+            if let Some(id) = row
+                .get("user_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                if !users.contains_key(&id) {
+                    let found: Option<String> =
+                        sqlx::query_scalar("SELECT display_name FROM users WHERE id=?")
+                            .bind(&id)
+                            .fetch_optional(pool)
+                            .await?;
+                    users.insert(id.clone(), found.unwrap_or_default());
+                }
+                row.insert("user_display_name".into(), json!(users[&id]));
+            }
+        }
+    }
+    Ok(())
 }
