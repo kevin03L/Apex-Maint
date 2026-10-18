@@ -461,3 +461,43 @@ pub async fn digest(pool: &SqlitePool) -> Result<(), MaintError> {
     tx.commit().await?;
     Ok(())
 }
+/// Phase 8 : échec d'une sauvegarde, signalé aux comptes qui ont `settings.edit`, une fois par
+/// jour et par compte. Sans SMTP actif, `queue` n'écrit rien.
+pub async fn backup_failed(pool: &SqlitePool, message: &str) -> Result<(), MaintError> {
+    let mut conn = pool.acquire().await?;
+    if raw(&mut conn, "smtp.enabled").await? != "true" {
+        return Ok(());
+    }
+    let users: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT id,role,site_id,email FROM users WHERE active=1 AND deleted_at IS NULL AND email IS NOT NULL",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let base = raw(&mut conn, "public_base_url").await?;
+    let url = format!("{}/#/parametres", base.trim_end_matches('/'));
+    let day = chrono::Local::now().date_naive();
+    for (uid, role, site, email) in users {
+        let can = role == Role::Admin.as_str()
+            || sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM role_permissions WHERE role=? AND permission=?)",
+            )
+            .bind(&role)
+            .bind(Permission::SettingsEdit.as_str())
+            .fetch_one(&mut *conn)
+            .await?;
+        if can {
+            queue(
+                &mut conn,
+                site.as_deref(),
+                &email,
+                "backup_failed",
+                Some(&format!("backup_failed:{day}:{uid}")),
+                "Échec de la sauvegarde d'Apex Maint",
+                &format!("La dernière sauvegarde a échoué : {message}"),
+                &url,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}

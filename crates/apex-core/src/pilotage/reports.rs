@@ -406,6 +406,13 @@ pub async fn widget(
             let rows = q.build().fetch_all(pool).await?;
             json!({"items":rows.iter().map(|r|{let due=r.get::<Option<String>,_>("next_due_date");let counter=r.get::<Option<i64>,_>("next_due_counter");let overdue=due.as_deref().is_some_and(|d|d<today.to_string().as_str())||counter.zip(r.get::<Option<i64>,_>("current_value")).is_some_and(|(due,current)|current>=due);json!({"id":r.get::<String,_>("id"),"code":r.get::<String,_>("code"),"title":r.get::<String,_>("title"),"next_due_date":due,"next_due_counter":counter,"overdue":overdue})}).collect::<Vec<_>>()})
         }
+        "supervision_status" => {
+            // Phase 10 : état à titre d'information, équipements à l'arrêt ou en alarme.
+            let page =
+                crate::integration::statuses(pool, actor, None, Some("attention"), None, 200)
+                    .await?;
+            json!({"items":page.items})
+        }
         _ => return Err(MaintError::NotFound("Widget".into())),
     };
     let mut result = result;

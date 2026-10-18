@@ -178,8 +178,10 @@ le contenu des archives peut être inspecté sans extraction, y compris leurs no
 
 - Page Paramètres : GET/PUT `/api/exploitation/settings`, GET/POST `/api/backups` et
   GET `/api/exploitation/status` (état et bandeau d'échec).
-- E-mails : événement `backup_failed` depuis l'état persistant, vers les comptes disposant de
-  `settings.edit`, selon SMTP et préférences de la phase 7.
-- Audit : appeler `apex_core::exploitation::purge_audit(pool, actor, years)` avec la durée
-  du pilotage (minimum un an). La purge métier ne touche pas à l'audit.
+- E-mails : **raccordé**. Tout échec enregistré (sauvegarde manuelle ou automatique) met en file
+  l'événement `backup_failed` pour les comptes actifs qui ont `settings.edit` et une adresse, une
+  fois par jour et par compte, si le SMTP est actif.
+- Audit : **sans objet**. La phase 7 purge déjà le journal chaque jour selon
+  `audit.retention_days` ; `purge_audit` reste disponible mais n'est pas appelée. La purge métier
+  ne touche pas à l'audit.
 

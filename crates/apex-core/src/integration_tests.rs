@@ -644,6 +644,15 @@ async fn ingestion_statuts_rapprochement_historique_html_et_peremption() {
     let widget_res = supervision_status(&pool, &admin, None, 10).await.unwrap();
     assert_eq!(widget_res.items.len(), 1);
     assert_eq!(widget_res.items[0].equipment_id, eq2.id);
+    // Même contenu servi par le tableau de bord de la phase 7.
+    let dashboard =
+        crate::pilotage::reports::widget(&pool, &admin, "supervision_status", &Default::default())
+            .await
+            .unwrap();
+    let items = dashboard["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["equipment_id"], eq2.id.as_str());
+    assert_eq!(items[0]["state"], "stopped");
 
     // 5. Test de purge
     // Simuler un événement et un historique vieux de 100 jours

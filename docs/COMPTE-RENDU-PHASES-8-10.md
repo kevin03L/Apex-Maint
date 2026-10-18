@@ -67,6 +67,10 @@ Fichiers créés ou complétés :
 
 ## À raccorder après la phase 7
 
+État au 2026-10-18, après intégration de la phase 7 : le widget `supervision_status` est au
+catalogue du tableau de bord, l'alerte `backup_failed` est branchée sur `record_result`, et la
+purge de l'audit est déjà assurée par la phase 7. Restent les écrans de l'IHM ci-dessous.
+
 - Page Paramètres : GET/PUT `/api/exploitation/settings`, GET/POST `/api/backups`,
   GET `/api/exploitation/status` pour les réglages, la liste et le bandeau d'échec.
 - Événement e-mail `backup_failed` : raccorder les échecs persistés à l'expéditeur SMTP et

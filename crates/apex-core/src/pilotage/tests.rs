@@ -616,3 +616,32 @@ async fn plafond_exports_et_filtres_stock() {
         1
     );
 }
+#[tokio::test]
+async fn alerte_echec_sauvegarde_reservee_aux_parametres_et_quotidienne() {
+    let (pool, admin) = fixture().await;
+    // Sans SMTP actif, aucune alerte n'est mise en file.
+    notifications::backup_failed(&pool, "disque plein")
+        .await
+        .unwrap();
+    let count = |pool: sqlx::SqlitePool| async move {
+        sqlx::query_scalar::<_, String>(
+            "SELECT to_address FROM outbox_emails WHERE event='backup_failed' ORDER BY to_address",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    assert!(count(pool.clone()).await.is_empty());
+    smtp(&pool, &admin).await;
+    notifications::backup_failed(&pool, "disque plein")
+        .await
+        .unwrap();
+    notifications::backup_failed(&pool, "disque plein")
+        .await
+        .unwrap();
+    // Seuls les comptes qui ont settings.edit, une seule fois par jour.
+    assert_eq!(
+        count(pool.clone()).await,
+        vec!["admin@example.test".to_string()]
+    );
+}
