@@ -271,7 +271,14 @@ impl Auth {
         .fetch_optional(&mut *tx)
         .await?;
         let (uid, last) = row.ok_or_else(denied)?;
-        if Utc::now() - date(&last)? >= self.ttl {
+        let timeout = crate::pilotage::settings::raw(&mut tx, "session_timeout_min")
+            .await?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| (15..=10080).contains(n))
+            .map(Duration::minutes)
+            .unwrap_or(self.ttl);
+        if Utc::now() - date(&last)? >= timeout {
             return Err(denied());
         }
         let user: User = sqlx::query_as(&format!(

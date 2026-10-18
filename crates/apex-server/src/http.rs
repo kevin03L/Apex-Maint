@@ -19,6 +19,7 @@ mod exploitation;
 mod integration;
 mod interventions;
 mod maintenance;
+mod pilotage;
 mod referentiel;
 mod stock;
 mod terrain;
@@ -56,6 +57,7 @@ pub struct AppState {
     pub tls_mode: String,
     pub trusted_proxies: Vec<std::net::IpAddr>,
     pub hsts_max_age: u32,
+    pub widget_cache: pilotage::WidgetCache,
     pub files: apex_core::documents::storage::FileStore,
     pub pool: sqlx::SqlitePool,
     pub auth: apex_core::services::Auth,
@@ -111,6 +113,7 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
         .merge(exploitation::routes())
         .merge(terrain::routes())
         .merge(integration::routes())
+        .merge(pilotage::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
         .route("/system/shutdown", post(api_system_shutdown))

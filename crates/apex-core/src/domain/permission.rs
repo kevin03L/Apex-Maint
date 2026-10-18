@@ -22,6 +22,9 @@ impl std::error::Error for ParsePermissionError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Permission {
     DashboardView,
+    ExportsRun,
+    DashboardManageDefaults,
+    DashboardCustomize,
     ReportingView,
     SettingsView,
     SettingsEdit,
@@ -63,6 +66,9 @@ impl Permission {
     /// Liste complète de toutes les permissions du système.
     pub const ALL: &'static [Permission] = &[
         Self::DashboardView,
+        Self::ExportsRun,
+        Self::DashboardManageDefaults,
+        Self::DashboardCustomize,
         Self::ReportingView,
         Self::SettingsView,
         Self::SettingsEdit,
@@ -103,6 +109,9 @@ impl Permission {
     /// Représentation textuelle exacte de la clé de permission (ex. `dashboard.view`).
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::DashboardCustomize => "dashboard.customize",
+            Self::DashboardManageDefaults => "dashboard.manage_defaults",
+            Self::ExportsRun => "exports.run",
             Self::DashboardView => "dashboard.view",
             Self::ReportingView => "reporting.view",
             Self::SettingsView => "settings.view",
@@ -145,6 +154,9 @@ impl Permission {
     /// Analyse une clé de permission à partir d'une chaîne.
     pub fn parse(s: &str) -> Result<Self, ParsePermissionError> {
         match s.trim() {
+            "dashboard.customize" => Ok(Self::DashboardCustomize),
+            "dashboard.manage_defaults" => Ok(Self::DashboardManageDefaults),
+            "exports.run" => Ok(Self::ExportsRun),
             "dashboard.view" => Ok(Self::DashboardView),
             "reporting.view" => Ok(Self::ReportingView),
             "settings.view" => Ok(Self::SettingsView),
@@ -233,7 +245,7 @@ mod tests {
 
     #[test]
     fn all_permissions_roundtrip() {
-        assert_eq!(Permission::ALL.len(), 36);
+        assert_eq!(Permission::ALL.len(), 39);
         for &perm in Permission::ALL {
             let s = perm.as_str();
             let parsed = Permission::parse(s).expect("analyse de la permission");

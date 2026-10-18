@@ -557,6 +557,7 @@ pub async fn create_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
@@ -765,6 +766,7 @@ pub async fn update_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
@@ -820,6 +822,7 @@ pub async fn delete_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -1358,6 +1361,7 @@ pub async fn create_stock_movement(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let mov: StockMovement = fetch_stock_movement_by_id(pool, &movement_id).await?;
@@ -1524,6 +1528,7 @@ pub async fn create_stock_adjustment(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_stock_movement_by_id(pool, &movement_id).await
@@ -1558,7 +1563,7 @@ pub async fn list_intervention_parts(
         "#,
     )
     .bind(intervention_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows)
@@ -1710,6 +1715,7 @@ pub async fn consume_part_on_intervention(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_intervention_part_by_id(pool, &item_id).await
@@ -1828,6 +1834,7 @@ pub async fn delete_intervention_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -1966,6 +1973,7 @@ pub async fn create_stock_reservation(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_stock_reservation_by_id(pool, &res_id).await
@@ -2165,6 +2173,7 @@ pub async fn consume_stock_reservation(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_intervention_part_by_id(pool, &item_id).await
@@ -2224,6 +2233,7 @@ pub async fn release_stock_reservation(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_stock_reservation_by_id(pool, &id).await
@@ -2347,6 +2357,7 @@ pub async fn associate_equipment_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let list = list_equipment_parts(pool, actor, equipment_id).await?;
@@ -2403,6 +2414,7 @@ pub async fn disassociate_equipment_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
     Ok(())
 }

@@ -136,7 +136,7 @@ mod tests {
         );
         assert_eq!(
             settings.get("session_timeout_min").map(String::as_str),
-            Some("720")
+            Some("480")
         );
 
         // 4. Fermeture propre avec report WAL

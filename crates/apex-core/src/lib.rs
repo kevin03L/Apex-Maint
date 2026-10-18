@@ -17,6 +17,7 @@ pub mod integration;
 mod integration_tests;
 pub mod interventions;
 pub mod maintenance;
+pub mod pilotage;
 pub mod referentiel;
 pub mod services;
 pub mod stock;

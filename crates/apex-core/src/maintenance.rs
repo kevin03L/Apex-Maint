@@ -2362,6 +2362,8 @@ async fn do_generate_in_tx(
         }
     }
 
+    crate::pilotage::notifications::generated(&mut *tx, actor, &plan.id, &intervention_id).await?;
+    crate::pilotage::notifications::intervention(&mut *tx, actor, &intervention_id, true).await?;
     // 3. Création de l'occurrence
     sqlx::query(
         r#"

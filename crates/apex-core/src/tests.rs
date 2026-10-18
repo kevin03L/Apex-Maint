@@ -21,6 +21,7 @@ async fn setup() -> (sqlx::SqlitePool, Auth, crate::services::Session) {
 fn input(name: &str, role: Role, site: Option<String>) -> CreateUser {
     CreateUser {
         username: name.into(),
+        email: None,
         display_name: name.into(),
         role,
         site_id: site,
@@ -63,7 +64,7 @@ async fn depot_filtre_par_site_et_permissions_par_defaut() {
         .await
         .unwrap();
     let session = auth.session(&token).await.unwrap();
-    assert_eq!(session.actor.permissions.len(), Permission::ALL.len() - 1);
+    assert_eq!(session.actor.permissions.len(), Permission::ALL.len() - 2);
     assert!(!session.actor.can(Permission::SettingsEdit));
     let list = store::users(&pool, &session.actor).await.unwrap();
     assert_eq!(list.len(), 1);

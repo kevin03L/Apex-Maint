@@ -702,6 +702,7 @@ pub async fn get_intervention(
     actor.require_permission(Permission::InterventionsView)?;
     let mut conn = pool.acquire().await?;
     let raw = scoped_intervention_raw(&mut conn, actor, id).await?;
+    drop(conn);
 
     let tech_map = fetch_technicians_for_interventions(pool, std::slice::from_ref(&raw.id)).await?;
     let technicians = tech_map.get(&raw.id).cloned().unwrap_or_default();
@@ -1075,6 +1076,7 @@ pub async fn create_intervention(
         }
     }
 
+    crate::pilotage::notifications::intervention(&mut tx, actor, &intervention_id, true).await?;
     let created = fetch_single_intervention_with_conn(&mut tx, &intervention_id).await?;
 
     store::audit(
@@ -1168,6 +1170,7 @@ pub async fn take_intervention(
         }
     }
 
+    crate::pilotage::notifications::intervention(&mut tx, actor, id, false).await?;
     let action_at = crate::terrain::occurred(&mut tx, actor, Some(&current.reported_at)).await?;
     let started_at = current
         .started_at
@@ -1646,6 +1649,7 @@ pub async fn assign_technician(
     )
     .await?;
 
+    crate::pilotage::notifications::intervention(&mut tx, actor, intervention_id, false).await?;
     tx.commit().await?;
     Ok(tech)
 }

@@ -544,6 +544,7 @@ function renderToolbar(opts) {
       </div>
       <div class="toolbar-actions">
         ${opts.viewSwitcherHtml || ''}
+        ${opts.secondaryActionsHtml || ''}
         ${opts.canCreate ? `
           <button type="button" class="btn primary" data-action="${esc(opts.primaryAction)}">
             ${icon(opts.primaryIcon || 'i-plus')} <span>${esc(opts.primaryLabel)}</span>
@@ -552,6 +553,106 @@ function renderToolbar(opts) {
       </div>
     </div>
   `;
+}
+
+/**
+ * Rendu du menu déroulant d'export (CSV, Excel, PDF) pour les listes.
+ */
+function renderExportDropdown(listName, extraParams = {}) {
+  if (!hasPermission('exports.run')) return '';
+  const argsCsv = JSON.stringify({ list: listName, format: 'csv', ...extraParams });
+  const argsXlsx = JSON.stringify({ list: listName, format: 'xlsx', ...extraParams });
+  const argsPdf = JSON.stringify({ list: listName, format: 'pdf', ...extraParams });
+
+  return `
+    <div class="dropdown-wrap">
+      <button type="button" class="btn secondary" data-action="toggle-export-dropdown" title="Exporter cette liste" aria-haspopup="true">
+        ${icon('i-download')} <span>Exporter</span>
+      </button>
+      <div class="dropdown-menu" hidden>
+        <button type="button" class="dropdown-item" data-action="run-export" data-args="${jsArg(argsCsv)}">
+          ${icon('i-file-spreadsheet')} <span>Format CSV</span>
+        </button>
+        <button type="button" class="dropdown-item" data-action="run-export" data-args="${jsArg(argsXlsx)}">
+          ${icon('i-file-spreadsheet')} <span>Format Excel (.xlsx)</span>
+        </button>
+        ${listName !== 'audit' ? `
+          <button type="button" class="dropdown-item" data-action="run-export" data-args="${jsArg(argsPdf)}">
+            ${icon('i-file-pdf')} <span>Format PDF (.pdf)</span>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function toggleExportDropdown(btn) {
+  const wrap = btn.closest('.dropdown-wrap');
+  if (!wrap) return;
+  const menu = wrap.querySelector('.dropdown-menu');
+  if (!menu) return;
+  const isHidden = menu.hidden;
+  document.querySelectorAll('.dropdown-menu').forEach(m => { m.hidden = true; });
+  menu.hidden = !isHidden;
+  btn.setAttribute('aria-expanded', String(!isHidden));
+}
+
+async function handleRunExport(args) {
+  let opts = args;
+  if (typeof args === 'string') {
+    try { opts = JSON.parse(args); } catch (_) { opts = {}; }
+  }
+  const list = (opts && opts.list) || 'interventions';
+  const format = (opts && opts.format) || 'csv';
+
+  const params = new URLSearchParams();
+  params.set('format', format);
+
+  if (list.startsWith('report-')) {
+    const reportTab = (opts && opts.tab) || state.reportingTab || 'activity';
+    params.set('period', state.reportingPeriod || '30d');
+    if (state.reportingSiteId) params.set('site_id', state.reportingSiteId);
+    if (state.reportingLineId) params.set('line_id', state.reportingLineId);
+    if (state.reportingEquipmentId) params.set('equipment_id', state.reportingEquipmentId);
+    if (state.reportingType) params.set('type', state.reportingType);
+    if (state.reportingPeriod === 'custom') {
+      if (state.reportingFrom) params.set('from', state.reportingFrom);
+      if (state.reportingTo) params.set('to', state.reportingTo);
+    }
+    await downloadFile(`/api/reports/${encodeURIComponent(reportTab)}/export?${params.toString()}`);
+    return;
+  }
+
+  if (list === 'interventions') {
+    if (state.interventionsSearchQuery) params.set('q', state.interventionsSearchQuery);
+    if (state.interventionsStatusFilter) params.set('status', state.interventionsStatusFilter);
+    if (state.interventionsPriorityFilter) params.set('priority', state.interventionsPriorityFilter);
+    if (state.interventionsTypeFilter) params.set('type', state.interventionsTypeFilter);
+    if (state.interventionsEquipmentFilter) params.set('equipment_id', state.interventionsEquipmentFilter);
+  } else if (list === 'equipments') {
+    if (state.equipmentsSearchQuery) params.set('q', state.equipmentsSearchQuery);
+    if (state.equipmentsStatusFilter) params.set('status', state.equipmentsStatusFilter);
+    if (state.equipmentsLineFilter) params.set('line_id', state.equipmentsLineFilter);
+  } else if (list === 'parts') {
+    if (state.partsSearchQuery) params.set('q', state.partsSearchQuery);
+  } else if (list === 'stock') {
+    if (state.stockLevelsLocationFilter) params.set('location_id', state.stockLevelsLocationFilter);
+  } else if (list === 'movements') {
+    if (state.stockMovementsTypeFilter) params.set('type', state.stockMovementsTypeFilter);
+  } else if (list === 'maintenance_plans') {
+    if (state.maintenancePlansSearchQuery) params.set('q', state.maintenancePlansSearchQuery);
+    if (state.maintenancePlansEquipmentFilter) params.set('equipment_id', state.maintenancePlansEquipmentFilter);
+    if (state.maintenancePlansDueFilter && state.maintenancePlansDueFilter !== 'all') params.set('due', state.maintenancePlansDueFilter);
+  } else if (list === 'audit') {
+    if (state.auditQuery) params.set('q', state.auditQuery);
+    if (state.auditAction) params.set('action', state.auditAction);
+    if (state.auditEntity) params.set('entity', state.auditEntity);
+    if (state.auditSiteId) params.set('site_id', state.auditSiteId);
+    if (state.auditFrom) params.set('from', state.auditFrom);
+    if (state.auditTo) params.set('to', state.auditTo);
+  }
+
+  await downloadFile(`/api/exports/${encodeURIComponent(list)}?${params.toString()}`);
 }
 
 /**
@@ -684,6 +785,39 @@ async function api(path, options = {}) {
 }
 
 /**
+ * Télécharge un fichier depuis une URL de l'API avec transmission des cookies de session.
+ * Affiche un message d'erreur en cas de réponse négative du serveur (403, 413, etc.).
+ */
+async function downloadFile(url) {
+  try {
+    notify('Préparation du téléchargement…', 'info');
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) {
+      const err = await parseJsonSafe(res);
+      notify(err && err.message ? err.message : `Erreur HTTP ${res.status}`, 'error');
+      return;
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') || '';
+    let filename = '';
+    const m = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)["']?/i);
+    if (m) filename = decodeURIComponent(m[1]);
+    if (!filename) filename = url.split('/').pop().split('?')[0] || 'export';
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+    notify('Téléchargement terminé.', 'success');
+  } catch (err) {
+    notify(err.message || 'Erreur lors du téléchargement.', 'error');
+  }
+}
+
+/**
  * Adapte une ligne de stock, de mouvement, de réservation ou de pièce renvoyée à plat par le
  * serveur (part_reference, location_name, user_display_name…) aux objets imbriqués lus par les
  * vues (part, location, created_by…). Les champs déjà présents ne sont jamais écrasés.
@@ -715,6 +849,91 @@ function adaptStock(o) {
   if (r.reference === undefined && o.part_reference) r.reference = o.part_reference;
   if (r.name === undefined && o.part_name) r.name = o.part_name;
   return r;
+}
+
+/**
+ * Adapte un document renvoyé par le serveur de façon tolérante aux deux formes :
+ * champs imbriqués (current_version { ... }, entity { ... }, uploaded_by { ... })
+ * ou à plat (original_name, size_bytes, mime_type, entity_code, entity_label...).
+ */
+function adaptDocument(o) {
+  if (!o || typeof o !== 'object') return o;
+  const d = { ...o };
+  if (!d.current_version && (o.original_name || o.version_no || o.size_bytes)) {
+    d.current_version = {
+      id: o.current_version_id || o.version_id,
+      version_no: o.version_no || 1,
+      original_name: o.original_name || 'document',
+      mime_type: o.mime_type || 'application/octet-stream',
+      extension: o.extension || '',
+      size_bytes: o.size_bytes || 0,
+      sha256: o.sha256 || '',
+      comment: o.comment || null,
+      uploaded_at: o.uploaded_at || o.created_at,
+      uploaded_by: o.uploaded_by || (o.uploaded_by_name ? { id: o.uploaded_by_id, display_name: o.uploaded_by_name } : null),
+    };
+  }
+  if (d.current_version && !d.current_version.uploaded_by && d.current_version.uploaded_by_name) {
+    d.current_version.uploaded_by = { id: d.current_version.uploaded_by_id, display_name: d.current_version.uploaded_by_name };
+  }
+  if (!d.entity && (o.entity_code || o.entity_name || o.entity_label)) {
+    d.entity = {
+      type: o.entity_type,
+      id: o.entity_id,
+      code: o.entity_code,
+      label: o.entity_label || o.entity_name,
+    };
+  }
+  return d;
+}
+
+/** Formate une taille en octets en chaîne lisible en français (ex: "1,2 Mo"). */
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return '—';
+  const num = Number(bytes);
+  if (num === 0) return '0 o';
+  const k = 1024;
+  const sizes = ['o', 'Ko', 'Mo', 'Go'];
+  const i = Math.floor(Math.log(num) / Math.log(k));
+  const val = (num / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1).replace('.', ',');
+  return `${val} ${sizes[i]}`;
+}
+
+/** Libellé convivial d'une catégorie de document. */
+function formatDocCategory(cat) {
+  switch (cat) {
+    case 'notice': return 'Notice';
+    case 'schéma':
+    case 'schema': return 'Schéma';
+    case 'certificat': return 'Certificat';
+    case 'photo': return 'Photo';
+    case 'rapport': return 'Rapport';
+    case 'gamme': return 'Gamme';
+    case 'autre': return 'Autre';
+    default: return cat ? (cat.charAt(0).toUpperCase() + cat.slice(1)) : 'Non classé';
+  }
+}
+
+/** Icône SVG selon le type MIME ou l'extension du document. */
+function docFileIcon(mimeOrExt) {
+  const str = String(mimeOrExt || '').toLowerCase();
+  if (str.includes('pdf')) return 'i-doc';
+  if (str.includes('image') || str.includes('jpg') || str.includes('jpeg') || str.includes('png') || str.includes('webp') || str.includes('gif')) return 'i-file-image';
+  if (str.includes('word') || str.includes('doc') || str.includes('text') || str.includes('txt') || str.includes('odt')) return 'i-file-text';
+  if (str.includes('excel') || str.includes('xls') || str.includes('sheet') || str.includes('csv') || str.includes('ods')) return 'i-chart';
+  if (str.includes('dwg') || str.includes('dxf') || str.includes('step') || str.includes('stp') || str.includes('iges') || str.includes('igs')) return 'i-layers';
+  return 'i-doc';
+}
+
+/** Le document peut-il être affiché en ligne dans un nouvel onglet (PDF ou image) ? */
+function isDocInline(doc) {
+  const v = doc && doc.current_version;
+  if (!v) return false;
+  const mime = String(v.mime_type || '').toLowerCase();
+  const ext = String(v.extension || '').toLowerCase();
+  if (mime.includes('pdf') || ext === '.pdf') return true;
+  if (mime.startsWith('image/') || ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) return true;
+  return false;
 }
 
 /**
@@ -827,13 +1046,13 @@ function confirmDialog(title, message, confirmLabel = 'Confirmer', danger = fals
 // 5. MODULES, PERMISSIONS ET RÔLES
 // ============================================================================
 
-/** Phase actuelle du projet (Phase 5 : Maintenance préventive). */
-const CURRENT_PHASE = 5;
+/** Phase actuelle du projet (Phase 7 : Pilotage et paramètres). */
+const CURRENT_PHASE = 7;
 
 /** Liste de tous les modules de l'application avec leur permission de vue requise. */
 const MODULES = [
   { grp: 'Pilotage' },
-  { id: 'tableau-de-bord', label: 'Tableau de bord', icon: 'i-dash', phase: 0, perm: 'dashboard.view' },
+  { id: 'tableau-de-bord', label: 'Tableau de bord', icon: 'i-dash', phase: 7, perm: 'dashboard.view' },
   { grp: 'Maintenance' },
   { id: 'interventions', label: 'Interventions', icon: 'i-wrench', phase: 3, perm: 'interventions.view' },
   { id: 'maintenance-preventive', label: 'Maintenance préventive', icon: 'i-cal', phase: 5, perm: 'maintenance.view' },
@@ -856,13 +1075,16 @@ const MODULES = [
 
 const DEFAULT_ROUTE = 'tableau-de-bord';
 
-/** Domaines de permissions pour la matrice RBAC (35 permissions complètes de Permission::ALL). */
+/** Domaines de permissions pour la matrice RBAC (39 permissions complètes de Permission::ALL). */
 const PERMISSION_DOMAINS = [
   {
     name: 'Pilotage & Analyse',
     permissions: [
       { key: 'dashboard.view', label: 'Consulter le tableau de bord' },
+      { key: 'dashboard.customize', label: 'Personnaliser son tableau de bord' },
+      { key: 'dashboard.manage_defaults', label: 'Gérer les dispositions par défaut des rôles' },
       { key: 'reporting.view', label: 'Consulter les rapports et statistiques' },
+      { key: 'exports.run', label: 'Exécuter des exports de données (CSV, Excel, PDF)' },
       { key: 'audit.view', label: "Consulter le journal d'audit" },
     ],
   },
@@ -1039,10 +1261,82 @@ const state = {
   usersRoleFilter: '',
   usersSiteFilter: '',
 
+  // Documents, QR code et Paramètres (Phase 6)
+  selectedEquipmentIds: new Set(),
+  documents: [],
+  documentsNextCursor: null,
+  documentsLoading: false,
+  documentsSearchQuery: '',
+  documentsEntityTypeFilter: '',
+  documentsCategoryFilter: '',
+
+  entityDocuments: new Map(),
+  entityDocumentsLoading: new Set(),
+
+  settingsTab: 'storage', // 'storage' | 'files' | 'labels'
+  storageBackends: [],
+  storageLoading: false,
+  documentSettings: null,
+  documentSettingsLoading: false,
+  labelSettings: null,
+  labelSettingsLoading: false,
+  currentPrintEquipments: [],
+  currentPrintOffset: 1,
+
   // État du serveur
   health: null,
   online: false,
   checkedAt: null,
+
+  // Phase 7 : Pilotage, Dashboard, Reporting, Audit, Alertes & Paramètres
+  branding: null,
+
+  // Tableau de bord
+  dashboardLayout: null,
+  dashboardSource: 'role',
+  dashboardCanCustomize: false,
+  dashboardCustomizing: false,
+  dashboardCatalog: [],
+  dashboardWidgetData: new Map(),
+
+  // Reporting
+  reportingTab: 'activity',
+  reportingPeriod: '30d',
+  reportingFrom: '',
+  reportingTo: '',
+  reportingSiteId: '',
+  reportingLineId: '',
+  reportingEquipmentId: '',
+  reportingType: '',
+  reportingData: null,
+  reportingLoading: false,
+
+  // Journal d'audit
+  auditItems: [],
+  auditNextCursor: null,
+  auditLoading: false,
+  auditFrom: '',
+  auditTo: '',
+  auditSiteId: '',
+  auditUserId: '',
+  auditEntity: '',
+  auditAction: '',
+  auditEntityId: '',
+  auditQuery: '',
+
+  // Paramètres Phase 7
+  settingsGeneral: null,
+  settingsSecurity: null,
+  settingsStock: null,
+  settingsSmtp: null,
+  settingsAlerts: null,
+  settingsAudit: null,
+  settingsOutbox: [],
+  settingsDashboardRole: 'responsable',
+  settingsDashboardRoleLayout: null,
+
+  // Profil & Notifications
+  profileNotifications: null,
 };
 
 /** L'utilisateur courant possède-t-il une permission donnée ? */
@@ -1082,10 +1376,40 @@ function isModuleAllowed(mod) {
 // 7. GESTION DE L'AUTHENTIFICATION ET SESSIONS
 // ============================================================================
 
+/** Charge l'identité publique et l'état du mot de passe oublié. */
+async function loadBranding() {
+  if (state.branding) return state.branding;
+  try {
+    const b = await api('/api/public/branding');
+    if (b) {
+      state.branding = b;
+      applyBranding(b);
+    }
+  } catch (_) {}
+  return state.branding;
+}
+
+/** Applique le nom et le sous-titre de l'application à l'en-tête et au titre de la page. */
+function applyBranding(b) {
+  if (!b) return;
+  const nameEl = document.getElementById('appName');
+  if (nameEl && b.app_name) nameEl.textContent = b.app_name;
+  const subEl = document.getElementById('appSubtitle');
+  if (subEl && b.app_subtitle) subEl.textContent = b.app_subtitle;
+  if (b.app_name) {
+    document.title = `${b.app_name} — ${b.app_subtitle || 'GMAO'}`;
+  }
+}
+
 /**
  * Vérifie l'état de la session au démarrage via GET /api/auth/me.
  */
 async function checkAuth() {
+  await loadBranding();
+  if (currentRoute() === 'reinitialiser') {
+    showResetPasswordScreen();
+    return false;
+  }
   try {
     const me = await api('/api/auth/me');
     if (!me || !me.user) {
@@ -1126,11 +1450,15 @@ function showLoginScreen(errorMessage = '') {
   const overlay = document.getElementById('authOverlay');
   const card = document.getElementById('authContent');
 
+  const appName = (state.branding && state.branding.app_name) || 'Apex Maint';
+  const appSub = (state.branding && state.branding.app_subtitle) || 'Gestion de Maintenance Assistée par Ordinateur';
+  const showReset = Boolean(state.branding && state.branding.password_reset_available);
+
   card.innerHTML = `
     <div class="auth-header">
       <div class="logo">M</div>
-      <h1>Apex Maint</h1>
-      <p>Gestion de Maintenance Assistée par Ordinateur</p>
+      <h1>${esc(appName)}</h1>
+      <p>${esc(appSub)}</p>
     </div>
     <form class="auth-form" data-action="login-submit">
       <div id="authErrorBox" class="auth-error" ${errorMessage ? '' : 'hidden'}>
@@ -1148,6 +1476,11 @@ function showLoginScreen(errorMessage = '') {
       <button type="submit" id="loginSubmitBtn" class="btn primary">
         <span>Se connecter</span>
       </button>
+      ${showReset ? `
+        <div class="auth-forgot">
+          <a href="#/reinitialiser" class="link">Mot de passe oublié ?</a>
+        </div>
+      ` : ''}
     </form>
   `;
 
@@ -1156,6 +1489,167 @@ function showLoginScreen(errorMessage = '') {
     const u = document.getElementById('loginUsername');
     if (u) u.focus();
   }, 40);
+}
+
+/** Extrait le jeton de réinitialisation depuis l'ancre d'URL (#/reinitialiser?jeton=... ou token=...). */
+function getResetTokenFromUrl() {
+  const hash = window.location.hash || '';
+  const qIdx = hash.indexOf('?');
+  if (qIdx === -1) return '';
+  const params = new URLSearchParams(hash.slice(qIdx));
+  return params.get('jeton') || params.get('token') || '';
+}
+
+/** Affiche l'écran de mot de passe oublié ou de saisie du nouveau mot de passe. */
+function showResetPasswordScreen() {
+  const overlay = document.getElementById('authOverlay');
+  const card = document.getElementById('authContent');
+  if (!overlay || !card) return;
+
+  const token = getResetTokenFromUrl();
+  const appName = (state.branding && state.branding.app_name) || 'Apex Maint';
+
+  if (token) {
+    card.innerHTML = `
+      <div class="auth-header">
+        <div class="logo">${icon('i-key')}</div>
+        <h1>Réinitialiser mon mot de passe</h1>
+        <p>${esc(appName)}</p>
+      </div>
+      <form class="auth-form" data-action="reset-password-confirm-submit">
+        <input type="hidden" name="token" value="${esc(token)}" />
+        <div id="authErrorBox" class="auth-error" hidden>
+          ${icon('i-alert')}
+          <span id="authErrorText"></span>
+        </div>
+        <div class="form-group">
+          <label for="resetNewPwd">Nouveau mot de passe</label>
+          <input type="password" id="resetNewPwd" name="new_password" required minlength="8" autocomplete="new-password" autofocus />
+          <span class="form-help">Minimum 8 caractères.</span>
+        </div>
+        <div class="form-group">
+          <label for="resetConfirmPwd">Confirmer le nouveau mot de passe</label>
+          <input type="password" id="resetConfirmPwd" name="confirm_password" required minlength="8" autocomplete="new-password" />
+        </div>
+        <button type="submit" id="resetSubmitBtn" class="btn primary">
+          <span>Enregistrer le mot de passe</span>
+        </button>
+        <div class="auth-forgot">
+          <a href="#/login" data-action="nav-login">Retour à la connexion</a>
+        </div>
+      </form>
+    `;
+  } else {
+    card.innerHTML = `
+      <div class="auth-header">
+        <div class="logo">${icon('i-mail')}</div>
+        <h1>Mot de passe oublié</h1>
+        <p>Saisissez votre identifiant ou adresse e-mail pour recevoir un lien de réinitialisation.</p>
+      </div>
+      <form class="auth-form" data-action="reset-password-request-submit">
+        <div id="authErrorBox" class="auth-error" hidden>
+          ${icon('i-alert')}
+          <span id="authErrorText"></span>
+        </div>
+        <div id="authSuccessBox" class="callout success" hidden>
+          ${icon('i-check')}
+          <span id="authSuccessText"></span>
+        </div>
+        <div class="form-group" id="resetIdentGroup">
+          <label for="resetIdentifier">Identifiant ou adresse e-mail</label>
+          <input type="text" id="resetIdentifier" name="identifier" required autocomplete="username" autofocus />
+        </div>
+        <button type="submit" id="resetRequestBtn" class="btn primary">
+          <span>Envoyer le lien de réinitialisation</span>
+        </button>
+        <div class="auth-forgot">
+          <a href="#/login" data-action="nav-login">Retour à la connexion</a>
+        </div>
+      </form>
+    `;
+  }
+
+  overlay.hidden = false;
+}
+
+/** Demande de lien de réinitialisation. */
+async function handleResetPasswordRequestSubmit(form) {
+  const btn = document.getElementById('resetRequestBtn');
+  const errorBox = document.getElementById('authErrorBox');
+  const errorText = document.getElementById('authErrorText');
+  const successBox = document.getElementById('authSuccessBox');
+  const successText = document.getElementById('authSuccessText');
+  const identGroup = document.getElementById('resetIdentGroup');
+
+  const identifier = (form.identifier && form.identifier.value || '').trim();
+  if (!identifier) return;
+
+  btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/auth/password-reset/request', {
+      method: 'POST',
+      body: { identifier },
+    });
+    btn.hidden = true;
+    if (identGroup) identGroup.hidden = true;
+    if (successBox) {
+      successBox.hidden = false;
+      successText.textContent = (res && res.message) || 'Si le compte le permet, un lien de réinitialisation vous sera envoyé.';
+    }
+  } catch (err) {
+    btn.disabled = false;
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Erreur lors de la demande.';
+    }
+  }
+}
+
+/** Confirmation du nouveau mot de passe avec le jeton. */
+async function handleResetPasswordConfirmSubmit(form) {
+  const btn = document.getElementById('resetSubmitBtn');
+  const errorBox = document.getElementById('authErrorBox');
+  const errorText = document.getElementById('authErrorText');
+
+  const token = form.token ? form.token.value : '';
+  const new_password = form.new_password ? form.new_password.value : '';
+  const confirm_password = form.confirm_password ? form.confirm_password.value : '';
+
+  if (new_password.length < 8) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'Le mot de passe doit comporter au moins 8 caractères.';
+    }
+    return;
+  }
+  if (new_password !== confirm_password) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'La confirmation ne correspond pas au nouveau mot de passe.';
+    }
+    return;
+  }
+
+  btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    await api('/api/auth/password-reset/confirm', {
+      method: 'POST',
+      body: { token, new_password },
+    });
+    notify('Mot de passe réinitialisé avec succès. Veuillez vous connecter.', 'success');
+    window.location.hash = '#/tableau-de-bord';
+    showLoginScreen();
+  } catch (err) {
+    btn.disabled = false;
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Jeton invalide ou expiré.';
+    }
+  }
 }
 
 /**
@@ -1473,7 +1967,9 @@ function setMobileNav(open) {
 function currentRouteInfo() {
   const raw = (location.hash || '').replace(/^#\/?/, '').trim();
   const path = raw.split(/[?#]/)[0].replace(/\/+$/, '');
-  if (path === 'profil') return { route: 'profil', id: null };
+  const queryStr = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
+  if (path === 'profil') return { route: 'profil', id: null, query: queryStr };
+  if (path === 'etiquettes') return { route: 'etiquettes', id: null, query: queryStr };
   const parts = path.split('/');
   let root = parts[0];
   if (root === 'pieces') root = 'stock';
@@ -1482,6 +1978,7 @@ function currentRouteInfo() {
   return {
     route: mod ? mod.id : DEFAULT_ROUTE,
     id: id || null,
+    query: queryStr,
   };
 }
 
@@ -1512,6 +2009,20 @@ async function render() {
   if (route === 'profil') {
     document.title = 'Mon profil — Apex Maint';
     view.innerHTML = profilePage();
+    await initProfilePageView();
+    return;
+  }
+
+  // Route spéciale : Impression d'étiquettes
+  if (route === 'etiquettes') {
+    if (!hasPermission('equipments.view')) {
+      document.title = 'Accès refusé — Apex Maint';
+      view.innerHTML = accessDeniedPage();
+      return;
+    }
+    document.title = 'Étiquettes QR code — Apex Maint';
+    view.innerHTML = labelsPrintPage();
+    await initLabelsPrintPageView();
     return;
   }
 
@@ -1531,6 +2042,13 @@ async function render() {
 
   if (route === 'tableau-de-bord') {
     view.innerHTML = dashboardPage();
+    await initDashboardPageView();
+  } else if (route === 'reporting') {
+    view.innerHTML = reportingPage();
+    await initReportingPageView();
+  } else if (route === 'audit') {
+    view.innerHTML = auditPage();
+    await initAuditPageView();
   } else if (route === 'interventions') {
     if (id) {
       view.innerHTML = interventionDetailPage(id);
@@ -1573,6 +2091,12 @@ async function render() {
       view.innerHTML = maintenancePage();
       await initMaintenancePageView();
     }
+  } else if (route === 'documents') {
+    view.innerHTML = documentsPage();
+    await initDocumentsPageView();
+  } else if (route === 'parametres') {
+    view.innerHTML = settingsPage();
+    await initSettingsPageView();
   } else {
     view.innerHTML = plannedPage(mod);
   }
@@ -1601,46 +2125,1590 @@ function plannedPage(mod) {
   `;
 }
 
-/** Page : Tableau de bord */
-function dashboardPage() {
-  const h = state.health;
-  const status = state.online
-    ? `<span class="state-ok">En ligne</span>`
-    : `<span class="state-ko">Injoignable</span>`;
-  const user = state.currentUser;
-  const siteLabel = state.site ? state.site.name : (isAdmin() ? 'Tous les sites' : 'Site principal');
+// ============================================================================
+// 10A. BIBLIOTHÈQUE DE GRAPHIQUES SVG ACCESSIBLES (PHASE 7)
+// ============================================================================
+
+/**
+ * Rendu d'un graphique à barres horizontales SVG accessible.
+ * Utilise les variables CSS du thème actif (clair/sombre) sans style en ligne.
+ */
+function renderSvgBarChart({ items = [], max = null, height = 180, unit = '' }) {
+  if (!items.length) {
+    return '<p class="hint">Aucune donnée à afficher.</p>';
+  }
+  const calcMax = max !== null ? max : Math.max(...items.map(it => it.value || 0), 1);
+  const rowHeight = 28;
+  const svgHeight = Math.max(height, items.length * rowHeight + 20);
+  const chartWidth = 480;
+  const labelWidth = 130;
+  const barAreaWidth = chartWidth - labelWidth - 60;
+
+  const bars = items.map((it, idx) => {
+    const y = idx * rowHeight + 10;
+    const val = it.value || 0;
+    const barW = Math.max(2, Math.round((val / calcMax) * barAreaWidth));
+    const fill = it.color || 'var(--accent, #3b82f6)';
+    const textVal = `${val}${unit ? ' ' + unit : ''}`;
+    return `
+      <g class="chart-bar-group" role="row">
+        <text x="${labelWidth - 8}" y="${y + 15}" text-anchor="end" fill="var(--text)" font-size="12">${esc(it.label)}</text>
+        <rect x="${labelWidth}" y="${y + 2}" width="${barW}" height="18" rx="4" fill="${fill}"></rect>
+        <text x="${labelWidth + barW + 8}" y="${y + 15}" fill="var(--muted)" font-size="12" font-weight="600">${esc(textVal)}</text>
+      </g>
+    `;
+  }).join('');
+
+  const tableRows = items.map(it => `
+    <tr>
+      <td>${esc(it.label)}</td>
+      <td class="mono font-bold">${esc(it.value)}${unit ? ' ' + esc(unit) : ''}</td>
+    </tr>
+  `).join('');
 
   return `
-    <div class="page-head">${icon('i-dash')}<h1>Tableau de bord</h1></div>
-    <div class="cards">
-      <section class="card">
-        <h2>${icon('i-user')} Session active</h2>
-        <dl>
-          <dt>Utilisateur</dt><dd><b>${esc(user ? (user.display_name || user.username) : '—')}</b></dd>
-          <dt>Identifiant</dt><dd class="mono">${esc(user ? user.username : '—')}</dd>
-          <dt>Rôle</dt><dd><span class="${roleBadgeClass(user ? user.role : '')}">${esc(user ? formatRole(user.role) : '—')}</span></dd>
-          <dt>Site</dt><dd>${esc(siteLabel)}</dd>
-        </dl>
-      </section>
-      <section class="card">
-        <h2>${icon('i-server')} Moteur serveur</h2>
-        <dl>
-          <dt>État</dt><dd>${status}</dd>
-          <dt>Produit</dt><dd>${esc(h ? h.product : 'Apex Maint')}</dd>
-          <dt>Version</dt><dd class="mono">${esc(h ? h.version : '—')}</dd>
-          <dt>Vérifié à</dt><dd>${esc(state.checkedAt ? formatTime(state.checkedAt) : '—')}</dd>
-        </dl>
-      </section>
-      <section class="card">
-        <h2>${icon('i-wrench')} Interventions</h2>
-        <p class="hint">Indicateurs disponibles à partir de la phase 3.</p>
-      </section>
-      <section class="card">
-        <h2>${icon('i-box')} Stock</h2>
-        <p class="hint">Alertes de stock bas disponibles à partir de la phase 4.</p>
-      </section>
+    <div class="svg-chart-wrap">
+      <svg class="svg-chart" viewBox="0 0 ${chartWidth} ${svgHeight}" role="img" aria-label="Graphique en barres" height="${svgHeight}">
+        ${bars}
+      </svg>
+      <details class="chart-details">
+        <summary class="hint link-inline">Afficher le tableau de données</summary>
+        <table class="chart-accessible-table">
+          <thead><tr><th>Catégorie</th><th>Valeur</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </details>
     </div>
   `;
+}
+
+/**
+ * Rendu d'un graphique en anneau (donut) SVG accessible avec légende et tableau équivalent.
+ */
+function renderSvgDonutChart({ slices = [], size = 180, donutWidth = 24, title = '' }) {
+  if (!slices.length || slices.every(s => !s.value)) {
+    return '<p class="hint">Aucune donnée à afficher.</p>';
+  }
+  const total = slices.reduce((acc, s) => acc + (s.value || 0), 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = (size / 2) - 12;
+  const innerRadius = radius - donutWidth;
+
+  let currentAngle = -90; // Démarre à 12h
+  const defaultColors = [
+    'var(--accent)',
+    'var(--ok-line, #10b981)',
+    'var(--warn, #f59e0b)',
+    'var(--danger, #ef4444)',
+    '#8b5cf6',
+    '#ec4899',
+    '#06b6d4',
+  ];
+
+  const svgPaths = [];
+  const legendItems = [];
+  const tableRows = [];
+
+  slices.forEach((s, idx) => {
+    const val = s.value || 0;
+    const color = s.color || defaultColors[idx % defaultColors.length];
+    const pct = total > 0 ? (val / total) : 0;
+    const angle = pct * 360;
+
+    if (val > 0) {
+      const startAngleRad = (currentAngle * Math.PI) / 180;
+      const endAngleRad = ((currentAngle + angle) * Math.PI) / 180;
+      const x1 = cx + radius * Math.cos(startAngleRad);
+      const y1 = cy + radius * Math.sin(startAngleRad);
+      const x2 = cx + radius * Math.cos(endAngleRad);
+      const y2 = cy + radius * Math.sin(endAngleRad);
+      const x3 = cx + innerRadius * Math.cos(endAngleRad);
+      const y3 = cy + innerRadius * Math.sin(endAngleRad);
+      const x4 = cx + innerRadius * Math.cos(startAngleRad);
+      const y4 = cy + innerRadius * Math.sin(startAngleRad);
+      const largeArc = angle > 180 ? 1 : 0;
+
+      const pathData = total === val
+        ? `M ${cx} ${cy - radius} A ${radius} ${radius} 0 1 1 ${cx - 0.01} ${cy - radius} L ${cx - 0.01} ${cy - innerRadius} A ${innerRadius} ${innerRadius} 0 1 0 ${cx} ${cy - innerRadius} Z`
+        : `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${x4} ${y4} Z`;
+
+      svgPaths.push(`<path d="${pathData}" fill="${color}"><title>${esc(s.label)}: ${val} (${Math.round(pct * 100)}%)</title></path>`);
+    }
+
+    currentAngle += angle;
+
+    legendItems.push(`
+      <div class="chart-legend-item">
+        <svg width="12" height="12" viewBox="0 0 12 12"><rect width="12" height="12" rx="3" fill="${color}"></rect></svg>
+        <span>${esc(s.label)} (${val})</span>
+      </div>
+    `);
+
+    tableRows.push(`
+      <tr>
+        <td>${esc(s.label)}</td>
+        <td class="mono font-bold">${val}</td>
+        <td class="mono">${Math.round(pct * 100)}%</td>
+      </tr>
+    `);
+  });
+
+  return `
+    <div class="svg-chart-wrap">
+      <div class="donut-chart-flex">
+        <svg class="svg-chart" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="Graphique en anneau">
+          ${svgPaths.join('')}
+          <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="20" font-weight="700" fill="var(--text)">${total}</text>
+          <text x="${cx}" y="${cy + 16}" text-anchor="middle" font-size="11" fill="var(--muted)">${esc(title || 'Total')}</text>
+        </svg>
+        <div class="chart-legend">
+          ${legendItems.join('')}
+        </div>
+      </div>
+      <details class="chart-details">
+        <summary class="hint link-inline">Afficher le tableau de données</summary>
+        <table class="chart-accessible-table">
+          <thead><tr><th>Catégorie</th><th>Nombre</th><th>Part</th></tr></thead>
+          <tbody>${tableRows.join('')}</tbody>
+        </table>
+      </details>
+    </div>
+  `;
+}
+
+/**
+ * Rendu d'une jauge semi-circulaire SVG (taux en pourcentage).
+ */
+function renderSvgGauge({ percent = 0, label = '', valueText = '', color = 'var(--accent)', size = 180 }) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  const cx = size / 2;
+  const cy = size / 2 + 10;
+  const radius = size * 0.38;
+  const strokeWidth = size * 0.12;
+
+  const startRad = Math.PI;
+  const endRad = 2 * Math.PI;
+  const activeRad = Math.PI + (clamped / 100) * Math.PI;
+
+  const x0 = cx + radius * Math.cos(startRad);
+  const y0 = cy + radius * Math.sin(startRad);
+  const x1 = cx + radius * Math.cos(endRad);
+  const y1 = cy + radius * Math.sin(endRad);
+  const xActive = cx + radius * Math.cos(activeRad);
+  const yActive = cy + radius * Math.sin(activeRad);
+
+  const bgPath = `M ${x0} ${y0} A ${radius} ${radius} 0 0 1 ${x1} ${y1}`;
+  const activePath = clamped > 0
+    ? `M ${x0} ${y0} A ${radius} ${radius} 0 0 1 ${xActive} ${yActive}`
+    : '';
+
+  const displayVal = valueText || `${clamped} %`;
+
+  return `
+    <div class="svg-chart-wrap svg-gauge-wrap">
+      <svg class="svg-chart" viewBox="0 0 ${size} ${size * 0.7}" width="${size}" height="${size * 0.7}" role="img" aria-label="Jauge: ${esc(label)} ${esc(displayVal)}">
+        <path d="${bgPath}" fill="none" stroke="var(--line-2)" stroke-width="${strokeWidth}" stroke-linecap="round"></path>
+        ${activePath ? `<path d="${activePath}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round"></path>` : ''}
+        <text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="24" font-weight="700" fill="var(--text)">${esc(displayVal)}</text>
+        <text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="11" fill="var(--muted)">${esc(label)}</text>
+      </svg>
+      <div class="sr-only">Taux: ${esc(displayVal)} (${esc(label)})</div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// 10B. PAGE TABLEAU DE BORD (PHASE 7)
+// ============================================================================
+
+const DASHBOARD_TITLES = {
+  interventions_summary: 'Synthèse des interventions',
+  interventions_by_type: 'Répartition par type',
+  interventions_by_priority: 'Répartition par priorité',
+  response_time: 'Temps de prise en charge',
+  mtbf_mttr: 'Indicateurs MTBF / MTTR',
+  downtime: "Temps d'arrêt",
+  preventive_compliance: 'Respect des préventifs',
+  parts_cost: 'Coût des pièces',
+  labor_time: 'Temps de main d’œuvre',
+  stock_value: 'Valorisation du stock',
+  stock_alerts: 'Alertes de stock',
+  my_interventions: 'Mes interventions',
+  machines_down: 'Équipements à l’arrêt',
+  maintenance_overdue: 'Maintenances en retard',
+};
+
+function dashboardPage() {
+  if (!hasPermission('dashboard.view')) {
+    return accessDeniedPage();
+  }
+
+  const isCust = state.dashboardCustomizing;
+  const canCust = state.dashboardCanCustomize;
+  const source = state.dashboardSource;
+  const sourceLabel = source === 'user' ? 'Personnalisé' : (source === 'role' ? 'Rôle' : 'Standard');
+
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-dash')}
+        <div>
+          <h1>Tableau de bord</h1>
+          <p class="page-subtitle">Indicateurs clés, activités et surveillance des équipements.</p>
+        </div>
+      </div>
+      <div class="page-head-actions">
+        <span class="badge" title="Source de la disposition actuelle">${esc(sourceLabel)}</span>
+        ${canCust ? `
+          <button type="button" class="btn ${isCust ? 'secondary' : 'primary'}" data-action="toggle-dashboard-customize">
+            ${icon(isCust ? 'i-check' : 'i-sliders')}
+            <span>${isCust ? 'Terminer' : 'Personnaliser'}</span>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+
+    ${isCust ? `
+      <div class="dashboard-custom-banner">
+        <div>
+          <b>Mode personnalisation actif</b>
+          <p class="hint">Glissez-déposez ou utilisez les commandes des cartes pour déplacer, redimensionner ou configurer les widgets.</p>
+        </div>
+        <div class="dashboard-custom-actions">
+          <button type="button" class="btn primary" data-action="open-add-widget-modal">
+            ${icon('i-plus')} <span>Ajouter un widget</span>
+          </button>
+          <button type="button" class="btn" data-action="reset-dashboard-layout" title="Rétablir la disposition par défaut de votre rôle">
+            ${icon('i-refresh')} <span>Rétablir par défaut</span>
+          </button>
+          <button type="button" class="btn primary" data-action="save-dashboard-layout">
+            ${icon('i-check')} <span>Enregistrer</span>
+          </button>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="dashboard-grid" id="dashboardGrid">
+      <p class="hint">${icon('i-clock')} Chargement du tableau de bord…</p>
+    </div>
+  `;
+}
+
+async function initDashboardPageView() {
+  await loadDashboard();
+}
+
+async function loadDashboard() {
+  const container = document.getElementById('dashboardGrid');
+  if (!container) return;
+
+  try {
+    const layout = await api('/api/dashboard');
+    state.dashboardLayout = layout;
+    state.dashboardSource = layout.source || 'role';
+    state.dashboardCanCustomize = Boolean(layout.can_customize);
+    // L'en-tête a été rendu avant la réponse : on le redessine avec la source et le droit réels.
+    const head = document.querySelector('.page-head');
+    if (head) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = dashboardPage();
+      const freshHead = tmp.querySelector('.page-head');
+      if (freshHead) head.replaceWith(freshHead);
+    }
+    renderDashboardGrid();
+
+    // Chargement parallèle des données de chaque widget
+    const widgets = (layout && Array.isArray(layout.widgets)) ? layout.widgets : [];
+    await Promise.allSettled(widgets.map(w => loadDashboardWidgetData(w)));
+  } catch (err) {
+    if (container) {
+      container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement du tableau de bord : ${esc(err.message)}</p>`;
+    }
+  }
+}
+
+async function loadDashboardWidgetData(w) {
+  try {
+    const params = w.params || {};
+    const query = new URLSearchParams();
+    if (params.period) query.set('period', params.period);
+    if (params.site_id) query.set('site_id', params.site_id);
+    if (params.line_id) query.set('line_id', params.line_id);
+    if (params.equipment_id) query.set('equipment_id', params.equipment_id);
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    const res = await api(`/api/dashboard/widgets/${encodeURIComponent(w.widget)}${qs}`);
+    state.dashboardWidgetData.set(w.id, res ? res.data : null);
+
+    const cardBody = document.getElementById(`widget-body-${w.id}`);
+    if (cardBody) {
+      cardBody.innerHTML = renderWidgetContent(w, res ? res.data : null);
+    }
+  } catch (err) {
+    state.dashboardWidgetData.set(w.id, { _error: err.message });
+    const cardBody = document.getElementById(`widget-body-${w.id}`);
+    if (cardBody) {
+      cardBody.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+    }
+  }
+}
+
+function renderDashboardGrid() {
+  const container = document.getElementById('dashboardGrid');
+  if (!container) return;
+
+  const widgets = (state.dashboardLayout && Array.isArray(state.dashboardLayout.widgets))
+    ? state.dashboardLayout.widgets
+    : [];
+
+  if (!widgets.length) {
+    container.innerHTML = `
+      <div class="empty-state">
+        ${icon('i-dash')}
+        <p>Aucun widget configuré pour votre tableau de bord.</p>
+        ${state.dashboardCanCustomize ? `
+          <button type="button" class="btn primary" data-action="open-add-widget-modal">
+            ${icon('i-plus')} <span>Ajouter un widget</span>
+          </button>
+        ` : ''}
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = widgets.map(w => renderWidgetCard(w, state.dashboardCustomizing)).join('');
+}
+
+function renderWidgetCard(w, isCustomize) {
+  const title = DASHBOARD_TITLES[w.widget] || w.widget;
+  const colSpan = Math.max(1, Math.min(12, w.w || 6));
+  const data = state.dashboardWidgetData.get(w.id);
+
+  let bodyHtml = `<p class="hint">${icon('i-clock')} Chargement…</p>`;
+  if (data !== undefined) {
+    if (data && data._error) {
+      bodyHtml = `<p class="hint state-ko">${icon('i-alert')} ${esc(data._error)}</p>`;
+    } else {
+      bodyHtml = renderWidgetContent(w, data);
+    }
+  }
+
+  return `
+    <div class="dashboard-widget w-col-${colSpan} ${isCustomize ? 'customizing' : ''}" id="widget-card-${esc(w.id)}" data-widget-id="${esc(w.id)}">
+      <div class="widget-head">
+        <h3>
+          ${isCustomize ? `
+            <span class="widget-drag-handle" draggable="true" data-action="widget-drag-handle" data-args="${jsArg(w.id)}" title="Glisser pour réorganiser">
+              ${icon('i-grip')}
+            </span>
+          ` : ''}
+          <span>${esc(title)}</span>
+        </h3>
+        ${isCustomize ? `
+          <div class="widget-custom-controls">
+            <button type="button" class="btn sm" data-action="move-widget-prev" data-args="${jsArg(w.id)}" title="Déplacer vers la gauche / haut">
+              ${icon('i-arrow-up')}
+            </button>
+            <button type="button" class="btn sm" data-action="move-widget-next" data-args="${jsArg(w.id)}" title="Déplacer vers la droite / bas">
+              ${icon('i-arrow-down')}
+            </button>
+            <button type="button" class="btn sm" data-action="cycle-widget-size" data-args="${jsArg(w.id)}" title="Changer la largeur">
+              <span>${colSpan} col</span>
+            </button>
+            <button type="button" class="btn sm" data-action="open-widget-config" data-args="${jsArg(w.id)}" title="Paramètres du widget">
+              ${icon('i-sliders')}
+            </button>
+            <button type="button" class="btn sm danger" data-action="delete-dashboard-widget" data-args="${jsArg(w.id)}" title="Supprimer le widget">
+              ${icon('i-trash')}
+            </button>
+          </div>
+        ` : ''}
+      </div>
+      <div class="widget-body" id="widget-body-${esc(w.id)}">
+        ${bodyHtml}
+      </div>
+    </div>
+  `;
+}
+
+function renderWidgetContent(w, data) {
+  if (!data) return '<p class="hint">Aucune donnée disponible.</p>';
+
+  switch (w.widget) {
+    case 'interventions_summary': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      const openCount = (items.find(it => it.key === 'open') || {}).count || 0;
+      const inProgCount = (items.find(it => it.key === 'in_progress') || {}).count || 0;
+      const compCount = (items.find(it => it.key === 'completed') || {}).count || 0;
+
+      const chartItems = items.map(it => ({
+        label: formatInterventionStatus(it.key),
+        value: it.count || 0,
+        color: it.key === 'open' ? 'var(--warn)' : (it.key === 'in_progress' ? 'var(--accent)' : 'var(--ok-line)'),
+      }));
+
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Ouvertes</span>
+            <span class="kpi-val text-warn">${openCount}</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">En cours</span>
+            <span class="kpi-val text-accent">${inProgCount}</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Clôturées</span>
+            <span class="kpi-val text-ok">${compCount}</span>
+          </div>
+        </div>
+        ${renderSvgBarChart({ items: chartItems, height: 120 })}
+      `;
+    }
+
+    case 'interventions_by_type': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      const slices = items.map(it => ({
+        label: formatInterventionType(it.key),
+        value: it.count || 0,
+      }));
+      return renderSvgDonutChart({ slices, size: 160, title: 'Interventions' });
+    }
+
+    case 'interventions_by_priority': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      const priorityColors = {
+        low: 'var(--muted)',
+        medium: 'var(--accent)',
+        high: 'var(--warn)',
+        critical: 'var(--danger)',
+      };
+      const slices = items.map(it => ({
+        label: formatInterventionPriority(it.key),
+        value: it.count || 0,
+        color: priorityColors[it.key] || 'var(--accent)',
+      }));
+      return renderSvgDonutChart({ slices, size: 160, title: 'Priorités' });
+    }
+
+    case 'response_time': {
+      const meanMin = Math.round(data.mean_minutes || 0);
+      const medMin = Math.round(data.median_minutes || 0);
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Délai moyen de prise en charge</span>
+            <span class="kpi-val">${meanMin} <small class="hint">min</small></span>
+            <span class="kpi-sub">${Math.round(meanMin / 60)} h</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Délai médian</span>
+            <span class="kpi-val">${medMin} <small class="hint">min</small></span>
+            <span class="kpi-sub">${Math.round(medMin / 60)} h</span>
+          </div>
+        </div>
+      `;
+    }
+
+    case 'mtbf_mttr': {
+      if (data.no_failures) {
+        return '<p class="hint">Aucune panne constatée sur la période sélectionnée.</p>';
+      }
+      const mtbfH = Math.round((data.mtbf_minutes || 0) / 60);
+      const mttrMin = Math.round(data.mttr_minutes || 0);
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">MTBF (Temps moyen entre pannes)</span>
+            <span class="kpi-val">${mtbfH} <small class="hint">h</small></span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">MTTR (Temps moyen de réparation)</span>
+            <span class="kpi-val">${mttrMin} <small class="hint">min</small></span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Pannes constatées</span>
+            <span class="kpi-val">${data.failures || 0}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    case 'downtime': {
+      const totalMin = Math.round(data.downtime_minutes || 0);
+      const hours = Math.floor(totalMin / 60);
+      const mins = totalMin % 60;
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Temps d'arrêt total</span>
+            <span class="kpi-val">${hours} h ${mins} min</span>
+            <span class="kpi-sub">${totalMin} minutes cumulées</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Pannes totales</span>
+            <span class="kpi-val">${data.failures || 0}</span>
+            <span class="kpi-sub">${data.closed_failures || 0} clôturées</span>
+          </div>
+        </div>
+      `;
+    }
+
+    case 'preventive_compliance': {
+      const pct = data.compliance_percent || 0;
+      const color = pct >= 80 ? 'var(--ok-line)' : (pct >= 50 ? 'var(--warn)' : 'var(--danger)');
+      return `
+        <div class="preventive-gauge-row">
+          ${renderSvgGauge({ percent: pct, label: 'Respect des échéances', color, size: 160 })}
+          <div class="kpi-row">
+            <div class="kpi-card">
+              <span class="kpi-label">Échéances dues</span>
+              <span class="kpi-val">${data.due_count || 0}</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">À l'heure</span>
+              <span class="kpi-val text-ok">${data.on_time_count || 0}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    case 'parts_cost': {
+      const totalEuros = formatCents(data.parts_cost_cents || 0);
+      const items = Array.isArray(data.by_equipment) ? data.by_equipment.slice(0, 5) : [];
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Coût total des pièces</span>
+            <span class="kpi-val text-accent">${totalEuros}</span>
+          </div>
+        </div>
+        ${items.length ? `
+          <table class="data-table">
+            <thead><tr><th>Équipement</th><th>Coût (€)</th></tr></thead>
+            <tbody>
+              ${items.map(it => `
+                <tr>
+                  <td class="font-bold" title="${esc(it.equipment_name || '')}">${esc(it.equipment_code || (it.equipment_id ? it.equipment_id.slice(0, 8) : 'Hors équipement'))}</td>
+                  <td class="mono">${formatCents(it.cost_cents)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
+      `;
+    }
+
+    case 'labor_time': {
+      const list = Array.isArray(data.labor) ? data.labor : [];
+      const totalMin = list.reduce((acc, it) => acc + (it.duration_minutes || 0), 0);
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Main d'œuvre totale</span>
+            <span class="kpi-val">${Math.round(totalMin / 60)} <small class="hint">h</small></span>
+            <span class="kpi-sub">${totalMin} minutes</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Lignes de saisie</span>
+            <span class="kpi-val">${list.length}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    case 'stock_value': {
+      const valStr = formatCents(data.value_cents || 0);
+      const items = Array.isArray(data.items) ? data.items : [];
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Valeur totale du stock</span>
+            <span class="kpi-val text-accent">${valStr}</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Références en magasin</span>
+            <span class="kpi-val">${items.length}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    case 'stock_alerts': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      const lowItems = items.filter(it => it.low);
+      return `
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <span class="kpi-label">Articles en alerte</span>
+            <span class="kpi-val ${lowItems.length ? 'text-danger' : 'text-ok'}">${lowItems.length}</span>
+          </div>
+        </div>
+        ${lowItems.length ? `
+          <div class="table-container">
+            <table class="data-table">
+              <thead><tr><th>Réf</th><th>Désignation</th><th>Qté</th><th>Seuil</th></tr></thead>
+              <tbody>
+                ${lowItems.slice(0, 5).map(it => `
+                  <tr>
+                    <td class="mono font-bold">${esc(it.reference)}</td>
+                    <td>${esc(it.name)}</td>
+                    <td class="mono text-danger font-bold">${it.quantity}</td>
+                    <td class="mono">${it.threshold}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="hint">Aucun article sous le seuil d\'alerte.</p>'}
+      `;
+    }
+
+    case 'my_interventions': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        return '<p class="hint">Aucune intervention assignée en cours.</p>';
+      }
+      return `
+        <div class="table-container">
+          <table class="data-table">
+            <thead><tr><th>Code</th><th>Titre</th><th>Priorité</th><th>Statut</th></tr></thead>
+            <tbody>
+              ${items.slice(0, 6).map(it => `
+                <tr>
+                  <td><a href="#/interventions/${esc(it.id)}" class="mono font-bold link">${esc(it.code)}</a></td>
+                  <td>${esc(it.title)}</td>
+                  <td>${interventionPriorityBadge(it.priority)}</td>
+                  <td>${interventionStatusBadge(it.status)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    case 'machines_down': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        return '<p class="hint text-ok">Aucun équipement à l\'arrêt actuellement.</p>';
+      }
+      return `
+        <div class="table-container">
+          <table class="data-table">
+            <thead><tr><th>Code</th><th>Nom</th><th>État</th></tr></thead>
+            <tbody>
+              ${items.map(it => `
+                <tr>
+                  <td><a href="#/equipements" class="mono font-bold link">${esc(it.code)}</a></td>
+                  <td>${esc(it.name)}</td>
+                  <td><span class="badge badge-state-ko">À l'arrêt</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    case 'maintenance_overdue': {
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        return '<p class="hint text-ok">Aucune maintenance préventive en retard.</p>';
+      }
+      return `
+        <div class="table-container">
+          <table class="data-table">
+            <thead><tr><th>Code</th><th>Titre</th><th>Échéance</th></tr></thead>
+            <tbody>
+              ${items.map(it => `
+                <tr>
+                  <td><a href="#/maintenance-preventive/${esc(it.id)}" class="mono font-bold link">${esc(it.code)}</a></td>
+                  <td>${esc(it.title)}</td>
+                  <td class="mono text-danger">${it.next_due_date ? esc(formatDate(it.next_due_date)) : '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    default:
+      return '<p class="hint">Données reçues.</p>';
+  }
+}
+
+// Actions de personnalisation du tableau de bord
+
+function toggleDashboardCustomize(enable) {
+  state.dashboardCustomizing = enable !== undefined ? enable : !state.dashboardCustomizing;
+  const view = document.getElementById('view');
+  if (view) {
+    view.innerHTML = dashboardPage();
+    renderDashboardGrid();
+  }
+}
+
+function moveDashboardWidget(widgetId, dir) {
+  const widgets = (state.dashboardLayout && state.dashboardLayout.widgets) || [];
+  const idx = widgets.findIndex(w => w.id === widgetId);
+  if (idx === -1) return;
+
+  const targetIdx = dir === 'prev' ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= widgets.length) return;
+
+  const tmp = widgets[idx];
+  widgets[idx] = widgets[targetIdx];
+  widgets[targetIdx] = tmp;
+
+  renderDashboardGrid();
+}
+
+function cycleDashboardWidgetSize(widgetId) {
+  const widgets = (state.dashboardLayout && state.dashboardLayout.widgets) || [];
+  const w = widgets.find(it => it.id === widgetId);
+  if (!w) return;
+
+  const allowed = [4, 6, 8, 12];
+  const curIdx = allowed.indexOf(w.w || 6);
+  w.w = allowed[(curIdx + 1) % allowed.length];
+
+  renderDashboardGrid();
+}
+
+function openDashboardWidgetConfigModal(widgetId) {
+  const widgets = (state.dashboardLayout && state.dashboardLayout.widgets) || [];
+  const w = widgets.find(it => it.id === widgetId);
+  if (!w) return;
+
+  const p = w.params || {};
+  const isAdm = isAdmin();
+
+  const bodyHtml = `
+    <form class="form-grid" id="modalWidgetConfigForm" data-action="save-widget-config-submit" data-args="${jsArg(widgetId)}">
+      <div class="form-group">
+        <label for="wCfgPeriod">Période d'analyse</label>
+        <select id="wCfgPeriod" name="period">
+          <option value="7d" ${p.period === '7d' ? 'selected' : ''}>7 derniers jours</option>
+          <option value="30d" ${!p.period || p.period === '30d' ? 'selected' : ''}>30 derniers jours</option>
+          <option value="90d" ${p.period === '90d' ? 'selected' : ''}>90 derniers jours</option>
+          <option value="12m" ${p.period === '12m' ? 'selected' : ''}>12 derniers mois</option>
+          <option value="month" ${p.period === 'month' ? 'selected' : ''}>Mois civil en cours</option>
+          <option value="year" ${p.period === 'year' ? 'selected' : ''}>Année civile en cours</option>
+        </select>
+      </div>
+      ${isAdm ? `
+        <div class="form-group">
+          <label for="wCfgSite">Filtrer par site</label>
+          <select id="wCfgSite" name="site_id">
+            <option value="">Tous les sites</option>
+            ${state.sites.map(s => `<option value="${esc(s.id)}" ${p.site_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+          </select>
+        </div>
+      ` : ''}
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="modalWidgetConfigForm" class="btn primary">Enregistrer les paramètres</button>
+  `;
+
+  openModal(`Configurer : ${DASHBOARD_TITLES[w.widget] || w.widget}`, bodyHtml, footerHtml);
+}
+
+function handleSaveWidgetConfigSubmit(widgetId, form) {
+  const widgets = (state.dashboardLayout && state.dashboardLayout.widgets) || [];
+  const w = widgets.find(it => it.id === widgetId);
+  if (!w) return;
+
+  w.params = w.params || {};
+  w.params.period = form.period ? form.period.value : '30d';
+  if (form.site_id) {
+    w.params.site_id = form.site_id.value || null;
+  }
+
+  closeModal();
+  loadDashboardWidgetData(w);
+}
+
+function removeDashboardWidget(widgetId) {
+  if (!state.dashboardLayout || !state.dashboardLayout.widgets) return;
+  state.dashboardLayout.widgets = state.dashboardLayout.widgets.filter(w => w.id !== widgetId);
+  renderDashboardGrid();
+}
+
+async function openAddDashboardWidgetModal() {
+  try {
+    if (!state.dashboardCatalog.length) {
+      const cat = await api('/api/dashboard/catalog');
+      state.dashboardCatalog = Array.isArray(cat) ? cat : [];
+    }
+
+    const cards = state.dashboardCatalog.map(it => `
+      <div class="widget-catalog-card">
+        <div>
+          <h4>${esc(it.title || it.widget)}</h4>
+          <p class="hint">${esc(it.widget)}</p>
+        </div>
+        <button type="button" class="btn primary sm" data-action="add-widget-from-catalog" data-args="${jsArg(it.widget)}">
+          ${icon('i-plus')} <span>Ajouter au tableau</span>
+        </button>
+      </div>
+    `).join('');
+
+    const bodyHtml = `
+      <div class="widget-catalog-grid">
+        ${cards || '<p class="hint">Aucun widget disponible dans le catalogue.</p>'}
+      </div>
+    `;
+
+    openModal('Catalogue des widgets', bodyHtml, '<button type="button" class="btn" data-action="close-modal">Fermer</button>');
+  } catch (err) {
+    notify(`Impossible de charger le catalogue : ${err.message}`, 'error');
+  }
+}
+
+function addWidgetFromCatalog(widgetKey) {
+  if (!state.dashboardLayout) {
+    state.dashboardLayout = { widgets: [] };
+  }
+  const widgets = state.dashboardLayout.widgets || [];
+  const newId = `w_${Date.now()}`;
+  const newW = {
+    id: newId,
+    widget: widgetKey,
+    x: 0,
+    y: widgets.length,
+    w: 6,
+    h: 3,
+    params: { period: '30d' },
+  };
+
+  widgets.push(newW);
+  closeModal();
+  renderDashboardGrid();
+  loadDashboardWidgetData(newW);
+}
+
+async function saveDashboardLayout() {
+  if (!state.dashboardLayout) return;
+  try {
+    const res = await api('/api/dashboard', {
+      method: 'PUT',
+      body: { widgets: state.dashboardLayout.widgets || [] },
+    });
+    state.dashboardLayout = res;
+    state.dashboardSource = res.source || 'user';
+    notify('Disposition du tableau de bord enregistrée avec succès.', 'success');
+    toggleDashboardCustomize(false);
+  } catch (err) {
+    notify(`Erreur lors de l'enregistrement : ${err.message}`, 'error');
+  }
+}
+
+async function resetDashboardLayout() {
+  const ok = await confirmDialog(
+    'Rétablir la disposition par défaut',
+    'Voulez-vous supprimer votre disposition personnalisée et revenir à la configuration par défaut de votre rôle ?',
+    'Rétablir',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    const res = await api('/api/dashboard', { method: 'DELETE' });
+    state.dashboardLayout = res;
+    state.dashboardSource = res.source || 'role';
+    notify('Disposition par défaut rétablie.', 'success');
+    toggleDashboardCustomize(false);
+  } catch (err) {
+    notify(`Erreur lors de la réinitialisation : ${err.message}`, 'error');
+  }
+}
+
+// ============================================================================
+// 10C. PAGE REPORTING (PHASE 7)
+// ============================================================================
+
+function reportingPage() {
+  if (!hasPermission('reporting.view')) {
+    return accessDeniedPage();
+  }
+
+  const tab = state.reportingTab || 'activity';
+  const period = state.reportingPeriod || '30d';
+  const isAdm = isAdmin();
+  const hasStockPerm = hasPermission('stock.view');
+
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-chart')}
+        <div>
+          <h1>Reporting & Statistiques</h1>
+          <p class="page-subtitle">Analyse d'activité, fiabilité des équipements, respect du préventif et coûts.</p>
+        </div>
+      </div>
+      <div class="page-head-actions">
+        ${renderExportDropdown(`report-${tab}`, { period, tab })}
+      </div>
+    </div>
+
+    <div class="tabs-nav reporting-tabs-nav">
+      <button type="button" class="tab-btn ${tab === 'activity' ? 'on' : ''}" data-action="switch-reporting-tab" data-args="activity">
+        ${icon('i-wrench')} <span>Activité</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'reliability' ? 'on' : ''}" data-action="switch-reporting-tab" data-args="reliability">
+        ${icon('i-shield')} <span>Fiabilité (MTBF/MTTR)</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'preventive' ? 'on' : ''}" data-action="switch-reporting-tab" data-args="preventive">
+        ${icon('i-cal')} <span>Maintenance préventive</span>
+      </button>
+      ${hasStockPerm ? `
+        <button type="button" class="tab-btn ${tab === 'costs' ? 'on' : ''}" data-action="switch-reporting-tab" data-args="costs">
+          ${icon('i-box')} <span>Coûts & Pièces</span>
+        </button>
+        <button type="button" class="tab-btn ${tab === 'stock' ? 'on' : ''}" data-action="switch-reporting-tab" data-args="stock">
+          ${icon('i-folder')} <span>Valorisation du stock</span>
+        </button>
+      ` : ''}
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <select data-action="filter-reporting-period" aria-label="Sélectionner la période">
+          <option value="7d" ${period === '7d' ? 'selected' : ''}>7 derniers jours</option>
+          <option value="30d" ${period === '30d' ? 'selected' : ''}>30 derniers jours</option>
+          <option value="90d" ${period === '90d' ? 'selected' : ''}>90 derniers jours</option>
+          <option value="12m" ${period === '12m' ? 'selected' : ''}>12 derniers mois</option>
+          <option value="month" ${period === 'month' ? 'selected' : ''}>Mois civil en cours</option>
+          <option value="year" ${period === 'year' ? 'selected' : ''}>Année civile en cours</option>
+          <option value="custom" ${period === 'custom' ? 'selected' : ''}>Période personnalisée…</option>
+        </select>
+
+        <div id="reportingCustomDates" class="inline-dates" ${period === 'custom' ? '' : 'hidden'}>
+          <input type="date" value="${esc(state.reportingFrom)}" data-action="filter-reporting-from" aria-label="Date de début" />
+          <span>à</span>
+          <input type="date" value="${esc(state.reportingTo)}" data-action="filter-reporting-to" aria-label="Date de fin" />
+        </div>
+
+        ${isAdm ? `
+          <select data-action="filter-reporting-site" aria-label="Filtrer par site">
+            <option value="">Tous les sites</option>
+            ${state.sites.map(s => `<option value="${esc(s.id)}" ${state.reportingSiteId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+          </select>
+        ` : ''}
+
+        <select data-action="filter-reporting-line" aria-label="Filtrer par ligne">
+          <option value="">Toutes les lignes</option>
+          ${state.productionLines.map(l => `<option value="${esc(l.id)}" ${state.reportingLineId === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+        </select>
+
+        <select data-action="filter-reporting-equipment" aria-label="Filtrer par équipement">
+          <option value="">Tous les équipements</option>
+          ${state.equipments.map(e => `<option value="${esc(e.id)}" ${state.reportingEquipmentId === e.id ? 'selected' : ''}>${esc(e.code)} — ${esc(e.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="toolbar-actions">
+        <button type="button" class="btn" data-action="refresh-reporting-data">
+          ${icon('i-refresh')} <span>Actualiser</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="reportingTabContent" class="report-layout">
+      <p class="hint">${icon('i-clock')} Chargement du rapport…</p>
+    </div>
+  `;
+}
+
+async function initReportingPageView() {
+  await switchReportingTab(state.reportingTab || 'activity');
+}
+
+async function switchReportingTab(tab) {
+  state.reportingTab = tab;
+  document.querySelectorAll('.reporting-tabs-nav .tab-btn').forEach(btn => {
+    btn.classList.toggle('on', btn.dataset.args === tab);
+  });
+  await loadReportingData();
+}
+
+async function loadReportingData() {
+  const container = document.getElementById('reportingTabContent');
+  if (!container) return;
+
+  state.reportingLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Calcul des indicateurs en cours…</p>`;
+
+  try {
+    const tab = state.reportingTab || 'activity';
+    const query = new URLSearchParams();
+    query.set('period', state.reportingPeriod || '30d');
+    if (state.reportingSiteId) query.set('site_id', state.reportingSiteId);
+    if (state.reportingLineId) query.set('line_id', state.reportingLineId);
+    if (state.reportingEquipmentId) query.set('equipment_id', state.reportingEquipmentId);
+    if (state.reportingType) query.set('type', state.reportingType);
+    if (state.reportingPeriod === 'custom') {
+      if (state.reportingFrom) query.set('from', state.reportingFrom);
+      if (state.reportingTo) query.set('to', state.reportingTo);
+    }
+
+    const res = await api(`/api/reports/${encodeURIComponent(tab)}?${query.toString()}`);
+    state.reportingData = res ? res.data : null;
+    renderReportingContent();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du calcul du rapport : ${esc(err.message)}</p>`;
+  } finally {
+    state.reportingLoading = false;
+  }
+}
+
+function renderReportingContent() {
+  const container = document.getElementById('reportingTabContent');
+  if (!container) return;
+
+  const tab = state.reportingTab;
+  const data = state.reportingData;
+  if (!data) {
+    container.innerHTML = '<p class="hint">Aucune donnée disponible.</p>';
+    return;
+  }
+
+  if (tab === 'activity') {
+    const byStatus = Array.isArray(data.by_status) ? data.by_status : [];
+    const byType = Array.isArray(data.by_type) ? data.by_type : [];
+    const byPriority = Array.isArray(data.by_priority) ? data.by_priority : [];
+    const totalInt = byStatus.reduce((acc, it) => acc + (it.count || 0), 0);
+
+    const statusChartItems = byStatus.map(it => ({
+      label: formatInterventionStatus(it.key),
+      value: it.count || 0,
+      color: it.key === 'open' ? 'var(--warn)' : (it.key === 'in_progress' ? 'var(--accent)' : 'var(--ok-line)'),
+    }));
+
+    const typeSlices = byType.map(it => ({
+      label: formatInterventionType(it.key),
+      value: it.count || 0,
+    }));
+
+    const prioritySlices = byPriority.map(it => ({
+      label: formatInterventionPriority(it.key),
+      value: it.count || 0,
+    }));
+
+    container.innerHTML = `
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <span class="kpi-label">Total interventions</span>
+          <span class="kpi-val text-accent">${totalInt}</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Délai moyen de réponse</span>
+          <span class="kpi-val">${Math.round(data.response_mean_minutes || 0)} <small class="hint">min</small></span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Délai médian</span>
+          <span class="kpi-val">${Math.round(data.response_median_minutes || 0)} <small class="hint">min</small></span>
+        </div>
+      </div>
+
+      <div class="report-chart-grid">
+        <div class="card">
+          <h2>${icon('i-wrench')} Répartition par statut</h2>
+          ${renderSvgBarChart({ items: statusChartItems, height: 160 })}
+        </div>
+        <div class="card">
+          <h2>${icon('i-folder')} Répartition par type</h2>
+          ${renderSvgDonutChart({ slices: typeSlices, size: 180, title: 'Types' })}
+        </div>
+        <div class="card">
+          <h2>${icon('i-alert')} Répartition par priorité</h2>
+          ${renderSvgDonutChart({ slices: prioritySlices, size: 180, title: 'Priorités' })}
+        </div>
+      </div>
+    `;
+  } else if (tab === 'reliability') {
+    const items = Array.isArray(data.items) ? data.items : [];
+    const totalDowntimeMin = Math.round(data.downtime_minutes || 0);
+
+    container.innerHTML = `
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <span class="kpi-label">MTBF global</span>
+          <span class="kpi-val">${data.mtbf_minutes !== null && data.mtbf_minutes !== undefined ? Math.round(data.mtbf_minutes / 60) : '—'} <small class="hint">h</small></span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">MTTR global</span>
+          <span class="kpi-val">${data.mttr_minutes !== null && data.mttr_minutes !== undefined ? Math.round(data.mttr_minutes) : '—'} <small class="hint">min</small></span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Temps d'arrêt total</span>
+          <span class="kpi-val">${Math.floor(totalDowntimeMin / 60)} h ${totalDowntimeMin % 60} min</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Pannes</span>
+          <span class="kpi-val">${data.failures || 0}</span>
+          <span class="kpi-sub">${data.closed_failures || 0} réparées</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>${icon('i-gear')} Détail par équipement</h2>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Équipement</th>
+                <th>Pannes totales</th>
+                <th>Pannes closes</th>
+                <th>Temps d'arrêt</th>
+                <th>MTTR</th>
+                <th>MTBF</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.length ? items.map(it => `
+                <tr>
+                  <td class="font-bold" title="${esc(it.equipment_name || '')}">${esc(it.equipment_code || (it.equipment_id ? it.equipment_id.slice(0, 8) : 'Hors équipement'))}</td>
+                  <td class="mono font-bold">${it.failures || 0}</td>
+                  <td class="mono">${it.closed_failures || 0}</td>
+                  <td class="mono">${Math.round(it.downtime_minutes || 0)} min</td>
+                  <td class="mono">${it.mttr_minutes !== null ? `${Math.round(it.mttr_minutes)} min` : '—'}</td>
+                  <td class="mono">${it.mtbf_minutes !== null ? `${Math.round(it.mtbf_minutes / 60)} h` : '—'}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="6" class="empty-cell">Aucune panne relevée sur les équipements filtrés.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  } else if (tab === 'preventive') {
+    const pct = data.compliance_percent || 0;
+    const color = pct >= 80 ? 'var(--ok-line)' : (pct >= 50 ? 'var(--warn)' : 'var(--danger)');
+    const byType = Array.isArray(data.by_type) ? data.by_type : [];
+    const typeSlices = byType.map(it => ({
+      label: formatInterventionType(it.key),
+      value: it.count || 0,
+    }));
+
+    container.innerHTML = `
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <span class="kpi-label">Échéances dues</span>
+          <span class="kpi-val text-accent">${data.due_count || 0}</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Réalisées à l'heure</span>
+          <span class="kpi-val text-ok">${data.on_time_count || 0}</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Taux de conformité</span>
+          <span class="kpi-val" style="color:${color};">${pct} %</span>
+        </div>
+      </div>
+
+      <div class="report-chart-grid">
+        <div class="card">
+          <h2>${icon('i-cal')} Taux de respect</h2>
+          ${renderSvgGauge({ percent: pct, label: 'Respect du préventif', color, size: 200 })}
+        </div>
+        <div class="card">
+          <h2>${icon('i-wrench')} Répartition par type de maintenance</h2>
+          ${renderSvgDonutChart({ slices: typeSlices, size: 180, title: 'Préventif' })}
+        </div>
+      </div>
+    `;
+  } else if (tab === 'costs') {
+    const byEq = Array.isArray(data.by_equipment) ? data.by_equipment : [];
+    const labor = Array.isArray(data.labor) ? data.labor : [];
+    const totalLaborMin = labor.reduce((acc, it) => acc + (it.duration_minutes || 0), 0);
+
+    container.innerHTML = `
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <span class="kpi-label">Coût des pièces consommées</span>
+          <span class="kpi-val text-accent">${formatCents(data.parts_cost_cents || 0)}</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Main d'œuvre cumulée</span>
+          <span class="kpi-val">${Math.round(totalLaborMin / 60)} <small class="hint">h</small></span>
+          <span class="kpi-sub">${totalLaborMin} minutes</span>
+        </div>
+      </div>
+
+      <div class="report-chart-grid">
+        <div class="card">
+          <h2>${icon('i-box')} Coût des pièces par équipement</h2>
+          <div class="table-container">
+            <table class="data-table">
+              <thead><tr><th>Équipement</th><th>Coût (€)</th></tr></thead>
+              <tbody>
+                ${byEq.length ? byEq.map(it => `
+                  <tr>
+                    <td class="font-bold" title="${esc(it.equipment_name || '')}">${esc(it.equipment_code || (it.equipment_id ? it.equipment_id.slice(0, 8) : 'Hors équipement'))}</td>
+                    <td class="mono font-bold">${formatCents(it.cost_cents)}</td>
+                  </tr>
+                `).join('') : '<tr><td colspan="2" class="empty-cell">Aucune pièce consommée.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h2>${icon('i-user')} Temps de main d'œuvre</h2>
+          <div class="table-container">
+            <table class="data-table">
+              <thead><tr><th>Équipement</th><th>Technicien</th><th>Durée</th></tr></thead>
+              <tbody>
+                ${labor.length ? labor.slice(0, 10).map(it => `
+                  <tr>
+                    <td class="mono">${esc(it.equipment_code || (it.equipment_id ? it.equipment_id.slice(0, 8) : 'Hors équipement'))}</td>
+                    <td class="mono">${esc(it.user_display_name || '—')}</td>
+                    <td class="mono font-bold">${it.duration_minutes} min</td>
+                  </tr>
+                `).join('') : '<tr><td colspan="3" class="empty-cell">Aucune saisie de temps.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (tab === 'stock') {
+    const items = Array.isArray(data.items) ? data.items : [];
+    const lowCount = items.filter(it => it.low).length;
+
+    container.innerHTML = `
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <span class="kpi-label">Valeur totale du stock</span>
+          <span class="kpi-val text-accent">${formatCents(data.value_cents || 0)}</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Références en alerte</span>
+          <span class="kpi-val ${lowCount ? 'text-danger' : 'text-ok'}">${lowCount}</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Total articles</span>
+          <span class="kpi-val">${items.length}</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>${icon('i-box')} Valorisation détaillée des pièces</h2>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Référence</th>
+                <th>Désignation</th>
+                <th>Quantité</th>
+                <th>Seuil</th>
+                <th>Prix unitaire</th>
+                <th>Valeur totale</th>
+                <th>État</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.length ? items.map(it => `
+                <tr>
+                  <td class="mono font-bold">${esc(it.reference)}</td>
+                  <td>${esc(it.name)}</td>
+                  <td class="mono ${it.low ? 'text-danger font-bold' : ''}">${it.quantity}</td>
+                  <td class="mono">${it.threshold}</td>
+                  <td class="mono">${formatCents(it.unit_price_cents)}</td>
+                  <td class="mono font-bold">${formatCents(it.value_cents)}</td>
+                  <td>${it.low ? '<span class="badge badge-state-ko">Stock bas</span>' : '<span class="badge badge-state-ok">Normal</span>'}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="7" class="empty-cell">Aucune pièce en magasin.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// ============================================================================
+// 10D. PAGE JOURNAL D'AUDIT (PHASE 7)
+// ============================================================================
+
+function formatAuditAction(action) {
+  switch (action) {
+    case 'create': return 'Création';
+    case 'update': return 'Modification';
+    case 'delete': return 'Suppression';
+    case 'login': return 'Connexion';
+    case 'logout': return 'Déconnexion';
+    case 'password_change': return 'Changement mdp';
+    case 'password_reset_request': return 'Demande réinit. mdp';
+    case 'password_reset_confirm': return 'Confirmation réinit. mdp';
+    case 'export': return 'Export';
+    default: return action || '—';
+  }
+}
+
+function formatAuditEntity(entity) {
+  switch (entity) {
+    case 'users': return 'Utilisateur';
+    case 'sites': return 'Site';
+    case 'production_lines': return 'Ligne de prod.';
+    case 'equipments': return 'Équipement';
+    case 'locations': return 'Emplacement';
+    case 'suppliers': return 'Fournisseur';
+    case 'parts': return 'Pièce';
+    case 'stock_movements': return 'Mvt stock';
+    case 'interventions': return 'Intervention';
+    case 'maintenance_plans': return 'Plan maint.';
+    case 'documents': return 'Document';
+    case 'settings': return 'Paramètre';
+    case 'dashboard': return 'Tableau de bord';
+    default: return entity || '—';
+  }
+}
+
+function auditPage() {
+  if (!hasPermission('audit.view')) {
+    return accessDeniedPage();
+  }
+
+  const isAdm = isAdmin();
+
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-audit')}
+        <div>
+          <h1>Journal d'audit</h1>
+          <p class="page-subtitle">Traçabilité complète des actions, créations, modifications et exports.</p>
+        </div>
+      </div>
+      <div class="page-head-actions">
+        ${renderExportDropdown('audit')}
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <div class="search-input-wrap">
+          ${icon('i-search')}
+          <input type="search" placeholder="Rechercher dans l'audit…" value="${esc(state.auditQuery)}" data-action="filter-audit-query" aria-label="Recherche dans le journal d'audit" />
+        </div>
+
+        <select data-action="filter-audit-action" aria-label="Filtrer par action">
+          <option value="">Toutes les actions</option>
+          <option value="create" ${state.auditAction === 'create' ? 'selected' : ''}>Création</option>
+          <option value="update" ${state.auditAction === 'update' ? 'selected' : ''}>Modification</option>
+          <option value="delete" ${state.auditAction === 'delete' ? 'selected' : ''}>Suppression</option>
+          <option value="login" ${state.auditAction === 'login' ? 'selected' : ''}>Connexion</option>
+          <option value="logout" ${state.auditAction === 'logout' ? 'selected' : ''}>Déconnexion</option>
+          <option value="password_change" ${state.auditAction === 'password_change' ? 'selected' : ''}>Changement mot de passe</option>
+          <option value="export" ${state.auditAction === 'export' ? 'selected' : ''}>Export</option>
+        </select>
+
+        <select data-action="filter-audit-entity" aria-label="Filtrer par entité">
+          <option value="">Toutes les entités</option>
+          <option value="users" ${state.auditEntity === 'users' ? 'selected' : ''}>Utilisateurs</option>
+          <option value="equipments" ${state.auditEntity === 'equipments' ? 'selected' : ''}>Équipements</option>
+          <option value="interventions" ${state.auditEntity === 'interventions' ? 'selected' : ''}>Interventions</option>
+          <option value="parts" ${state.auditEntity === 'parts' ? 'selected' : ''}>Pièces détachées</option>
+          <option value="maintenance_plans" ${state.auditEntity === 'maintenance_plans' ? 'selected' : ''}>Maintenance préventive</option>
+          <option value="documents" ${state.auditEntity === 'documents' ? 'selected' : ''}>Documents</option>
+          <option value="settings" ${state.auditEntity === 'settings' ? 'selected' : ''}>Paramètres</option>
+        </select>
+
+        ${isAdm ? `
+          <select data-action="filter-audit-site" aria-label="Filtrer par site">
+            <option value="">Tous les sites</option>
+            ${state.sites.map(s => `<option value="${esc(s.id)}" ${state.auditSiteId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+          </select>
+        ` : ''}
+      </div>
+      <div class="toolbar-actions">
+        <button type="button" class="btn" data-action="refresh-audit-list">
+          ${icon('i-refresh')} <span>Actualiser</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="auditContainer">
+      <p class="hint">${icon('i-clock')} Chargement du journal d'audit…</p>
+    </div>
+  `;
+}
+
+async function initAuditPageView() {
+  await loadAuditList(true);
+}
+
+async function loadAuditList(reset = false) {
+  const container = document.getElementById('auditContainer');
+  if (!container) return;
+
+  if (reset) {
+    state.auditItems = [];
+    state.auditNextCursor = null;
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement du journal d'audit…</p>`;
+  }
+
+  state.auditLoading = true;
+
+  try {
+    const query = new URLSearchParams();
+    query.set('limit', '50');
+    if (state.auditNextCursor) query.set('cursor', state.auditNextCursor);
+    if (state.auditQuery) query.set('q', state.auditQuery);
+    if (state.auditAction) query.set('action', state.auditAction);
+    if (state.auditEntity) query.set('entity', state.auditEntity);
+    if (state.auditSiteId) query.set('site_id', state.auditSiteId);
+    if (state.auditFrom) query.set('from', state.auditFrom);
+    if (state.auditTo) query.set('to', state.auditTo);
+
+    const res = await api(`/api/audit?${query.toString()}`);
+    const items = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+    state.auditNextCursor = res && res.next_cursor ? res.next_cursor : null;
+
+    if (reset) {
+      state.auditItems = items;
+    } else {
+      state.auditItems = [...state.auditItems, ...items];
+    }
+
+    renderAuditTable();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement de l'audit : ${esc(err.message)}</p>`;
+  } finally {
+    state.auditLoading = false;
+  }
+}
+
+function renderAuditTable() {
+  const container = document.getElementById('auditContainer');
+  if (!container) return;
+
+  const items = state.auditItems || [];
+  const sitesMap = new Map(state.sites.map(s => [s.id, s.name]));
+  const usersMap = new Map((state.usersList || []).map(u => [u.id, u.display_name || u.username]));
+
+  const rows = items.map(it => {
+    const siteName = it.site_id ? (sitesMap.get(it.site_id) || 'Site') : 'Global';
+    const userName = it.user_display_name || (it.user_id ? (usersMap.get(it.user_id) || it.user_id.slice(0, 8)) : 'Système');
+
+    let actionBadgeClass = 'badge';
+    if (it.action === 'create') actionBadgeClass = 'badge badge-state-ok';
+    else if (it.action === 'delete') actionBadgeClass = 'badge badge-state-ko';
+    else if (it.action === 'update') actionBadgeClass = 'badge badge-state-warn';
+
+    return `
+      <tr>
+        <td class="mono font-bold">${esc(formatDate(it.created_at))}</td>
+        <td>${esc(userName)}</td>
+        <td><span class="${actionBadgeClass}">${esc(formatAuditAction(it.action))}</span></td>
+        <td><span class="badge">${esc(formatAuditEntity(it.entity))}</span></td>
+        <td class="mono hint">${it.entity_id ? esc(it.entity_id) : '—'}</td>
+        <td>${esc(siteName)}</td>
+        <td>
+          <button type="button" class="btn sm" data-action="open-audit-detail" data-args="${jsArg(it.id)}" title="Voir les modifications">
+            ${icon('i-doc')} <span>Détail</span>
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Date & heure</th>
+            <th>Utilisateur</th>
+            <th>Action</th>
+            <th>Entité</th>
+            <th>Identifiant</th>
+            <th>Site</th>
+            <th>Détail</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || '<tr><td colspan="7" class="empty-cell">Aucune entrée trouvée dans le journal d\'audit.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    ${renderLoadMore(state.auditNextCursor, 'load-more-audit', state.auditLoading)}
+  `;
+}
+
+async function openAuditDetailModal(auditId) {
+  try {
+    const item = await api(`/api/audit/${encodeURIComponent(auditId)}`);
+    if (!item) return;
+
+    const diffRows = [];
+    if (Array.isArray(item.diff) && item.diff.length > 0) {
+      item.diff.forEach(d => {
+        diffRows.push(`
+          <tr>
+            <td class="mono font-bold">${esc(d.field)}</td>
+            <td class="diff-before mono">${esc(d.before !== null && d.before !== undefined ? JSON.stringify(d.before) : '—')}</td>
+            <td class="diff-after mono">${esc(d.after !== null && d.after !== undefined ? JSON.stringify(d.after) : '—')}</td>
+          </tr>
+        `);
+      });
+    } else if (item.before || item.after) {
+      const allKeys = Array.from(new Set([
+        ...Object.keys(item.before || {}),
+        ...Object.keys(item.after || {}),
+      ]));
+      allKeys.forEach(k => {
+        const b = item.before ? item.before[k] : undefined;
+        const a = item.after ? item.after[k] : undefined;
+        if (JSON.stringify(b) !== JSON.stringify(a)) {
+          diffRows.push(`
+            <tr>
+              <td class="mono font-bold">${esc(k)}</td>
+              <td class="diff-before mono">${esc(b !== undefined ? JSON.stringify(b) : '—')}</td>
+              <td class="diff-after mono">${esc(a !== undefined ? JSON.stringify(a) : '—')}</td>
+            </tr>
+          `);
+        }
+      });
+    }
+
+    const bodyHtml = `
+      <dl class="profile-info-dl">
+        <dt>Date & heure</dt><dd class="mono">${esc(formatDate(item.created_at))}</dd>
+        <dt>Action</dt><dd><span class="badge">${esc(formatAuditAction(item.action))}</span></dd>
+        <dt>Entité</dt><dd><span class="badge">${esc(formatAuditEntity(item.entity))}</span> (${esc(item.entity_id || '—')})</dd>
+        <dt>Adresse IP</dt><dd class="mono">${esc(item.ip || 'Non enregistrée')}</dd>
+      </dl>
+
+      <h3>Modifications apportées</h3>
+      ${diffRows.length ? `
+        <table class="diff-table">
+          <thead>
+            <tr>
+              <th>Champ</th>
+              <th>Avant</th>
+              <th>Après</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${diffRows.join('')}
+          </tbody>
+        </table>
+      ` : '<p class="hint">Aucun détail de modification disponible pour cette entrée.</p>'}
+    `;
+
+    openModal(`Détail d'audit #${item.id.slice(0, 8)}`, bodyHtml, '<button type="button" class="btn" data-action="close-modal">Fermer</button>');
+  } catch (err) {
+    notify(`Impossible de charger l'entrée d'audit : ${err.message}`, 'error');
+  }
 }
 
 // ============================================================================
@@ -1680,6 +3748,40 @@ function profilePage() {
       </section>
 
       <section class="card">
+        <h2>${icon('i-mail')} Adresse e-mail</h2>
+        <p class="hint form-help">Utilisée pour la réception des alertes et la réinitialisation de mot de passe.</p>
+        <form class="form-grid" data-action="profile-email-submit">
+          <div id="profileEmailErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="profileEmailErrorText"></span>
+          </div>
+          <div class="form-group">
+            <label for="profEmailInput">Adresse e-mail</label>
+            <input type="email" id="profEmailInput" name="email" value="${esc(user.email || '')}" placeholder="prenom.nom@example.com" />
+          </div>
+          <button type="submit" class="btn primary" id="profEmailSubmitBtn">
+            <span>Enregistrer mon adresse e-mail</span>
+          </button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>${icon('i-bell')} Préférences d'alertes par e-mail</h2>
+        <p class="hint form-help">Cochez les événements pour lesquels vous souhaitez recevoir une notification par e-mail.</p>
+        <form id="profileNotifsForm" data-action="profile-notifications-submit">
+          <div id="profileNotifsLoading">
+            <p class="hint">${icon('i-clock')} Chargement de vos préférences…</p>
+          </div>
+          <div id="profileNotifsContent" hidden>
+            <div class="notif-prefs-grid" id="profileNotifsGrid"></div>
+            <button type="submit" class="btn primary mt-4" id="profNotifsSubmitBtn">
+              <span>Enregistrer mes alertes</span>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
         <h2>${icon('i-key')} Changer mon mot de passe</h2>
         <p class="hint form-help">La modification de votre mot de passe révoquera automatiquement toutes vos autres sessions actives.</p>
         <form class="form-grid" data-action="own-password-submit">
@@ -1709,6 +3811,102 @@ function profilePage() {
       </section>
     </div>
   `;
+}
+
+const NOTIF_EVENT_LABELS = {
+  stock_low: 'Alerte de stock bas',
+  maintenance_generated: 'Nouveau bon de travail préventif généré',
+  maintenance_overdue: 'Rappel quotidien des maintenances en retard',
+  intervention_critical: 'Intervention critique créée',
+  intervention_assigned: 'Intervention qui m’est assignée',
+};
+
+async function initProfilePageView() {
+  await loadProfileNotifications();
+}
+
+async function loadProfileNotifications() {
+  const loading = document.getElementById('profileNotifsLoading');
+  const content = document.getElementById('profileNotifsContent');
+  const grid = document.getElementById('profileNotifsGrid');
+  if (!grid) return;
+
+  try {
+    const prefs = await api('/api/profile/notifications');
+    state.profileNotifications = prefs || {};
+
+    const entries = Object.entries(state.profileNotifications);
+    if (!entries.length) {
+      grid.innerHTML = '<p class="hint">Aucune notification disponible pour votre rôle.</p>';
+    } else {
+      grid.innerHTML = entries.map(([key, val]) => `
+        <label class="notif-pref-row">
+          <span>${esc(NOTIF_EVENT_LABELS[key] || key)}</span>
+          <input type="checkbox" name="${esc(key)}" ${val ? 'checked' : ''} />
+        </label>
+      `).join('');
+    }
+
+    if (loading) loading.hidden = true;
+    if (content) content.hidden = false;
+  } catch (err) {
+    if (loading) loading.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleProfileEmailSubmit(form) {
+  const errorBox = document.getElementById('profileEmailErrorBox');
+  const errorText = document.getElementById('profileEmailErrorText');
+  const btn = document.getElementById('profEmailSubmitBtn');
+
+  const email = (form.email ? form.email.value : '').trim() || null;
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api(`/api/users/${encodeURIComponent(state.currentUser.id)}`, {
+      method: 'PATCH',
+      body: { email },
+    });
+    if (res) {
+      state.currentUser.email = res.email !== undefined ? res.email : email;
+    }
+    notify('Adresse e-mail mise à jour avec succès.', 'success');
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible de mettre à jour votre adresse e-mail.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleProfileNotificationsSubmit(form) {
+  const btn = document.getElementById('profNotifsSubmitBtn');
+  if (btn) btn.disabled = true;
+
+  const payload = {};
+  const currentKeys = Object.keys(state.profileNotifications || {});
+  currentKeys.forEach(key => {
+    const input = form.elements[key];
+    if (input) {
+      payload[key] = Boolean(input.checked);
+    }
+  });
+
+  try {
+    const res = await api('/api/profile/notifications', {
+      method: 'PUT',
+      body: payload,
+    });
+    state.profileNotifications = res || payload;
+    notify('Vos préférences de notifications ont été enregistrées.', 'success');
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 /** Traite le changement de mot de passe depuis la page profil ou la modale. */
@@ -1916,6 +4114,7 @@ function renderUsersTable() {
         <td>
           <b>${esc(u.display_name || u.username)}</b>
           <br/><span class="hint mono">${esc(u.username)}</span>
+          ${u.email ? `<br/><span class="hint">${esc(u.email)}</span>` : ''}
         </td>
         <td><span class="${roleBadgeClass(u.role)}">${esc(formatRole(u.role))}</span></td>
         <td>${esc(siteName)}</td>
@@ -1997,6 +4196,11 @@ function openCreateUserModal() {
           <input type="text" id="uName" name="display_name" required autocomplete="off" />
         </div>
       </div>
+      <div class="form-group">
+        <label for="uEmail">Adresse e-mail</label>
+        <input type="email" id="uEmail" name="email" placeholder="utilisateur@example.com" />
+        <span class="form-help">Optionnelle. Utilisée pour les alertes et la réinitialisation de mot de passe.</span>
+      </div>
       <div class="form-row">
         <div class="form-group">
           <label for="uRole">Rôle</label>
@@ -2056,6 +4260,10 @@ function openEditUserModal(userId) {
           <input type="text" id="uName" name="display_name" value="${esc(user.display_name)}" required autofocus />
         </div>
       </div>
+      <div class="form-group">
+        <label for="uEmail">Adresse e-mail</label>
+        <input type="email" id="uEmail" name="email" value="${esc(user.email || '')}" placeholder="utilisateur@example.com" />
+      </div>
       <div class="form-row">
         <div class="form-group">
           <label for="uRole">Rôle</label>
@@ -2100,6 +4308,7 @@ async function handleCreateUserSubmit(form) {
 
   const username = form.username.value.trim();
   const display_name = form.display_name.value.trim();
+  const email = (form.email ? form.email.value : '').trim() || null;
   const role = form.role.value;
   const site_id = form.site_id ? (form.site_id.value || null) : (state.site ? state.site.id : null);
   const password = form.password.value;
@@ -2120,7 +4329,7 @@ async function handleCreateUserSubmit(form) {
   try {
     await api('/api/users', {
       method: 'POST',
-      body: { username, display_name, role, site_id, password, active: true },
+      body: { username, display_name, email, role, site_id, password, active: true },
     });
     closeModal();
     notify(`Utilisateur « ${username} » créé avec succès.`, 'success');
@@ -2157,6 +4366,7 @@ async function handleEditUserSubmit(form) {
   if (errorBox) errorBox.hidden = true;
 
   const payload = { display_name };
+  if (form.email) payload.email = form.email.value.trim() || null;
   if (role !== undefined) payload.role = role;
   if (site_id !== undefined) payload.site_id = site_id;
   if (active !== undefined) payload.active = active;
@@ -2983,6 +5193,12 @@ function equipmentsPage() {
       <option value="">Toutes les lignes</option>
       ${state.productionLines.map(l => `<option value="${esc(l.id)}" ${state.equipmentsLineFilter === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
     </select>
+    ${state.selectedEquipmentIds && state.selectedEquipmentIds.size > 0 ? `
+      <button type="button" class="btn primary sm" data-action="open-print-selected-labels">
+        ${icon('i-print')} <span>Imprimer les étiquettes (${state.selectedEquipmentIds.size})</span>
+      </button>
+      <button type="button" class="btn sm" data-action="clear-selected-equipments">Désélectionner</button>
+    ` : ''}
   `;
 
   const viewSwitcherHtml = `
@@ -3008,6 +5224,7 @@ function equipmentsPage() {
       primaryIcon: 'i-plus',
       canCreate,
       viewSwitcherHtml,
+      secondaryActionsHtml: renderExportDropdown('equipments'),
     })}
     <div id="equipmentsContainer">
       <p class="hint">${icon('i-clock')} Chargement des équipements…</p>
@@ -3100,9 +5317,12 @@ function renderEquipmentsListView() {
     return;
   }
 
+  const allSelected = items.length > 0 && items.every(eq => state.selectedEquipmentIds.has(eq.id));
+
   const rows = items.map(eq => {
     const lineLabel = eq.production_line ? eq.production_line.name : '—';
     const parentLabel = eq.parent ? eq.parent.name : '—';
+    const isSelected = state.selectedEquipmentIds.has(eq.id);
 
     const actionButtons = [
       `<button type="button" class="btn sm" title="Fiche détaillée" data-action="open-detail-equipment" data-args="${jsArg(eq.id)}">
@@ -3127,7 +5347,10 @@ function renderEquipmentsListView() {
     }
 
     return `
-      <tr>
+      <tr class="${isSelected ? 'row-selected' : ''}">
+        <td class="td-cb">
+          <input type="checkbox" data-action="toggle-select-equipment" data-args="${jsArg(eq.id)}" ${isSelected ? 'checked' : ''} aria-label="Sélectionner ${esc(eq.code)}" />
+        </td>
         <td>
           <button type="button" class="link-action mono" data-action="open-detail-equipment" data-args="${jsArg(eq.id)}">
             ${esc(eq.code)}
@@ -3152,6 +5375,9 @@ function renderEquipmentsListView() {
       <table class="data-table">
         <thead>
           <tr>
+            <th class="th-cb">
+              <input type="checkbox" data-action="toggle-select-all-equipments" ${allSelected ? 'checked' : ''} aria-label="Tout sélectionner" />
+            </th>
             <th>Code</th>
             <th>Nom de l'équipement</th>
             <th>Statut</th>
@@ -3530,6 +5756,26 @@ async function openEquipmentDetailModal(equipmentId) {
           </div>
         ` : '<p class="hint">Cet équipement ne comporte aucun sous-équipement.</p>'}
       </div>
+
+      <!-- SECTION ÉTIQUETTE ET QR CODE (PHASE 6) -->
+      <div class="detail-card detail-card-spaced qr-card">
+        <div class="detail-nav-bar">
+          <h3>${icon('i-qrcode')} Étiquette et QR code</h3>
+          <button type="button" class="btn sm" data-action="print-equipment-label" data-args="${jsArg(eq.id)}">
+            ${icon('i-print')} <span>Imprimer l'étiquette</span>
+          </button>
+        </div>
+        <div class="qr-preview-box">
+          <img src="/api/equipments/${esc(eq.id)}/qr.svg" alt="QR Code équipement" class="qr-preview-img" width="100" height="100" />
+          <div class="qr-preview-info">
+            <p>Scannez ce QR code sur le terrain pour ouvrir directement la fiche de cet équipement.</p>
+            <div class="hint mono">${esc(eq.code)} — ${esc(eq.name)}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION DOCUMENTS (PHASE 6) -->
+      <div id="equipmentDocumentsContainer"></div>
     `;
 
     const footerHtml = `
@@ -3542,6 +5788,7 @@ async function openEquipmentDetailModal(equipmentId) {
     `;
 
     openModal(`Équipement « ${eq.code} »`, bodyHtml, footerHtml);
+    loadAndRenderEntityDocuments('equipment', eq.id, 'equipmentDocumentsContainer');
   } catch (err) {
     openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
   }
@@ -4631,6 +6878,7 @@ function interventionsPage() {
       searchValue: state.interventionsSearchQuery,
       extraFiltersHtml: extraFilters,
       canCreate,
+      secondaryActionsHtml: renderExportDropdown('interventions'),
       primaryAction: 'open-create-intervention',
       primaryLabel: 'Nouvelle intervention',
       primaryIcon: 'i-plus',
@@ -4846,6 +7094,11 @@ function interventionDetailPage(id) {
         <a href="#/interventions" class="btn" title="Retour à la liste des interventions">
           ${icon('i-arrow-left')} <span>Retour aux interventions</span>
         </a>
+        ${hasPermission('exports.run') ? `
+          <button type="button" class="btn secondary" data-action="download-intervention-pdf" data-args="${jsArg(id)}" title="Télécharger la fiche intervention en PDF">
+            ${icon('i-file-pdf')} <span>Fiche PDF</span>
+          </button>
+        ` : ''}
       </div>
       <div id="interventionDetailContainer">
         <p class="hint">${icon('i-clock')} Chargement des détails de l'intervention…</p>
@@ -4869,6 +7122,7 @@ async function loadInterventionDetail(id) {
     const inter = await fetchInterventionFull(id);
     state.currentInterventionDetail = inter;
     renderInterventionDetailView(inter);
+    loadAndRenderEntityDocuments('intervention', inter.id, 'interventionDocumentsContainer');
   } catch (err) {
     container.innerHTML = `
       <div class="card">
@@ -5338,6 +7592,9 @@ function renderInterventionDetailView(inter) {
         </div>
       </section>
     ` : ''}
+
+    <!-- SECTION DOCUMENTS (PHASE 6) -->
+    <div id="interventionDocumentsContainer"></div>
   `;
 }
 
@@ -6002,11 +8259,17 @@ async function deleteIntervention(id) {
 
 function stockPage() {
   const alertsCount = state.stockAlerts.length || state.partsLowStockCount || 0;
+  const currentList = state.stockActiveTab === 'stock' ? 'stock' : (state.stockActiveTab === 'movements' ? 'movements' : 'parts');
 
   return `
     <div class="page-head">
-      ${icon('i-basket')}
-      <h1>Magasin & Pièces détachées</h1>
+      <div class="page-head-title">
+        ${icon('i-basket')}
+        <h1>Magasin & Pièces détachées</h1>
+      </div>
+      <div class="page-head-actions">
+        ${renderExportDropdown(currentList)}
+      </div>
     </div>
 
     <div class="tabs-bar">
@@ -6083,6 +8346,7 @@ async function loadPartDetail(id) {
     const part = await api(`/api/parts/${encodeURIComponent(id)}`);
     state.currentPartDetail = part;
     renderPartDetailView(part);
+    loadAndRenderEntityDocuments('part', part.id, 'partDocumentsContainer');
   } catch (err) {
     container.innerHTML = `
       <div class="card">
@@ -6375,6 +8639,9 @@ function renderPartDetailView(part) {
         </table>
       </div>
     </section>
+
+    <!-- SECTION DOCUMENTS (PHASE 6) -->
+    <div id="partDocumentsContainer"></div>
   `;
 }
 
@@ -8290,6 +10557,7 @@ function renderMaintenancePlansView() {
       searchValue: state.maintenancePlansSearchQuery,
       extraFiltersHtml: extraFilters,
       canCreate: canManage,
+      secondaryActionsHtml: renderExportDropdown('maintenance_plans'),
       primaryAction: 'open-create-maintenance-plan',
       primaryLabel: 'Nouveau planning',
       primaryIcon: 'i-plus',
@@ -8904,6 +11172,7 @@ async function loadMaintenancePlanDetail(id) {
     state.currentPlanOccurrencesNextCursor = occsRes ? occsRes.next_cursor : null;
 
     renderPlanDetailView(plan);
+    loadAndRenderEntityDocuments('maintenance_plan', plan.id, 'planDocumentsContainer');
   } catch (err) {
     container.innerHTML = `
       <div class="card">
@@ -9102,6 +11371,9 @@ function renderPlanDetailView(plan) {
       </div>
       ${renderLoadMore(state.currentPlanOccurrencesNextCursor, 'load-more-plan-occurrences', state.currentPlanOccurrencesLoading)}
     </section>
+
+    <!-- SECTION DOCUMENTS (PHASE 6) -->
+    <div id="planDocumentsContainer"></div>
   `;
 }
 
@@ -10043,6 +12315,2872 @@ async function updateCounterSelectForEquipment(equipmentId) {
 }
 
 // ============================================================================
+// 14H. MODULE DOCUMENTS ET ÉTIQUETTES (PHASE 6)
+// ============================================================================
+
+const EXT_TO_TYPE_ID = {
+  pdf: 'pdf',
+  jpg: 'jpeg', jpeg: 'jpeg',
+  png: 'png',
+  webp: 'webp',
+  docx: 'docx', doc: 'doc',
+  xlsx: 'xlsx', xls: 'xls',
+  pptx: 'pptx', ppt: 'ppt',
+  txt: 'txt', csv: 'csv', rtf: 'rtf',
+  odt: 'odt', ods: 'ods',
+  dwg: 'dwg', dxf: 'dxf', step: 'step', stp: 'step', iges: 'iges', igs: 'iges',
+  zip: 'zip'
+};
+
+function uploadFileWithProgress(url, formData, onProgress, method = 'POST') {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.responseType = 'json';
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          onProgress(percent);
+        }
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response);
+      } else {
+        const errorMsg = (xhr.response && typeof xhr.response.message === 'string' && xhr.response.message) || `Erreur serveur (${xhr.status})`;
+        const err = new Error(errorMsg);
+        err.status = xhr.status;
+        reject(err);
+      }
+    };
+    xhr.onerror = () => reject(new Error('Erreur réseau lors de l\'envoi du fichier.'));
+    xhr.send(formData);
+  });
+}
+
+// Catégories de documents acceptées par le serveur (valeur stockée, libellé affiché).
+const DOC_CATEGORIES = [
+  ['notice', 'Notice / Manuel'],
+  ['schéma', 'Plan / Schéma'],
+  ['certificat', 'Certificat / Conformité'],
+  ['photo', 'Photo'],
+  ['rapport', 'Rapport'],
+  ['gamme', 'Gamme / Mode opératoire'],
+  ['autre', 'Autre'],
+];
+
+function docCategoryOptions(selected, emptyLabel) {
+  const current = selected || '';
+  return [['', emptyLabel], ...DOC_CATEGORIES]
+    .map(([v, label]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(label)}</option>`)
+    .join('');
+}
+
+async function ensureDocumentSettings() {
+  if (!state.documentSettings) {
+    try {
+      state.documentSettings = await api('/api/settings/documents');
+    } catch (_) {
+      state.documentSettings = {
+        allowed_types: ['pdf', 'jpeg', 'png', 'webp', 'docx', 'doc', 'xlsx', 'xls', 'dwg', 'dxf', 'step'],
+        max_size_mb: 50,
+        catalog: []
+      };
+    }
+  }
+  return state.documentSettings;
+}
+
+function validateDocumentFile(file, settings) {
+  if (!file) return 'Veuillez sélectionner un fichier à téléverser.';
+  const nameParts = file.name.split('.');
+  if (nameParts.length < 2) return 'Le fichier ne comporte pas d\'extension valide.';
+  const ext = nameParts.pop().toLowerCase();
+  const typeId = EXT_TO_TYPE_ID[ext];
+  if (!typeId || !Array.isArray(settings.allowed_types) || !settings.allowed_types.includes(typeId)) {
+    return `Le format « .${ext} » n'est pas autorisé par les paramètres du site.`;
+  }
+  const maxBytes = (settings.max_size_mb || 50) * 1024 * 1024;
+  if (file.size > maxBytes) {
+    return `La taille du fichier (${formatBytes(file.size)}) dépasse le plafond autorisé de ${settings.max_size_mb} Mo.`;
+  }
+  return null;
+}
+
+async function loadAndRenderEntityDocuments(entityType, entityId, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  if (!hasPermission('documents.view')) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="detail-card detail-card-spaced documents-section">
+      <p class="hint">${icon('i-clock')} Chargement des documents…</p>
+    </div>
+  `;
+
+  try {
+    const res = await api(`/api/documents?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`);
+    const rawList = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+    const docs = rawList.map(adaptDocument);
+    state.entityDocuments.set(`${entityType}:${entityId}`, docs);
+    renderEntityDocumentsView(entityType, entityId, containerId, docs);
+  } catch (err) {
+    container.innerHTML = `
+      <div class="detail-card detail-card-spaced documents-section">
+        <p class="hint state-ko">${icon('i-alert')} Impossible de charger les documents : ${esc(err.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function renderEntityDocumentsView(entityType, entityId, containerId, docs) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const canCreate = hasPermission('documents.create');
+  const canDelete = hasPermission('documents.delete');
+
+  const dropzoneHtml = canCreate ? `
+    <div class="dropzone" id="dropzone-${esc(containerId)}" data-entity-type="${esc(entityType)}" data-entity-id="${esc(entityId)}" data-container-id="${esc(containerId)}">
+      ${icon('i-upload')}
+      <div class="dropzone-text">
+        <span>Glissez-déposez un document ici, ou</span>
+        <button type="button" class="btn sm" data-action="open-upload-document" data-args="${jsArg({ entityType, entityId, containerId })}">
+          ${icon('i-plus')} <span>Parcourir</span>
+        </button>
+      </div>
+    </div>
+  ` : '';
+
+  let docsHtml = '';
+  if (!docs.length) {
+    docsHtml = '<p class="hint">Aucun document joint pour le moment.</p>';
+  } else {
+    docsHtml = `
+      <div class="documents-grid">
+        ${docs.map(doc => {
+          const v = doc.current_version || {};
+          const isInline = isDocInline(doc);
+          const author = v.uploaded_by ? v.uploaded_by.display_name : '—';
+          return `
+            <div class="document-card">
+              <div class="document-card-top">
+                <span class="document-card-icon">${icon(docFileIcon(v.mime_type || v.original_name))}</span>
+                <div class="document-card-title-block">
+                  <h4 class="document-card-title">${esc(doc.title)}</h4>
+                  <div class="document-card-filename mono hint">${esc(v.original_name || 'Fichier')}</div>
+                </div>
+                <span class="badge ${doc.category ? 'badge-info' : ''}">${esc(formatDocCategory(doc.category))}</span>
+              </div>
+              ${doc.description ? `<p class="document-card-desc">${esc(doc.description)}</p>` : ''}
+              <div class="document-card-meta hint">
+                <span>Version <b>v${esc(v.version_no || 1)}</b></span>
+                <span>•</span>
+                <span>${esc(formatBytes(v.size_bytes))}</span>
+                <span>•</span>
+                <span>${esc(formatDate(v.uploaded_at))}</span>
+                <span>par ${esc(author)}</span>
+              </div>
+              <div class="document-card-actions">
+                ${isInline ? `
+                  <a href="/api/documents/${esc(doc.id)}/download" target="_blank" rel="noopener noreferrer" class="btn sm" title="Ouvrir dans un nouvel onglet">
+                    ${icon('i-eye')} <span>Ouvrir</span>
+                  </a>
+                ` : ''}
+                <a href="/api/documents/${esc(doc.id)}/download?download=1" class="btn sm" title="Télécharger le fichier">
+                  ${icon('i-download')} <span>Télécharger</span>
+                </a>
+                ${canCreate ? `
+                  <button type="button" class="btn sm" data-action="open-new-version" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Téléverser une nouvelle révision">
+                    ${icon('i-upload')} <span>Nouvelle version</span>
+                  </button>
+                ` : ''}
+                <button type="button" class="btn sm" data-action="open-document-history" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Historique des versions">
+                  ${icon('i-history')} <span>Versions (${esc(doc.versions_count || 1)})</span>
+                </button>
+                ${canCreate ? `
+                  <button type="button" class="btn sm" data-action="open-edit-document" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Modifier le titre ou la catégorie">
+                    ${icon('i-edit')}
+                  </button>
+                ` : ''}
+                ${canDelete ? `
+                  <button type="button" class="btn sm danger" data-action="delete-document" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Supprimer le document">
+                    ${icon('i-trash')}
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  container.innerHTML = `
+    <div class="detail-card detail-card-spaced documents-section">
+      <div class="detail-nav-bar">
+        <h3>${icon('i-doc')} Documents joints (${docs.length})</h3>
+        ${canCreate ? `
+          <button type="button" class="btn sm primary" data-action="open-upload-document" data-args="${jsArg({ entityType, entityId, containerId })}">
+            ${icon('i-plus')} <span>Ajouter un document</span>
+          </button>
+        ` : ''}
+      </div>
+      ${dropzoneHtml}
+      ${docsHtml}
+    </div>
+  `;
+}
+
+function handleDropzoneDragOver(e) {
+  const dz = e.target.closest('.dropzone');
+  if (dz) {
+    e.preventDefault();
+    dz.classList.add('dragover');
+  }
+}
+
+function handleDropzoneDragLeave(e) {
+  const dz = e.target.closest('.dropzone');
+  if (dz) {
+    dz.classList.remove('dragover');
+  }
+}
+
+function handleDropzoneDrop(e) {
+  const dz = e.target.closest('.dropzone');
+  if (dz) {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    const entityType = dz.dataset.entityType;
+    const entityId = dz.dataset.entityId;
+    const containerId = dz.dataset.containerId;
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      openUploadDocModal({ entityType, entityId, containerId, preselectedFile: e.dataTransfer.files[0] });
+    }
+  }
+}
+
+async function openUploadDocModal({ entityType, entityId, containerId, preselectedFile = null }) {
+  await ensureDocumentSettings();
+  const maxMb = state.documentSettings ? state.documentSettings.max_size_mb : 50;
+
+  const bodyHtml = `
+    <form id="docUploadForm" class="modal-form">
+      <input type="hidden" name="entity_type" value="${esc(entityType)}" />
+      <input type="hidden" name="entity_id" value="${esc(entityId)}" />
+      <input type="hidden" name="container_id" value="${esc(containerId || '')}" />
+
+      <div class="form-group">
+        <label for="docFileInput">Fichier à joindre *</label>
+        <input type="file" id="docFileInput" name="file" required />
+        <span class="form-help">Formats autorisés selon réglages. Taille max : <b>${esc(maxMb)} Mo</b>.</span>
+      </div>
+
+      <div class="form-group">
+        <label for="docTitleInput">Titre du document *</label>
+        <input type="text" id="docTitleInput" name="title" required placeholder="ex. Schéma électrique armoire principale" />
+        <span class="form-help">Intitulé clair pour la recherche transversale.</span>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="docCategorySelect">Catégorie</label>
+          <select id="docCategorySelect" name="category">
+            ${docCategoryOptions('', 'Sans catégorie')}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="docDescInput">Description ou notes (optionnel)</label>
+        <textarea id="docDescInput" name="description" rows="2" placeholder="Observations, version papier, indices de révision…"></textarea>
+      </div>
+
+      <div id="docUploadProgressContainer" class="upload-progress-container" hidden>
+        <div class="upload-progress-label">
+          <span>Téléversement en cours…</span>
+          <span id="docUploadProgressPercent" class="mono font-bold">0%</span>
+        </div>
+        <div class="upload-progress-bar">
+          <div id="docUploadProgressFill" class="upload-progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="docUploadError" class="form-error" hidden></div>
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="docUploadForm" class="btn primary" id="btnSubmitDocUpload">
+      ${icon('i-upload')} <span>Téléverser</span>
+    </button>
+  `;
+
+  openModal('Ajouter un document', bodyHtml, footerHtml);
+
+  if (preselectedFile) {
+    const fileInput = document.getElementById('docFileInput');
+    if (fileInput) {
+      const dt = new DataTransfer();
+      dt.items.add(preselectedFile);
+      fileInput.files = dt.files;
+      const titleInput = document.getElementById('docTitleInput');
+      if (titleInput && !titleInput.value) {
+        titleInput.value = preselectedFile.name.replace(/\.[^/.]+$/, '');
+      }
+    }
+  }
+}
+
+async function submitDocUpload(form) {
+  const errBox = document.getElementById('docUploadError');
+  const progBox = document.getElementById('docUploadProgressContainer');
+  const progFill = document.getElementById('docUploadProgressFill');
+  const progText = document.getElementById('docUploadProgressPercent');
+  const submitBtn = document.getElementById('btnSubmitDocUpload');
+
+  if (errBox) errBox.hidden = true;
+
+  const fileInput = form.file;
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+  const docSettings = await ensureDocumentSettings();
+
+  const valErr = validateDocumentFile(file, docSettings);
+  if (valErr) {
+    if (errBox) {
+      errBox.textContent = valErr;
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  // Seuls les champs attendus par le serveur : il refuse tout champ multipart inconnu.
+  const formData = new FormData();
+  formData.append('entity_type', form.entity_type.value);
+  formData.append('entity_id', form.entity_id.value);
+  formData.append('title', form.title.value.trim());
+  if (form.category.value) formData.append('category', form.category.value);
+  if (form.description.value.trim()) formData.append('description', form.description.value.trim());
+  formData.append('file', file);
+  const entityType = form.entity_type.value;
+  const entityId = form.entity_id.value;
+  const containerId = form.container_id.value;
+
+  if (progBox) progBox.hidden = false;
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    await uploadFileWithProgress('/api/documents', formData, (percent) => {
+      if (progFill) progFill.style.width = `${percent}%`;
+      if (progText) progText.textContent = `${percent}%`;
+    });
+
+    closeModal();
+    notify('Document ajouté avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    if (progBox) progBox.hidden = true;
+    if (submitBtn) submitBtn.disabled = false;
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors du téléversement.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function openNewVersionModal({ documentId, entityType, entityId, containerId }) {
+  await ensureDocumentSettings();
+  const maxMb = state.documentSettings ? state.documentSettings.max_size_mb : 50;
+
+  const bodyHtml = `
+    <form id="docVersionForm" class="modal-form">
+      <input type="hidden" name="document_id" value="${esc(documentId)}" />
+      <input type="hidden" name="entity_type" value="${esc(entityType || '')}" />
+      <input type="hidden" name="entity_id" value="${esc(entityId || '')}" />
+      <input type="hidden" name="container_id" value="${esc(containerId || '')}" />
+
+      <div class="form-group">
+        <label for="versionFileInput">Nouveau fichier de révision *</label>
+        <input type="file" id="versionFileInput" name="file" required />
+        <span class="form-help">Formats autorisés selon réglages. Max : <b>${esc(maxMb)} Mo</b>.</span>
+      </div>
+
+      <div class="form-group">
+        <label for="versionCommentInput">Commentaire de révision (optionnel)</label>
+        <input type="text" id="versionCommentInput" name="comment" placeholder="ex. Mise à jour plan de câblage 2026" />
+      </div>
+
+      <div id="versionUploadProgressContainer" class="upload-progress-container" hidden>
+        <div class="upload-progress-label">
+          <span>Envoi de la nouvelle version…</span>
+          <span id="versionUploadProgressPercent" class="mono font-bold">0%</span>
+        </div>
+        <div class="upload-progress-bar">
+          <div id="versionUploadProgressFill" class="upload-progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="versionUploadError" class="form-error" hidden></div>
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="docVersionForm" class="btn primary" id="btnSubmitDocVersion">
+      ${icon('i-upload')} <span>Enregistrer la nouvelle version</span>
+    </button>
+  `;
+
+  openModal('Nouvelle version du document', bodyHtml, footerHtml);
+}
+
+async function submitNewVersion(form) {
+  const errBox = document.getElementById('versionUploadError');
+  const progBox = document.getElementById('versionUploadProgressContainer');
+  const progFill = document.getElementById('versionUploadProgressFill');
+  const progText = document.getElementById('versionUploadProgressPercent');
+  const submitBtn = document.getElementById('btnSubmitDocVersion');
+
+  if (errBox) errBox.hidden = true;
+
+  const fileInput = form.file;
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+  const docSettings = await ensureDocumentSettings();
+
+  const valErr = validateDocumentFile(file, docSettings);
+  if (valErr) {
+    if (errBox) {
+      errBox.textContent = valErr;
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  if (form.comment && form.comment.value.trim()) {
+    formData.append('comment', form.comment.value.trim());
+  }
+
+  const documentId = form.document_id.value;
+  const entityType = form.entity_type.value;
+  const entityId = form.entity_id.value;
+  const containerId = form.container_id.value;
+
+  if (progBox) progBox.hidden = false;
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    await uploadFileWithProgress(`/api/documents/${encodeURIComponent(documentId)}/versions`, formData, (percent) => {
+      if (progFill) progFill.style.width = `${percent}%`;
+      if (progText) progText.textContent = `${percent}%`;
+    });
+
+    closeModal();
+    notify('Nouvelle version enregistrée avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    if (progBox) progBox.hidden = true;
+    if (submitBtn) submitBtn.disabled = false;
+    if (errBox) {
+      if (err.status === 409) {
+        errBox.textContent = 'Ce fichier est strictement identique à la version actuelle du document (doublon rejeté).';
+      } else {
+        errBox.textContent = err.message || 'Erreur lors de l\'envoi de la révision.';
+      }
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function openDocumentHistoryModal({ documentId, entityType, entityId, containerId }) {
+  openModal('Historique des versions', `<p class="hint">${icon('i-clock')} Chargement des versions…</p>`);
+
+  try {
+    const [doc, versionsRes] = await Promise.all([
+      api(`/api/documents/${encodeURIComponent(documentId)}`),
+      api(`/api/documents/${encodeURIComponent(documentId)}/versions`),
+    ]);
+
+    const versions = Array.isArray(versionsRes) ? versionsRes : (versionsRes && Array.isArray(versionsRes.items) ? versionsRes.items : []);
+    const canCreate = hasPermission('documents.create');
+    const curVerNo = doc.current_version ? doc.current_version.version_no : (versions[0] ? versions[0].version_no : 1);
+
+    const rows = versions.map(v => {
+      const isCur = v.version_no === curVerNo;
+      const author = v.uploaded_by ? v.uploaded_by.display_name : '—';
+      return `
+        <tr>
+          <td>
+            <b class="mono">v${esc(v.version_no)}</b>
+            ${isCur ? ' <span class="badge badge-active-on">Actuelle</span>' : ''}
+          </td>
+          <td>
+            <div class="mono font-bold">${esc(v.original_name)}</div>
+            ${v.comment ? `<div class="hint">« ${esc(v.comment)} »</div>` : ''}
+          </td>
+          <td class="mono">${esc(formatBytes(v.size_bytes))}</td>
+          <td>
+            <div>${esc(author)}</div>
+            <div class="hint">${esc(formatDate(v.uploaded_at))}</div>
+          </td>
+          <td>
+            <div class="cell-actions">
+              <a href="/api/documents/${esc(documentId)}/download?version=${esc(v.version_no)}&download=1" class="btn sm" title="Télécharger cette version">
+                ${icon('i-download')} <span>Télécharger</span>
+              </a>
+              ${canCreate && !isCur ? `
+                <button type="button" class="btn sm primary" data-action="restore-doc-version" data-args="${jsArg({ documentId, versionNo: v.version_no, entityType, entityId, containerId })}" title="Restaurer cette version en créant une nouvelle révision">
+                  ${icon('i-refresh')} <span>Restaurer</span>
+                </button>
+              ` : ''}
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const bodyHtml = `
+      <div class="modal-intro">
+        <h3>${esc(doc.title)}</h3>
+        <p class="hint">Consultez et téléchargez les anciennes versions de ce document, ou restaurez une révision antérieure.</p>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Fichier original & Commentaire</th>
+              <th>Taille</th>
+              <th>Auteur & Date</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows : '<tr><td colspan="5" class="empty-cell">Aucune version répertoriée.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const footerHtml = `<button type="button" class="btn" data-action="close-modal">Fermer</button>`;
+    openModal(`Versions : ${doc.title}`, bodyHtml, footerHtml);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function restoreDocumentVersion({ documentId, versionNo, entityType, entityId, containerId }) {
+  const ok = await confirmDialog(
+    'Restaurer une version',
+    `Voulez-vous restaurer la version v${versionNo} ? Cela créera une nouvelle version active basée sur cette archive.`,
+    'Restaurer'
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionNo)}/restore`, { method: 'POST' });
+    notify(`Version v${versionNo} restaurée avec succès.`, 'success');
+    closeModal();
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    notify(err.message || 'Erreur lors de la restauration.', 'error');
+  }
+}
+
+async function openEditDocumentModal({ documentId, entityType, entityId, containerId }) {
+  openModal('Modifier le document', `<p class="hint">${icon('i-clock')} Chargement du document…</p>`);
+
+  try {
+    const doc = await api(`/api/documents/${encodeURIComponent(documentId)}`);
+
+    const bodyHtml = `
+      <form id="editDocForm" class="modal-form">
+        <input type="hidden" name="document_id" value="${esc(documentId)}" />
+        <input type="hidden" name="entity_type" value="${esc(entityType || '')}" />
+        <input type="hidden" name="entity_id" value="${esc(entityId || '')}" />
+        <input type="hidden" name="container_id" value="${esc(containerId || '')}" />
+
+        <div class="form-group">
+          <label for="editDocTitleInput">Titre du document *</label>
+          <input type="text" id="editDocTitleInput" name="title" required value="${esc(doc.title)}" />
+        </div>
+
+        <div class="form-group">
+          <label for="editDocCategorySelect">Catégorie</label>
+          <select id="editDocCategorySelect" name="category">
+            ${docCategoryOptions(doc.category, 'Sans catégorie')}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="editDocDescInput">Description ou notes</label>
+          <textarea id="editDocDescInput" name="description" rows="3">${esc(doc.description || '')}</textarea>
+        </div>
+
+        <div id="editDocError" class="form-error" hidden></div>
+      </form>
+    `;
+
+    const footerHtml = `
+      <button type="button" class="btn" data-action="close-modal">Annuler</button>
+      <button type="submit" form="editDocForm" class="btn primary">
+        ${icon('i-check')} <span>Enregistrer</span>
+      </button>
+    `;
+
+    openModal('Modifier le document', bodyHtml, footerHtml);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function submitEditDocument(form) {
+  const errBox = document.getElementById('editDocError');
+  if (errBox) errBox.hidden = true;
+
+  const documentId = form.document_id.value;
+  const entityType = form.entity_type.value;
+  const entityId = form.entity_id.value;
+  const containerId = form.container_id.value;
+
+  const payload = {
+    title: form.title.value.trim(),
+    category: form.category.value || null,
+    description: form.description.value.trim() || null
+  };
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(documentId)}`, {
+      method: 'PATCH',
+      body: payload
+    });
+
+    closeModal();
+    notify('Document mis à jour avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la modification.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function deleteDocument({ documentId, entityType, entityId, containerId }) {
+  const ok = await confirmDialog(
+    'Supprimer le document',
+    'Voulez-vous supprimer ce document ? L\'ensemble de ses versions sera archivé.',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+    notify('Document supprimé avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    notify(err.message || 'Erreur lors de la suppression.', 'error');
+  }
+}
+
+function documentsPage() {
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-doc')}
+        <div>
+          <h1>Documents et pièces jointes</h1>
+          <p class="page-subtitle">Vue transversale des manuels, schémas, procédures et rapports de maintenance.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-box">
+          ${icon('i-search')}
+          <input type="search" id="documentsSearchInput" placeholder="Rechercher par titre ou nom de fichier…" value="${esc(state.documentsSearchQuery)}" autocomplete="off" />
+        </div>
+        <div class="filter-select-wrap">
+          <label for="documentsEntityTypeSelect" class="sr-only">Type d'entité</label>
+          <select id="documentsEntityTypeSelect" data-action="filter-documents-entity-type">
+            <option value="" ${!state.documentsEntityTypeFilter ? 'selected' : ''}>Toutes les entités</option>
+            <option value="equipment" ${state.documentsEntityTypeFilter === 'equipment' ? 'selected' : ''}>Équipements</option>
+            <option value="intervention" ${state.documentsEntityTypeFilter === 'intervention' ? 'selected' : ''}>Interventions</option>
+            <option value="part" ${state.documentsEntityTypeFilter === 'part' ? 'selected' : ''}>Pièces détachées</option>
+            <option value="maintenance_plan" ${state.documentsEntityTypeFilter === 'maintenance_plan' ? 'selected' : ''}>Plannings préventifs</option>
+          </select>
+        </div>
+        <div class="filter-select-wrap">
+          <label for="documentsCategorySelect" class="sr-only">Catégorie</label>
+          <select id="documentsCategorySelect" data-action="filter-documents-category">
+            ${docCategoryOptions(state.documentsCategoryFilter, 'Toutes les catégories')}
+          </select>
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <span id="documentsCountInfo" class="hint mono"></span>
+      </div>
+    </div>
+
+    <div id="documentsListContainer">
+      <p class="hint">${icon('i-clock')} Chargement des documents…</p>
+    </div>
+  `;
+}
+
+async function initDocumentsPageView() {
+  await loadDocumentsList(true);
+}
+
+async function loadDocumentsList(reset = true) {
+  const container = document.getElementById('documentsListContainer');
+  if (!container) return;
+
+  if (reset) {
+    state.documents = [];
+    state.documentsNextCursor = null;
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des documents…</p>`;
+  }
+
+  state.documentsLoading = true;
+
+  try {
+    const params = new URLSearchParams();
+    if (state.documentsSearchQuery) params.set('q', state.documentsSearchQuery);
+    if (state.documentsEntityTypeFilter) params.set('entity_type', state.documentsEntityTypeFilter);
+    if (state.documentsCategoryFilter) params.set('category', state.documentsCategoryFilter);
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    params.set('limit', '25');
+    if (!reset && state.documentsNextCursor) {
+      params.set('cursor', state.documentsNextCursor);
+    }
+
+    const res = await api(`/api/documents/search?${params.toString()}`);
+    const rawList = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+    const items = rawList.map(adaptDocument);
+    const nextCursor = res && res.next_cursor ? res.next_cursor : null;
+
+    if (reset) {
+      state.documents = items;
+    } else {
+      state.documents = state.documents.concat(items);
+    }
+    state.documentsNextCursor = nextCursor;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement des documents : ${esc(err.message)}</p>`;
+    state.documentsLoading = false;
+    return;
+  }
+
+  state.documentsLoading = false;
+  renderDocumentsListView();
+}
+
+function renderDocumentsListView() {
+  const container = document.getElementById('documentsListContainer');
+  if (!container) return;
+
+  const countInfo = document.getElementById('documentsCountInfo');
+  if (countInfo) {
+    const len = state.documents.length;
+    countInfo.textContent = `${len} document${len > 1 ? 's' : ''}`;
+  }
+
+  if (!state.documents.length) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint">Aucun document ne correspond aux filtres appliqués.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const canCreate = hasPermission('documents.create');
+  const canDelete = hasPermission('documents.delete');
+
+  const rows = state.documents.map(doc => {
+    const v = doc.current_version || {};
+    const ent = doc.entity || {};
+    const isInline = isDocInline(doc);
+    const author = v.uploaded_by ? v.uploaded_by.display_name : '—';
+
+    let entityLinkHtml = '—';
+    if (ent.type === 'equipment') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Équipement</span>
+        <button type="button" class="link-action font-bold mono" data-action="open-detail-equipment" data-args="${jsArg(ent.id)}">
+          ${esc(ent.code || ent.label || 'Équipement')}
+        </button>
+      `;
+    } else if (ent.type === 'intervention') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Intervention</span>
+        <a href="#/interventions/${esc(ent.id)}" class="link-action font-bold mono">
+          ${esc(ent.code || ent.label || 'Intervention')}
+        </a>
+      `;
+    } else if (ent.type === 'part') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Pièce</span>
+        <a href="#/pieces/${esc(ent.id)}" class="link-action font-bold mono">
+          ${esc(ent.code || ent.label || 'Pièce')}
+        </a>
+      `;
+    } else if (ent.type === 'maintenance_plan') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Planning</span>
+        <a href="#/maintenance-preventive/${esc(ent.id)}" class="link-action font-bold mono">
+          ${esc(ent.code || ent.label || 'Planning')}
+        </a>
+      `;
+    }
+
+    return `
+      <tr>
+        <td>
+          <div class="cell-doc-title">
+            <span class="doc-icon">${icon(docFileIcon(v.mime_type || v.original_name))}</span>
+            <div>
+              <b>${esc(doc.title)}</b>
+              <div class="hint mono">${esc(v.original_name || '')}</div>
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="cell-entity">${entityLinkHtml}</div>
+        </td>
+        <td><span class="badge ${doc.category ? 'badge-info' : ''}">${esc(formatDocCategory(doc.category))}</span></td>
+        <td>
+          <span class="badge font-bold">v${esc(v.version_no || 1)}</span>
+          <span class="hint mono">${esc(formatBytes(v.size_bytes))}</span>
+        </td>
+        <td>
+          <div>${esc(author)}</div>
+          <div class="hint">${esc(formatDate(v.uploaded_at))}</div>
+        </td>
+        <td>
+          <div class="cell-actions">
+            ${isInline ? `
+              <a href="/api/documents/${esc(doc.id)}/download" target="_blank" rel="noopener noreferrer" class="btn sm" title="Ouvrir dans un nouvel onglet">
+                ${icon('i-eye')} <span>Ouvrir</span>
+              </a>
+            ` : ''}
+            <a href="/api/documents/${esc(doc.id)}/download?download=1" class="btn sm" title="Télécharger">
+              ${icon('i-download')}
+            </a>
+            ${canCreate ? `
+              <button type="button" class="btn sm" data-action="open-new-version" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Nouvelle version">
+                ${icon('i-upload')}
+              </button>
+            ` : ''}
+            <button type="button" class="btn sm" data-action="open-document-history" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Historique">
+              ${icon('i-history')}
+            </button>
+            ${canCreate ? `
+              <button type="button" class="btn sm" data-action="open-edit-document" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Modifier">
+                ${icon('i-edit')}
+              </button>
+            ` : ''}
+            ${canDelete ? `
+              <button type="button" class="btn sm danger" data-action="delete-document" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Supprimer">
+                ${icon('i-trash')}
+              </button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Entité liée</th>
+            <th>Catégorie</th>
+            <th>Version & Taille</th>
+            <th>Auteur & Date</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+    ${renderLoadMore(state.documentsNextCursor, 'load-more-documents', state.documentsLoading)}
+  `;
+}
+
+async function loadMoreDocuments() {
+  if (!state.documentsNextCursor || state.documentsLoading) return;
+  await loadDocumentsList(false);
+}
+
+function labelsPrintPage() {
+  return `
+    <div class="labels-page-wrap">
+      <div class="labels-toolbar no-print">
+        <div class="labels-toolbar-left">
+          <a href="#/equipements" class="btn">
+            ${icon('i-arrow-left')} <span>Retour aux équipements</span>
+          </a>
+          <h2>${icon('i-qrcode')} Impression d'étiquettes QR Code</h2>
+        </div>
+        <div class="labels-toolbar-right">
+          <div class="labels-offset-ctrl" id="labelsOffsetBox">
+            <label for="labelsOffsetInput">Commencer à la position n° :</label>
+            <input type="number" id="labelsOffsetInput" min="1" max="100" value="1" data-action="change-labels-offset" />
+          </div>
+          <button type="button" class="btn primary" data-action="trigger-print">
+            ${icon('i-print')} <span>Imprimer</span>
+          </button>
+          ${hasPermission('settings.edit') ? `
+            <a href="#/parametres" class="btn" title="Modifier le format d'étiquette">
+              ${icon('i-gear')} <span>Format</span>
+            </a>
+          ` : ''}
+        </div>
+      </div>
+
+      <div id="labelsPrintContainer">
+        <p class="hint">${icon('i-clock')} Chargement du format et des équipements…</p>
+      </div>
+    </div>
+  `;
+}
+
+async function initLabelsPrintPageView() {
+  const container = document.getElementById('labelsPrintContainer');
+  if (!container) return;
+
+  const { query } = currentRouteInfo();
+  let ids = [];
+  if (query) {
+    const params = new URLSearchParams(query);
+    const idsParam = params.get('ids');
+    if (idsParam) {
+      ids = idsParam.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  if (!ids.length && state.selectedEquipmentIds.size > 0) {
+    ids = Array.from(state.selectedEquipmentIds);
+  }
+
+  if (!ids.length) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint">Aucun équipement sélectionné pour l'impression.</p>
+        <p><a href="#/equipements" class="btn primary">${icon('i-gear')} <span>Sélectionner des équipements</span></a></p>
+      </div>
+    `;
+    return;
+  }
+
+  try {
+    const [fmt, ...equipments] = await Promise.all([
+      api('/api/settings/labels').catch(() => ({
+        mode: 'sheet', page: 'A4', columns: 3, rows: 8, margin_top_mm: 10, margin_left_mm: 7, spacing_h_mm: 2, spacing_v_mm: 0,
+        width_mm: 64, height_mm: 34, qr_size_mm: 20, show_code: true, show_name: true, show_site: false, show_line: false
+      })),
+      ...ids.map(id => api(`/api/equipments/${encodeURIComponent(id)}`).catch(() => null))
+    ]);
+
+    state.labelSettings = labelFromServer(fmt);
+    state.currentPrintEquipments = equipments.filter(Boolean);
+    state.currentPrintOffset = 1;
+
+    renderLabelsSheet();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+function renderLabelsSheet() {
+  const container = document.getElementById('labelsPrintContainer');
+  if (!container) return;
+
+  const fmt = state.labelSettings || {};
+  const equips = state.currentPrintEquipments || [];
+  const offset = Math.max(1, parseInt(state.currentPrintOffset || 1, 10));
+
+  const offsetBox = document.getElementById('labelsOffsetBox');
+  if (offsetBox) {
+    offsetBox.hidden = fmt.mode !== 'sheet';
+  }
+
+  if (fmt.mode === 'single') {
+    container.innerHTML = `
+      <div class="labels-single-container">
+        ${equips.map(eq => renderStickerHtml(eq, fmt)).join('')}
+      </div>
+    `;
+    const singleWrap = container.querySelector('.labels-single-container');
+    if (singleWrap) {
+      singleWrap.style.setProperty('--label-w', `${fmt.width_mm || 64}mm`);
+      singleWrap.style.setProperty('--label-h', `${fmt.height_mm || 34}mm`);
+    }
+    container.querySelectorAll('.label-sticker').forEach(stk => {
+      stk.style.setProperty('--qr-size', `${fmt.qr_size_mm || 20}mm`);
+    });
+    return;
+  }
+
+  const cols = fmt.columns || 3;
+  const rows = fmt.rows || 8;
+  const stickersPerPage = cols * rows;
+
+  const cells = [];
+  for (let i = 1; i < offset; i++) {
+    cells.push('<div class="label-sticker sticker-empty"></div>');
+  }
+  for (const eq of equips) {
+    cells.push(renderStickerHtml(eq, fmt));
+  }
+
+  const pagesHtml = [];
+  for (let i = 0; i < cells.length; i += stickersPerPage) {
+    const pageCells = cells.slice(i, i + stickersPerPage);
+    pagesHtml.push(`
+      <div class="label-sheet-page label-page-${esc(fmt.page || 'A4').toLowerCase()}">
+        <div class="label-sheet-grid">
+          ${pageCells.join('')}
+        </div>
+      </div>
+    `);
+  }
+
+  container.innerHTML = pagesHtml.join('');
+
+  container.querySelectorAll('.label-sheet-page').forEach(page => {
+    page.style.setProperty('--sheet-cols', cols);
+    page.style.setProperty('--sheet-rows', rows);
+    page.style.setProperty('--margin-top', `${fmt.margin_top_mm || 10}mm`);
+    page.style.setProperty('--margin-left', `${fmt.margin_left_mm || 7}mm`);
+    page.style.setProperty('--spacing-h', `${fmt.spacing_h_mm || 2}mm`);
+    page.style.setProperty('--spacing-v', `${fmt.spacing_v_mm || 0}mm`);
+    page.style.setProperty('--sticker-w', `${fmt.width_mm || 64}mm`);
+    page.style.setProperty('--sticker-h', `${fmt.height_mm || 34}mm`);
+  });
+
+  container.querySelectorAll('.label-sticker').forEach(stk => {
+    stk.style.setProperty('--qr-size', `${fmt.qr_size_mm || 20}mm`);
+  });
+}
+
+function renderStickerHtml(eq, fmt) {
+  const lineLabel = eq.production_line ? `${eq.production_line.code}` : '';
+  const siteLabel = eq.site ? `${eq.site.name}` : (state.site ? state.site.name : '');
+  const qrSize = fmt.qr_size_mm || 20;
+
+  return `
+    <div class="label-sticker">
+      <div class="sticker-qr">
+        <img src="/api/equipments/${esc(eq.id)}/qr.svg" alt="QR Code" width="${qrSize * 4}" height="${qrSize * 4}" />
+      </div>
+      <div class="sticker-info">
+        ${fmt.show_code ? `<div class="sticker-code mono">${esc(eq.code)}</div>` : ''}
+        ${fmt.show_name ? `<div class="sticker-name">${esc(eq.name)}</div>` : ''}
+        ${fmt.show_line && lineLabel ? `<div class="sticker-line hint mono">${esc(lineLabel)}</div>` : ''}
+        ${fmt.show_site && siteLabel ? `<div class="sticker-site hint">${esc(siteLabel)}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function changeLabelsOffset(val) {
+  const num = parseInt(val, 10);
+  if (!isNaN(num) && num >= 1) {
+    state.currentPrintOffset = num;
+    renderLabelsSheet();
+  }
+}
+
+// ============================================================================
+// 14I. MODULE PARAMÈTRES (PHASE 6)
+// ============================================================================
+
+function settingsPage() {
+  if (!hasPermission('settings.view')) {
+    return accessDeniedPage();
+  }
+
+  const tab = state.settingsTab || 'general';
+
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-cog')}
+        <div>
+          <h1>Paramètres du système</h1>
+          <p class="page-subtitle">Configuration globale, sécurité, serveur e-mail, alertes, stockage et dispositions.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs-nav settings-tabs-nav">
+      <button type="button" class="tab-btn ${tab === 'general' ? 'on' : ''}" data-action="switch-settings-tab" data-args="general">
+        ${icon('i-cog')} <span>Général</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'security' ? 'on' : ''}" data-action="switch-settings-tab" data-args="security">
+        ${icon('i-shield')} <span>Sécurité</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'stock' ? 'on' : ''}" data-action="switch-settings-tab" data-args="stock">
+        ${icon('i-box')} <span>Stock</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'smtp' ? 'on' : ''}" data-action="switch-settings-tab" data-args="smtp">
+        ${icon('i-mail')} <span>E-mail & SMTP</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'alerts' ? 'on' : ''}" data-action="switch-settings-tab" data-args="alerts">
+        ${icon('i-bell')} <span>Alertes par défaut</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'audit' ? 'on' : ''}" data-action="switch-settings-tab" data-args="audit">
+        ${icon('i-audit')} <span>Audit</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'storage' ? 'on' : ''}" data-action="switch-settings-tab" data-args="storage">
+        ${icon('i-database')} <span>Stockage</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'documents' ? 'on' : ''}" data-action="switch-settings-tab" data-args="documents">
+        ${icon('i-folder')} <span>Types de fichiers</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'labels' ? 'on' : ''}" data-action="switch-settings-tab" data-args="labels">
+        ${icon('i-qrcode')} <span>Étiquettes</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'dashboard' ? 'on' : ''}" data-action="switch-settings-tab" data-args="dashboard">
+        ${icon('i-dash')} <span>Tableau de bord</span>
+      </button>
+    </div>
+
+    <div id="settingsTabContent">
+      <p class="hint">${icon('i-clock')} Chargement des paramètres…</p>
+    </div>
+  `;
+}
+
+async function initSettingsPageView() {
+  const tab = state.settingsTab || 'general';
+  await switchSettingsTab(tab);
+}
+
+async function switchSettingsTab(tab) {
+  state.settingsTab = tab;
+
+  document.querySelectorAll('.settings-tabs-nav .tab-btn').forEach(btn => {
+    btn.classList.toggle('on', btn.dataset.args === tab);
+  });
+
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  if (tab === 'general') {
+    await loadSettingsGeneral();
+  } else if (tab === 'security') {
+    await loadSettingsSecurity();
+  } else if (tab === 'stock') {
+    await loadSettingsStock();
+  } else if (tab === 'smtp') {
+    await loadSettingsSmtp();
+  } else if (tab === 'alerts') {
+    await loadSettingsAlerts();
+  } else if (tab === 'audit') {
+    await loadSettingsAudit();
+  } else if (tab === 'storage') {
+    await loadSettingsStorage();
+  } else if (tab === 'documents') {
+    await loadSettingsDocuments();
+  } else if (tab === 'labels') {
+    await loadSettingsLabels();
+  } else if (tab === 'dashboard') {
+    await loadSettingsDashboardDefaults(state.settingsDashboardRole || 'responsable');
+  }
+}
+
+/** Stockage renvoyé par le serveur (kind, label, is_active) vers les noms utilisés par l'écran. */
+function adaptStorage(b) {
+  return {
+    ...b,
+    driver: b.kind || b.driver,
+    name: b.label || b.name || '',
+    active: b.is_active !== undefined ? !!b.is_active : !!b.active,
+  };
+}
+
+async function loadSettingsStorage() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.storageLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des stockages…</p>`;
+
+  try {
+    const list = await api('/api/settings/storage');
+    state.storageBackends = (Array.isArray(list) ? list : (list && Array.isArray(list.items) ? list.items : [])).map(adaptStorage);
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement des stockages : ${esc(err.message)}</p>`;
+    state.storageLoading = false;
+    return;
+  }
+
+  state.storageLoading = false;
+  renderSettingsStorageView();
+}
+
+function renderSettingsStorageView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+
+  const rows = state.storageBackends.map(b => {
+    const isFolder = b.driver === 'folder';
+    const driverLabel = isFolder ? 'Dossier local / UNC' : 'Stockage objet S3';
+    const cfg = b.config || {};
+    const pathInfo = isFolder
+      ? (cfg.path ? cfg.path : 'Dossier par défaut du serveur')
+      : `${cfg.bucket || ''} (${cfg.endpoint || ''})`;
+
+    return `
+      <tr>
+        <td>
+          <b>${esc(b.name)}</b>
+          ${b.active ? ' <span class="badge badge-active-on">Actif</span>' : '<span class="badge badge-active-off">Inactif</span>'}
+        </td>
+        <td>
+          <span class="badge ${isFolder ? 'badge-info' : 'badge-subtle'}">${esc(driverLabel)}</span>
+        </td>
+        <td class="mono hint">${esc(pathInfo)}</td>
+        <td>
+          <div class="cell-actions">
+            <button type="button" class="btn sm" data-action="test-storage" data-args="${jsArg(b.id)}" title="Vérifier l'accessibilité en écriture et lecture">
+              ${icon('i-check')} <span>Tester la connexion</span>
+            </button>
+            ${canEdit && !b.active ? `
+              <button type="button" class="btn sm primary" data-action="activate-storage" data-args="${jsArg(b.id)}" title="Définir comme stockage actif pour les nouveaux fichiers">
+                ${icon('i-check')} <span>Activer</span>
+              </button>
+            ` : ''}
+            ${canEdit ? `
+              <button type="button" class="btn sm" data-action="open-edit-storage" data-args="${jsArg(b.id)}" title="Modifier">
+                ${icon('i-edit')}
+              </button>
+              <button type="button" class="btn sm danger" data-action="delete-storage" data-args="${jsArg(b.id)}" title="Supprimer">
+                ${icon('i-trash')}
+              </button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="detail-nav-bar">
+        <div>
+          <h2>${icon('i-database')} Emplacements de stockage des documents</h2>
+          <p class="hint">Apex Maint prend en charge le stockage sur système de fichiers local / partage réseau UNC, ou sur serveur S3 (AWS, MinIO, Scaleway, Ceph).</p>
+        </div>
+        ${canEdit ? `
+          <button type="button" class="btn primary" data-action="open-create-storage">
+            ${icon('i-plus')} <span>Ajouter un stockage</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Nom du stockage</th>
+              <th>Pilote</th>
+              <th>Chemin / Bucket</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows : '<tr><td colspan="4" class="empty-cell">Aucun stockage configuré.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function testStorageConnection(storageId) {
+  try {
+    const res = await api(`/api/settings/storage/${encodeURIComponent(storageId)}/test`, { method: 'POST' });
+    if (res && res.ok) {
+      notify('Test de connexion réussi : écriture et lecture validées.', 'success');
+    } else {
+      notify(`Échec du test de connexion : ${(res && res.message) || 'Inaccessible'}`, 'error');
+    }
+  } catch (err) {
+    notify(`Échec du test de connexion : ${err.message}`, 'error');
+  }
+}
+
+async function activateStorage(storageId) {
+  try {
+    await api(`/api/settings/storage/${encodeURIComponent(storageId)}/activate`, { method: 'POST' });
+    notify('Stockage activé avec succès pour les prochains téléversements.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    notify(`Erreur lors de l'activation : ${err.message}`, 'error');
+  }
+}
+
+async function deleteStorage(storageId) {
+  const ok = await confirmDialog(
+    'Supprimer le stockage',
+    'Voulez-vous supprimer ce stockage ? S\'il contient des documents référencés, la suppression sera refusée.',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/settings/storage/${encodeURIComponent(storageId)}`, { method: 'DELETE' });
+    notify('Stockage supprimé avec succès.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    notify(`Suppression impossible : ${err.message}`, 'error');
+  }
+}
+
+function openCreateStorageModal() {
+  const bodyHtml = `
+    <form id="createStorageForm" class="modal-form">
+      <div class="form-group">
+        <label for="storageNameInput">Nom du stockage *</label>
+        <input type="text" id="storageNameInput" name="name" required placeholder="ex. Serveur NAS Ateliers ou S3 MinIO" />
+      </div>
+
+      <div class="form-group">
+        <label for="storageDriverSelect">Pilote de stockage *</label>
+        <select id="storageDriverSelect" name="driver" data-action="toggle-storage-driver-fields">
+          <option value="folder" selected>Dossier local ou partage UNC (folder)</option>
+          <option value="s3">Stockage objet compatible S3 (s3)</option>
+        </select>
+      </div>
+
+      <!-- CHAMPS PILOTE FOLDER -->
+      <div id="storageFolderFields" class="storage-driver-section">
+        <div class="form-group">
+          <label for="storageFolderPath">Chemin absolu du dossier</label>
+          <input type="text" id="storageFolderPath" name="path" placeholder="ex. D:\\GMAO\\fichiers ou \\\\nas\\partage\\gmao (laisser vide pour le dossier par défaut)" />
+          <span class="form-help">Si vide, le dossier par défaut configuré au démarrage du serveur sera utilisé.</span>
+        </div>
+      </div>
+
+      <!-- CHAMPS PILOTE S3 -->
+      <div id="storageS3Fields" class="storage-driver-section" hidden>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="s3Endpoint">Point de terminaison (Endpoint) *</label>
+            <input type="text" id="s3Endpoint" name="endpoint" placeholder="ex. https://s3.eu-west-1.amazonaws.com ou http://minio:9000" />
+          </div>
+          <div class="form-group">
+            <label for="s3Region">Région</label>
+            <input type="text" id="s3Region" name="region" placeholder="ex. eu-west-1 ou us-east-1" value="eu-west-1" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="s3Bucket">Nom du Bucket *</label>
+            <input type="text" id="s3Bucket" name="bucket" placeholder="ex. apex-maint-documents" />
+          </div>
+          <div class="form-group">
+            <label for="s3Prefix">Préfixe de dossier (optionnel)</label>
+            <input type="text" id="s3Prefix" name="prefix" placeholder="ex. production/" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="s3AccessKey">Clé d'accès (Access Key ID) *</label>
+            <input type="text" id="s3AccessKey" name="access_key_id" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label for="s3SecretKey">Clé secrète (Secret Access Key) *</label>
+            <input type="password" id="s3SecretKey" name="secret" autocomplete="new-password" />
+            <span class="form-help">Chiffrée de manière sécurisée en AES-256-GCM.</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="s3PathStyle" name="path_style" />
+            <span>Activer le mode Path Style (recommandé pour MinIO ou Ceph)</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="createStorageError" class="form-error" hidden></div>
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="createStorageForm" class="btn primary">
+      ${icon('i-check')} <span>Créer le stockage</span>
+    </button>
+  `;
+
+  openModal('Nouveau stockage de documents', bodyHtml, footerHtml);
+}
+
+async function submitCreateStorage(form) {
+  const errBox = document.getElementById('createStorageError');
+  if (errBox) errBox.hidden = true;
+
+  const driver = form.driver.value;
+  const name = form.name.value.trim();
+
+  let config = {};
+  let secret = null;
+
+  if (driver === 'folder') {
+    config = { path: form.path ? form.path.value.trim() : '' };
+  } else if (driver === 's3') {
+    config = {
+      endpoint: form.endpoint.value.trim(),
+      region: form.region.value.trim() || 'eu-west-1',
+      bucket: form.bucket.value.trim(),
+      access_key_id: form.access_key_id.value.trim(),
+      prefix: form.prefix ? form.prefix.value.trim() : '',
+      path_style: form.path_style ? form.path_style.checked : false
+    };
+    secret = form.secret.value;
+    if (!config.endpoint || !config.bucket || !config.access_key_id || !secret) {
+      if (errBox) {
+        errBox.textContent = 'Tous les champs S3 obligatoires doivent être renseignés.';
+        errBox.hidden = false;
+      }
+      return;
+    }
+  }
+
+  const payload = { label: name, kind: driver, config };
+  if (secret) payload.secret = secret;
+
+  try {
+    await api('/api/settings/storage', {
+      method: 'POST',
+      body: payload
+    });
+
+    closeModal();
+    notify('Stockage ajouté avec succès.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la création du stockage.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function openEditStorageModal(storageId) {
+  openModal('Modifier le stockage', `<p class="hint">${icon('i-clock')} Chargement du stockage…</p>`);
+
+  try {
+    const list = await api('/api/settings/storage');
+    const items = Array.isArray(list) ? list : (list && Array.isArray(list.items) ? list.items : []);
+    const found = items.find(item => item.id === storageId);
+    if (!found) throw new Error('Stockage introuvable.');
+    const b = adaptStorage(found);
+
+    const isFolder = b.driver === 'folder';
+    const cfg = b.config || {};
+
+    const bodyHtml = `
+      <form id="editStorageForm" class="modal-form">
+        <input type="hidden" name="storage_id" value="${esc(b.id)}" />
+        <input type="hidden" name="driver" value="${esc(b.driver)}" />
+
+        <div class="form-group">
+          <label for="editStorageName">Nom du stockage *</label>
+          <input type="text" id="editStorageName" name="name" required value="${esc(b.name)}" />
+        </div>
+
+        ${isFolder ? `
+          <div class="form-group">
+            <label for="editStoragePath">Chemin du dossier</label>
+            <input type="text" id="editStoragePath" name="path" value="${esc(cfg.path || '')}" placeholder="Laisser vide pour le dossier par défaut" />
+          </div>
+        ` : `
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editS3Endpoint">Point de terminaison (Endpoint) *</label>
+              <input type="text" id="editS3Endpoint" name="endpoint" required value="${esc(cfg.endpoint || '')}" />
+            </div>
+            <div class="form-group">
+              <label for="editS3Region">Région</label>
+              <input type="text" id="editS3Region" name="region" value="${esc(cfg.region || 'eu-west-1')}" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editS3Bucket">Nom du Bucket *</label>
+              <input type="text" id="editS3Bucket" name="bucket" required value="${esc(cfg.bucket || '')}" />
+            </div>
+            <div class="form-group">
+              <label for="editS3Prefix">Préfixe</label>
+              <input type="text" id="editS3Prefix" name="prefix" value="${esc(cfg.prefix || '')}" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editS3AccessKey">Clé d'accès *</label>
+              <input type="text" id="editS3AccessKey" name="access_key_id" required value="${esc(cfg.access_key_id || '')}" />
+            </div>
+            <div class="form-group">
+              <label for="editS3Secret">Nouvelle clé secrète (optionnel)</label>
+              <input type="password" id="editS3Secret" name="secret" placeholder="${b.has_secret ? 'Laisser vide pour conserver le secret existant' : 'Saisir le secret'}" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="editS3PathStyle" name="path_style" ${cfg.path_style ? 'checked' : ''} />
+              <span>Mode Path Style (MinIO / Ceph)</span>
+            </label>
+          </div>
+        `}
+
+        <div id="editStorageError" class="form-error" hidden></div>
+      </form>
+    `;
+
+    const footerHtml = `
+      <button type="button" class="btn" data-action="close-modal">Annuler</button>
+      <button type="submit" form="editStorageForm" class="btn primary">
+        ${icon('i-check')} <span>Enregistrer les modifications</span>
+      </button>
+    `;
+
+    openModal(`Modifier « ${b.name} »`, bodyHtml, footerHtml);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function submitEditStorage(form) {
+  const errBox = document.getElementById('editStorageError');
+  if (errBox) errBox.hidden = true;
+
+  const storageId = form.storage_id.value;
+  const driver = form.driver.value;
+  const name = form.name.value.trim();
+
+  let config = {};
+  let secret = null;
+
+  if (driver === 'folder') {
+    config = { path: form.path ? form.path.value.trim() : '' };
+  } else if (driver === 's3') {
+    config = {
+      endpoint: form.endpoint.value.trim(),
+      region: form.region.value.trim() || 'eu-west-1',
+      bucket: form.bucket.value.trim(),
+      access_key_id: form.access_key_id.value.trim(),
+      prefix: form.prefix ? form.prefix.value.trim() : '',
+      path_style: form.path_style ? form.path_style.checked : false
+    };
+    if (form.secret && form.secret.value) {
+      secret = form.secret.value;
+    }
+  }
+
+  const payload = { label: name, config };
+  if (secret) payload.secret = secret;
+
+  try {
+    await api(`/api/settings/storage/${encodeURIComponent(storageId)}`, {
+      method: 'PATCH',
+      body: payload
+    });
+
+    closeModal();
+    notify('Stockage mis à jour avec succès.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la modification.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function loadSettingsDocuments() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.documentSettingsLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des types de fichiers…</p>`;
+
+  try {
+    state.documentSettings = await api('/api/settings/documents');
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+    state.documentSettingsLoading = false;
+    return;
+  }
+
+  state.documentSettingsLoading = false;
+  renderSettingsDocumentsView();
+}
+
+function renderSettingsDocumentsView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const docSettings = state.documentSettings || {};
+  const allowed = Array.isArray(docSettings.allowed_types) ? docSettings.allowed_types : [];
+  const catalog = Array.isArray(docSettings.catalog) ? docSettings.catalog : [];
+  const maxSize = docSettings.max_size_mb || 50;
+  const canEdit = hasPermission('settings.edit');
+
+  const catalogItemsHtml = catalog.map(cat => {
+    const isChecked = allowed.includes(cat.id);
+    const exts = Array.isArray(cat.extensions) ? cat.extensions.join(', ') : cat.extensions;
+    return `
+      <label class="catalog-item-card">
+        <input type="checkbox" name="allowed_types" value="${esc(cat.id)}" ${isChecked ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+        <div class="catalog-item-info">
+          <div class="catalog-item-title">${esc(cat.label)}</div>
+          <div class="catalog-item-ext mono hint">${esc(exts)}</div>
+          <div class="catalog-item-disp hint">${cat.disposition === 'inline' ? 'Consultable dans le navigateur' : 'Téléchargement direct'}</div>
+        </div>
+      </label>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="card">
+      <form id="settingsDocumentsForm">
+        <div class="detail-nav-bar">
+          <div>
+            <h2>${icon('i-folder')} Formats de fichiers et quotas de téléversement</h2>
+            <p class="hint">Activez les types de documents acceptés par l'application et fixez la limite maximale de taille autorisée.</p>
+          </div>
+          ${canEdit ? `
+            <button type="submit" class="btn primary">
+              ${icon('i-check')} <span>Enregistrer les réglages</span>
+            </button>
+          ` : ''}
+        </div>
+
+        <div class="form-row form-row-tight">
+          <div class="form-group max-size-group">
+            <label for="docMaxSizeInput">Taille maximale par fichier (en Mo) *</label>
+            <div class="input-with-unit">
+              <input type="number" id="docMaxSizeInput" name="max_size_mb" min="1" max="200" required value="${esc(maxSize)}" ${!canEdit ? 'disabled' : ''} />
+              <span class="unit-addon">Mo</span>
+            </div>
+            <span class="form-help">Valeur comprise entre 1 et 200 Mo (par défaut 50 Mo).</span>
+          </div>
+        </div>
+
+        <div class="catalog-section">
+          <h3>Catalogue des types de fichiers pris en charge (${catalog.length})</h3>
+          <div class="catalog-grid">
+            ${catalogItemsHtml}
+          </div>
+        </div>
+
+        <div id="settingsDocumentsError" class="form-error" hidden></div>
+      </form>
+    </div>
+  `;
+}
+
+async function submitSettingsDocuments(form) {
+  const errBox = document.getElementById('settingsDocumentsError');
+  if (errBox) errBox.hidden = true;
+
+  const max_size_mb = parseInt(form.max_size_mb.value, 10);
+  if (isNaN(max_size_mb) || max_size_mb < 1 || max_size_mb > 200) {
+    if (errBox) {
+      errBox.textContent = 'La taille maximale doit être un nombre entier entre 1 et 200 Mo.';
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  const allowed_types = Array.from(form.querySelectorAll('input[name="allowed_types"]:checked')).map(cb => cb.value);
+  if (!allowed_types.length) {
+    if (errBox) {
+      errBox.textContent = 'Vous devez autoriser au moins un type de fichier.';
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  try {
+    const res = await api('/api/settings/documents', {
+      method: 'PUT',
+      body: { allowed_types, max_size_mb }
+    });
+    state.documentSettings = res;
+    notify('Paramètres de documents enregistrés avec succès.', 'success');
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la sauvegarde.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function loadSettingsLabels() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.labelSettingsLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres d'étiquettes…</p>`;
+
+  try {
+    state.labelSettings = labelFromServer(await api('/api/settings/labels'));
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+    state.labelSettingsLoading = false;
+    return;
+  }
+
+  state.labelSettingsLoading = false;
+  renderSettingsLabelsView();
+}
+
+function renderSettingsLabelsView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const fmt = state.labelSettings || {
+    mode: 'sheet', page: 'A4', columns: 3, rows: 8, margin_top_mm: 10, margin_left_mm: 7, spacing_h_mm: 2, spacing_v_mm: 0,
+    width_mm: 64, height_mm: 34, qr_size_mm: 20, show_code: true, show_name: true, show_site: false, show_line: false
+  };
+
+  const isSheet = fmt.mode === 'sheet';
+  const canEdit = hasPermission('settings.edit');
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="detail-nav-bar">
+        <div>
+          <h2>${icon('i-qrcode')} Format d'impression des étiquettes d'équipement</h2>
+          <p class="hint">Configurez les dimensions des étiquettes pour planche adhésive ou rouleau d'imprimante thermique.</p>
+        </div>
+        ${canEdit ? `
+          <button type="submit" form="settingsLabelsForm" class="btn primary">
+            ${icon('i-check')} <span>Enregistrer le format</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <div class="settings-labels-layout">
+        <!-- FORMULAIRE -->
+        <form id="settingsLabelsForm" class="settings-labels-form">
+          <div class="form-group">
+            <label for="labelModeSelect">Mode d'impression *</label>
+            <select id="labelModeSelect" name="mode" ${!canEdit ? 'disabled' : ''}>
+              <option value="sheet" ${isSheet ? 'selected' : ''}>Planche d'étiquettes (A4 / Letter)</option>
+              <option value="single" ${!isSheet ? 'selected' : ''}>Étiquette unitaire (imprimante thermique)</option>
+            </select>
+          </div>
+
+          <!-- REGLAGES PLANCHE -->
+          <div id="sheetSpecificFields" ${!isSheet ? 'hidden' : ''}>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="labelPageSelect">Format de page</label>
+                <select id="labelPageSelect" name="page" ${!canEdit ? 'disabled' : ''}>
+                  <option value="A4" ${fmt.page === 'A4' ? 'selected' : ''}>A4 (210 × 297 mm)</option>
+                  <option value="Letter" ${fmt.page === 'Letter' ? 'selected' : ''}>Letter (216 × 279 mm)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="labelColsInput">Colonnes par page</label>
+                <input type="number" id="labelColsInput" name="columns" min="1" max="10" value="${esc(fmt.columns || 3)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelRowsInput">Lignes par page</label>
+                <input type="number" id="labelRowsInput" name="rows" min="1" max="25" value="${esc(fmt.rows || 8)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="labelMarginTop">Marge haute (mm)</label>
+                <input type="number" id="labelMarginTop" name="margin_top_mm" min="0" max="100" value="${esc(fmt.margin_top_mm || 10)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelMarginLeft">Marge gauche (mm)</label>
+                <input type="number" id="labelMarginLeft" name="margin_left_mm" min="0" max="100" value="${esc(fmt.margin_left_mm || 7)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelSpacingH">Espacement horizontal (mm)</label>
+                <input type="number" id="labelSpacingH" name="spacing_h_mm" min="0" max="50" value="${esc(fmt.spacing_h_mm || 2)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelSpacingV">Espacement vertical (mm)</label>
+                <input type="number" id="labelSpacingV" name="spacing_v_mm" min="0" max="50" value="${esc(fmt.spacing_v_mm || 0)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+            </div>
+          </div>
+
+          <!-- DIMENSIONS DE L'ÉTIQUETTE -->
+          <h3>Dimensions de chaque étiquette</h3>
+          ${isSheet ? '<p class="hint">En mode planche, la taille de chaque étiquette est calculée à partir du format de page, du nombre de colonnes et de lignes, des marges et des espacements.</p>' : ''}
+          <div class="form-row">
+            <div class="form-group">
+              <label for="labelWidthMm">Largeur étiquette (mm) *</label>
+              <input type="number" id="labelWidthMm" name="width_mm" min="10" max="500" step="0.1" required value="${esc(fmt.width_mm || 64)}" ${!canEdit ? 'disabled' : ''} ${isSheet ? 'readonly' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="labelHeightMm">Hauteur étiquette (mm) *</label>
+              <input type="number" id="labelHeightMm" name="height_mm" min="10" max="500" step="0.1" required value="${esc(fmt.height_mm || 34)}" ${!canEdit ? 'disabled' : ''} ${isSheet ? 'readonly' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="labelQrSizeMm">Taille du QR Code (mm) *</label>
+              <input type="number" id="labelQrSizeMm" name="qr_size_mm" min="10" max="100" step="0.1" required value="${esc(fmt.qr_size_mm || 20)}" ${!canEdit ? 'disabled' : ''} />
+            </div>
+          </div>
+
+          <!-- ÉLÉMENTS AFFICHÉS -->
+          <h3>Éléments textuels imprimés</h3>
+          <div class="checkbox-grid">
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_code" ${fmt.show_code ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Code équipement (ex. EXT-101)</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_name" ${fmt.show_name ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Désignation de l'équipement</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_site" ${fmt.show_site ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Nom du site</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_line" ${fmt.show_line ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Ligne de production rattachée</span>
+            </label>
+          </div>
+
+          <div id="settingsLabelsError" class="form-error" hidden></div>
+        </form>
+
+        <!-- APERÇU EN DIRECT -->
+        <div class="settings-labels-preview">
+          <h3>Aperçu en direct</h3>
+          <p class="hint">Rendu réel d'une étiquette selon les paramètres saisis :</p>
+          <div class="preview-sticker-container">
+            <div id="labelLivePreviewSticker" class="label-sticker label-preview-sticker">
+              <div class="sticker-qr">
+                <svg width="80" height="80" viewBox="0 0 100 100" fill="currentColor">
+                  <rect width="100" height="100" fill="var(--bg-surface)" />
+                  <rect x="10" y="10" width="30" height="30" fill="currentColor" />
+                  <rect x="60" y="10" width="30" height="30" fill="currentColor" />
+                  <rect x="10" y="60" width="30" height="30" fill="currentColor" />
+                  <rect x="20" y="20" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="70" y="20" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="20" y="70" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="45" y="45" width="10" height="10" fill="currentColor" />
+                </svg>
+              </div>
+              <div class="sticker-info">
+                <div class="sticker-code mono font-bold">EXT-101</div>
+                <div class="sticker-name">Extrudeuse principale</div>
+                <div class="sticker-line hint mono">LIGNE-A</div>
+                <div class="sticker-site hint">Usine Principale</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  updateLabelsPreviewLive();
+}
+
+function updateLabelsPreviewLive() {
+  const form = document.getElementById('settingsLabelsForm');
+  const preview = document.getElementById('labelLivePreviewSticker');
+  if (!form || !preview) return;
+
+  const mode = form.mode ? form.mode.value : 'sheet';
+  const sheetFields = document.getElementById('sheetSpecificFields');
+  if (sheetFields) {
+    sheetFields.hidden = mode !== 'sheet';
+  }
+
+  const showCode = form.show_code ? form.show_code.checked : true;
+  const showName = form.show_name ? form.show_name.checked : true;
+  const showSite = form.show_site ? form.show_site.checked : false;
+  const showLine = form.show_line ? form.show_line.checked : false;
+  const qrSize = Math.max(10, Math.min(60, parseInt(form.qr_size_mm ? form.qr_size_mm.value : 20, 10)));
+  const widthMm = Math.max(20, Math.min(200, parseInt(form.width_mm ? form.width_mm.value : 64, 10)));
+  const heightMm = Math.max(15, Math.min(200, parseInt(form.height_mm ? form.height_mm.value : 34, 10)));
+
+  preview.style.setProperty('--qr-size', `${qrSize}mm`);
+  preview.style.setProperty('--label-w', `${widthMm}mm`);
+  preview.style.setProperty('--label-h', `${heightMm}mm`);
+
+  const codeEl = preview.querySelector('.sticker-code');
+  const nameEl = preview.querySelector('.sticker-name');
+  const siteEl = preview.querySelector('.sticker-site');
+  const lineEl = preview.querySelector('.sticker-line');
+  const qrSvg = preview.querySelector('.sticker-qr svg');
+
+  if (codeEl) codeEl.hidden = !showCode;
+  if (nameEl) nameEl.hidden = !showName;
+  if (siteEl) siteEl.hidden = !showSite;
+  if (lineEl) lineEl.hidden = !showLine;
+  if (qrSvg) {
+    qrSvg.setAttribute('width', qrSize * 4);
+    qrSvg.setAttribute('height', qrSize * 4);
+  }
+}
+
+// Format d'étiquette : le serveur imbrique la planche (sheet) et l'étiquette unitaire (single) ;
+// l'écran travaille sur un objet à plat. En planche, la case est calculée (marges symétriques).
+const LABEL_PAGES_MM = { A4: [210, 297], Letter: [215.9, 279.4] };
+
+function labelFromServer(s) {
+  if (!s || !s.sheet) return s;
+  const sh = s.sheet;
+  const single = s.single || { width_mm: 70, height_mm: 37 };
+  const [pw, ph] = LABEL_PAGES_MM[sh.page] || LABEL_PAGES_MM.A4;
+  const round = (n) => Math.round(n * 10) / 10;
+  const cellW = (pw - 2 * sh.margin_left_mm - (sh.columns - 1) * sh.gap_horizontal_mm) / sh.columns;
+  const cellH = (ph - 2 * sh.margin_top_mm - (sh.rows - 1) * sh.gap_vertical_mm) / sh.rows;
+  const isSingle = s.mode === 'single';
+  return {
+    mode: s.mode,
+    page: sh.page,
+    columns: sh.columns,
+    rows: sh.rows,
+    margin_top_mm: sh.margin_top_mm,
+    margin_left_mm: sh.margin_left_mm,
+    spacing_h_mm: sh.gap_horizontal_mm,
+    spacing_v_mm: sh.gap_vertical_mm,
+    width_mm: isSingle ? single.width_mm : round(cellW),
+    height_mm: isSingle ? single.height_mm : round(cellH),
+    qr_size_mm: s.qr_size_mm,
+    show_code: !!s.show_code,
+    show_name: !!s.show_name,
+    show_site: !!s.show_site,
+    show_line: !!s.show_production_line,
+    single,
+  };
+}
+
+function labelToServer(f, previous) {
+  const keptSingle = (previous && previous.single) || { width_mm: 70, height_mm: 37 };
+  return {
+    mode: f.mode,
+    sheet: {
+      page: f.page,
+      columns: f.columns,
+      rows: f.rows,
+      margin_top_mm: f.margin_top_mm,
+      margin_left_mm: f.margin_left_mm,
+      gap_horizontal_mm: f.spacing_h_mm,
+      gap_vertical_mm: f.spacing_v_mm,
+    },
+    single: f.mode === 'single' ? { width_mm: f.width_mm, height_mm: f.height_mm } : keptSingle,
+    qr_size_mm: f.qr_size_mm,
+    show_code: f.show_code,
+    show_name: f.show_name,
+    show_site: f.show_site,
+    show_production_line: f.show_line,
+  };
+}
+
+async function submitSettingsLabels(form) {
+  const errBox = document.getElementById('settingsLabelsError');
+  if (errBox) errBox.hidden = true;
+
+  const mode = form.mode.value;
+  const page = form.page ? form.page.value : 'A4';
+  const columns = form.columns ? parseInt(form.columns.value, 10) : 3;
+  const rows = form.rows ? parseInt(form.rows.value, 10) : 8;
+  const margin_top_mm = form.margin_top_mm ? parseFloat(form.margin_top_mm.value.replace(',', '.')) : 10;
+  const margin_left_mm = form.margin_left_mm ? parseFloat(form.margin_left_mm.value.replace(',', '.')) : 7;
+  const spacing_h_mm = form.spacing_h_mm ? parseFloat(form.spacing_h_mm.value.replace(',', '.')) : 2;
+  const spacing_v_mm = form.spacing_v_mm ? parseFloat(form.spacing_v_mm.value.replace(',', '.')) : 0;
+  const width_mm = parseFloat(form.width_mm.value.replace(',', '.'));
+  const height_mm = parseFloat(form.height_mm.value.replace(',', '.'));
+  const qr_size_mm = parseFloat(form.qr_size_mm.value.replace(',', '.'));
+
+  const show_code = form.show_code.checked;
+  const show_name = form.show_name.checked;
+  const show_site = form.show_site.checked;
+  const show_line = form.show_line.checked;
+
+  const payload = {
+    mode,
+    page,
+    columns,
+    rows,
+    margin_top_mm,
+    margin_left_mm,
+    spacing_h_mm,
+    spacing_v_mm,
+    width_mm,
+    height_mm,
+    qr_size_mm,
+    show_code,
+    show_name,
+    show_site,
+    show_line
+  };
+
+  try {
+    const res = await api('/api/settings/labels', {
+      method: 'PUT',
+      body: labelToServer(payload, state.labelSettings)
+    });
+    state.labelSettings = labelFromServer(res);
+    notify('Format d\'étiquette enregistré avec succès.', 'success');
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la sauvegarde du format.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+// ============================================================================
+// 14J. MODULE PARAMÈTRES — SECTIONS PHASE 7
+// ============================================================================
+
+async function loadSettingsGeneral() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres généraux…</p>`;
+
+  try {
+    const g = await api('/api/settings/general');
+    state.settingsGeneral = g;
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <h2>${icon('i-cog')} Identité de l'application</h2>
+        <p class="hint form-help">Ces paramètres personnalisent l'en-tête de l'application, l'écran de connexion et les liens dans les e-mails.</p>
+
+        <form class="form-grid" id="settingsGeneralForm" data-action="settings-general-submit">
+          <div id="settingsGeneralErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="settingsGeneralErrorText"></span>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="setAppName">Nom de l'application *</label>
+              <input type="text" id="setAppName" name="app_name" value="${esc(g.app_name || '')}" required ${!canEdit ? 'disabled' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="setAppSubtitle">Sous-titre de l'application</label>
+              <input type="text" id="setAppSubtitle" name="app_subtitle" value="${esc(g.app_subtitle || '')}" ${!canEdit ? 'disabled' : ''} />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="setPublicUrl">Adresse publique de l'IHM (URL de base)</label>
+            <input type="url" id="setPublicUrl" name="public_base_url" value="${esc(g.public_base_url || '')}" placeholder="https://gmao.usine.lan" ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Utilisée pour forger les liens cliquables dans les notifications e-mail et réinitialisations de mot de passe.</span>
+          </div>
+
+          ${canEdit ? `
+            <button type="submit" class="btn primary" id="settingsGeneralSubmitBtn">
+              <span>Enregistrer les paramètres généraux</span>
+            </button>
+          ` : '<p class="hint">Vous disposez uniquement d\'un droit de consultation sur ces paramètres.</p>'}
+        </form>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleSettingsGeneralSubmit(form) {
+  const errorBox = document.getElementById('settingsGeneralErrorBox');
+  const errorText = document.getElementById('settingsGeneralErrorText');
+  const btn = document.getElementById('settingsGeneralSubmitBtn');
+
+  const app_name = form.app_name.value.trim();
+  const app_subtitle = form.app_subtitle.value.trim();
+  const public_base_url = form.public_base_url.value.trim();
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/settings/general', {
+      method: 'PUT',
+      body: { app_name, app_subtitle, public_base_url },
+    });
+    state.settingsGeneral = res;
+    if (state.branding) {
+      state.branding.app_name = res.app_name;
+      state.branding.app_subtitle = res.app_subtitle;
+    }
+    applyBranding();
+    notify('Paramètres généraux enregistrés avec succès.', 'success');
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer les paramètres généraux.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadSettingsSecurity() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres de sécurité…</p>`;
+
+  try {
+    const s = await api('/api/settings/security');
+    state.settingsSecurity = s;
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <h2>${icon('i-shield')} Sécurité & Sessions utilisateurs</h2>
+        <p class="hint form-help">Définissez la durée maximale d'inactivité avant déconnexion automatique des utilisateurs.</p>
+
+        <form class="form-grid" id="settingsSecurityForm" data-action="settings-security-submit">
+          <div id="settingsSecurityErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="settingsSecurityErrorText"></span>
+          </div>
+
+          <div class="form-group">
+            <label for="setSessionTimeout">Délai d'inactivité avant expiration de session (en minutes) *</label>
+            <input type="number" id="setSessionTimeout" name="session_timeout_min" min="15" max="10080" value="${esc(s.session_timeout_min || 480)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Entre 15 et 10 080 minutes (7 jours). S'applique aux nouvelles sessions et aux sessions existantes lors de leur prochaine action.</span>
+          </div>
+
+          ${canEdit ? `
+            <button type="submit" class="btn primary" id="settingsSecuritySubmitBtn">
+              <span>Enregistrer la sécurité</span>
+            </button>
+          ` : '<p class="hint">Consultation seule.</p>'}
+        </form>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleSettingsSecuritySubmit(form) {
+  const errorBox = document.getElementById('settingsSecurityErrorBox');
+  const errorText = document.getElementById('settingsSecurityErrorText');
+  const btn = document.getElementById('settingsSecuritySubmitBtn');
+
+  const session_timeout_min = parseInt(form.session_timeout_min.value, 10);
+  if (isNaN(session_timeout_min) || session_timeout_min < 15 || session_timeout_min > 10080) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'Le délai de session doit être compris entre 15 et 10 080 minutes.';
+    }
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/settings/security', {
+      method: 'PUT',
+      body: { session_timeout_min },
+    });
+    state.settingsSecurity = res;
+    notify('Délai de session enregistré avec succès.', 'success');
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer le délai de session.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadSettingsStock() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres de stock…</p>`;
+
+  try {
+    const s = await api('/api/settings/stock');
+    state.settingsStock = s;
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <h2>${icon('i-box')} Paramètres globaux du magasin</h2>
+        <p class="hint form-help">Règles et seuils appliqués par défaut à la gestion des pièces de rechange.</p>
+
+        <form class="form-grid" id="settingsStockForm" data-action="settings-stock-submit">
+          <div id="settingsStockErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="settingsStockErrorText"></span>
+          </div>
+
+          <div class="form-group">
+            <label for="setStockAlertThresh">Seuil d'alerte global par défaut *</label>
+            <input type="number" id="setStockAlertThresh" name="stock_alert_threshold" min="0" max="100000" value="${esc(s.stock_alert_threshold || 5)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Seuil utilisé lorsqu'une pièce n'a pas de seuil d'alerte spécifique défini.</span>
+          </div>
+
+          ${canEdit ? `
+            <button type="submit" class="btn primary" id="settingsStockSubmitBtn">
+              <span>Enregistrer les paramètres de stock</span>
+            </button>
+          ` : '<p class="hint">Consultation seule.</p>'}
+        </form>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleSettingsStockSubmit(form) {
+  const errorBox = document.getElementById('settingsStockErrorBox');
+  const errorText = document.getElementById('settingsStockErrorText');
+  const btn = document.getElementById('settingsStockSubmitBtn');
+
+  const stock_alert_threshold = parseInt(form.stock_alert_threshold.value, 10);
+  if (isNaN(stock_alert_threshold) || stock_alert_threshold < 0) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'Le seuil doit être un entier positif ou nul.';
+    }
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/settings/stock', {
+      method: 'PUT',
+      body: { stock_alert_threshold },
+    });
+    state.settingsStock = res;
+    notify('Paramètres de stock enregistrés avec succès.', 'success');
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer les paramètres de stock.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadSettingsSmtp() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres SMTP et de la boîte d'envoi…</p>`;
+
+  try {
+    const [smtp, outboxRes] = await Promise.all([
+      api('/api/settings/smtp'),
+      api('/api/settings/smtp/outbox?limit=50'),
+    ]);
+    state.settingsSmtp = smtp;
+    state.settingsOutbox = (outboxRes && Array.isArray(outboxRes.items)) ? outboxRes.items : [];
+
+    const outboxRows = state.settingsOutbox.map(it => {
+      let statusBadge = `<span class="badge badge-status-${esc(it.status)}">${esc(it.status)}</span>`;
+      if (it.status === 'sent') statusBadge = '<span class="badge badge-state-ok">Envoyé</span>';
+      else if (it.status === 'failed') statusBadge = '<span class="badge badge-state-ko">Échec</span>';
+      else if (it.status === 'pending') statusBadge = '<span class="badge badge-state-warn">En attente</span>';
+
+      return `
+        <tr>
+          <td class="mono font-bold">${esc(formatDate(it.created_at))}</td>
+          <td>${esc(it.to_address)}</td>
+          <td><span class="badge">${esc(NOTIF_EVENT_LABELS[it.event] || it.event)}</span></td>
+          <td>${statusBadge}</td>
+          <td class="mono">${it.attempts || 0}</td>
+          <td class="hint text-danger">${esc(it.last_error || '—')}</td>
+        </tr>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <div class="card-head-between">
+          <h2>${icon('i-mail')} Configuration du serveur sortant (SMTP)</h2>
+          ${canEdit ? `
+            <button type="button" class="btn" data-action="test-smtp-settings">
+              ${icon('i-mail')} <span>Tester l'envoi SMTP</span>
+            </button>
+          ` : ''}
+        </div>
+        <p class="hint form-help">Permet l'envoi des alertes de stock, des rappels de préventif et de la réinitialisation de mot de passe.</p>
+
+        <form class="form-grid" id="settingsSmtpForm" data-action="settings-smtp-submit">
+          <div id="settingsSmtpErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="settingsSmtpErrorText"></span>
+          </div>
+
+          <label class="checkbox-label mb-2">
+            <input type="checkbox" name="enabled" ${smtp.enabled ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span><b>Activer les notifications par e-mail (serveur SMTP actif)</b></span>
+          </label>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="smtpHost">Serveur d'envoi SMTP *</label>
+              <input type="text" id="smtpHost" name="host" value="${esc(smtp.host || '')}" placeholder="smtp.example.com" ${!canEdit ? 'disabled' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="smtpPort">Port SMTP *</label>
+              <input type="number" id="smtpPort" name="port" value="${esc(smtp.port || 587)}" min="1" max="65535" ${!canEdit ? 'disabled' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="smtpSecurity">Sécurité de transport</label>
+              <select id="smtpSecurity" name="security" ${!canEdit ? 'disabled' : ''}>
+                <option value="starttls" ${smtp.security === 'starttls' ? 'selected' : ''}>STARTTLS (recommandé port 587)</option>
+                <option value="tls" ${smtp.security === 'tls' ? 'selected' : ''}>TLS / SSL (port 465)</option>
+                <option value="none" ${smtp.security === 'none' ? 'selected' : ''}>Aucune (non sécurisé)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="smtpUser">Identifiant SMTP</label>
+              <input type="text" id="smtpUser" name="username" value="${esc(smtp.username || '')}" autocomplete="off" ${!canEdit ? 'disabled' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="smtpPass">Mot de passe SMTP</label>
+              <input type="password" id="smtpPass" name="password" placeholder="${smtp.has_password ? '•••••••• (inchangé)' : 'Saisir un mot de passe'}" autocomplete="new-password" ${!canEdit ? 'disabled' : ''} />
+              <span class="form-help">Champ en écriture seule. Laissez vide pour conserver le mot de passe actuel.</span>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="smtpFromName">Nom de l'expéditeur affiché</label>
+              <input type="text" id="smtpFromName" name="from_name" value="${esc(smtp.from_name || 'Apex Maint')}" ${!canEdit ? 'disabled' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="smtpFromAddr">Adresse e-mail d'expédition *</label>
+              <input type="email" id="smtpFromAddr" name="from_address" value="${esc(smtp.from_address || '')}" placeholder="noreply@usine.lan" ${!canEdit ? 'disabled' : ''} />
+            </div>
+          </div>
+
+          ${canEdit ? `
+            <button type="submit" class="btn primary" id="settingsSmtpSubmitBtn">
+              <span>Enregistrer la configuration SMTP</span>
+            </button>
+          ` : '<p class="hint">Consultation seule.</p>'}
+        </form>
+      </div>
+
+      <div class="card settings-card mt-4">
+        <h2>${icon('i-mail')} Boîte d'envoi & Historique des e-mails (Outbox)</h2>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Destinataire</th>
+                <th>Événement</th>
+                <th>Statut</th>
+                <th>Tentatives</th>
+                <th>Dernière erreur</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${outboxRows || '<tr><td colspan="6" class="empty-cell">Aucun e-mail dans la boîte d\'envoi.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleSettingsSmtpSubmit(form) {
+  const errorBox = document.getElementById('settingsSmtpErrorBox');
+  const errorText = document.getElementById('settingsSmtpErrorText');
+  const btn = document.getElementById('settingsSmtpSubmitBtn');
+
+  const enabled = form.enabled.checked;
+  const host = form.host.value.trim();
+  const port = parseInt(form.port.value, 10);
+  const security = form.security.value;
+  const username = form.username.value.trim();
+  const password = form.password.value;
+  const from_name = form.from_name.value.trim();
+  const from_address = form.from_address.value.trim();
+
+  const payload = { enabled, host, port, security, username, from_name, from_address };
+  if (password) {
+    payload.password = password;
+  }
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/settings/smtp', {
+      method: 'PUT',
+      body: payload,
+    });
+    state.settingsSmtp = res;
+    notify('Configuration SMTP enregistrée avec succès.', 'success');
+    await loadSettingsSmtp();
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer la configuration SMTP.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleTestSmtp() {
+  try {
+    notify('Envoi de l\'e-mail de test en cours…', 'info');
+    await api('/api/settings/smtp/test', { method: 'POST' });
+    notify('E-mail de test envoyé à votre adresse avec succès.', 'success');
+    await loadSettingsSmtp();
+  } catch (err) {
+    notify(`Échec de l'envoi de test : ${err.message}`, 'error');
+  }
+}
+
+async function loadSettingsAlerts() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des préférences d'alertes…</p>`;
+
+  try {
+    const al = await api('/api/settings/alerts');
+    state.settingsAlerts = al;
+
+    const roles = ['admin', 'responsable', 'technicien', 'production'];
+    const events = [
+      { key: 'stock_low', label: 'Stock bas' },
+      { key: 'maintenance_generated', label: 'Nouveaux préventifs' },
+      { key: 'maintenance_overdue', label: 'Maintenances en retard' },
+      { key: 'intervention_critical', label: 'Interventions critiques' },
+      { key: 'intervention_assigned', label: 'Interventions assignées' },
+    ];
+
+    const defaults = al.defaults || {};
+
+    const matrixRows = roles.map(r => {
+      const roleDefs = defaults[r] || {};
+      const cells = events.map(ev => {
+        // Sans réglage, le serveur abonne tous les rôles sauf admin : on affiche la valeur appliquée.
+        const checked = typeof roleDefs[ev.key] === 'boolean' ? roleDefs[ev.key] : r !== 'admin';
+        return `
+          <td class="text-center">
+            <input type="checkbox" name="def_${r}_${ev.key}" ${checked ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+          </td>
+        `;
+      }).join('');
+
+      return `
+        <tr>
+          <td><span class="${roleBadgeClass(r)} font-bold">${esc(formatRole(r))}</span></td>
+          ${cells}
+        </tr>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <h2>${icon('i-bell')} Alertes & Abonnements par défaut des rôles</h2>
+        <p class="hint form-help">Définissez l'heure d'envoi du récapitulatif quotidien et les abonnements pré-activés pour chaque profil d'utilisateur.</p>
+
+        <form class="form-grid" id="settingsAlertsForm" data-action="settings-alerts-submit">
+          <div id="settingsAlertsErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="settingsAlertsErrorText"></span>
+          </div>
+
+          <div class="form-group mb-4">
+            <label for="setDigestHour">Heure d'envoi du récapitulatif quotidien des préventifs en retard (0 à 23h) *</label>
+            <input type="number" id="setDigestHour" name="overdue_digest_hour" min="0" max="23" value="${esc(al.overdue_digest_hour !== undefined ? al.overdue_digest_hour : 7)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Heure locale du serveur à laquelle le bilan des maintenances en retard est envoyé.</span>
+          </div>
+
+          <h3>Matrice des abonnements par défaut</h3>
+          <div class="table-container mb-4">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Rôle</th>
+                  ${events.map(ev => `<th>${esc(ev.label)}</th>`).join('')}
+                </tr>
+              </thead>
+              <tbody>
+                ${matrixRows}
+              </tbody>
+            </table>
+          </div>
+
+          ${canEdit ? `
+            <button type="submit" class="btn primary" id="settingsAlertsSubmitBtn">
+              <span>Enregistrer les préférences d'alertes</span>
+            </button>
+          ` : '<p class="hint">Consultation seule.</p>'}
+        </form>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleSettingsAlertsSubmit(form) {
+  const errorBox = document.getElementById('settingsAlertsErrorBox');
+  const errorText = document.getElementById('settingsAlertsErrorText');
+  const btn = document.getElementById('settingsAlertsSubmitBtn');
+
+  const overdue_digest_hour = parseInt(form.overdue_digest_hour.value, 10);
+  if (isNaN(overdue_digest_hour) || overdue_digest_hour < 0 || overdue_digest_hour > 23) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'L\'heure doit être comprise entre 0 et 23.';
+    }
+    return;
+  }
+
+  const roles = ['admin', 'responsable', 'technicien', 'production'];
+  const events = ['stock_low', 'maintenance_generated', 'maintenance_overdue', 'intervention_critical', 'intervention_assigned'];
+
+  const defaults = {};
+  roles.forEach(r => {
+    defaults[r] = {};
+    events.forEach(ev => {
+      const input = form.elements[`def_${r}_${ev}`];
+      defaults[r][ev] = input ? Boolean(input.checked) : false;
+    });
+  });
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/settings/alerts', {
+      method: 'PUT',
+      body: { overdue_digest_hour, defaults },
+    });
+    state.settingsAlerts = res;
+    notify('Préférences d\'alertes enregistrées avec succès.', 'success');
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer les préférences d\'alertes.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadSettingsAudit() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres d'audit…</p>`;
+
+  try {
+    const a = await api('/api/settings/audit');
+    state.settingsAudit = a;
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <h2>${icon('i-audit')} Rétention du journal d'audit</h2>
+        <p class="hint form-help">Durée légale de conservation des traces d'activité et des modifications avant purge quotidienne automatique.</p>
+
+        <form class="form-grid" id="settingsAuditForm" data-action="settings-audit-submit">
+          <div id="settingsAuditErrorBox" class="form-error" hidden>
+            ${icon('i-alert')}
+            <span id="settingsAuditErrorText"></span>
+          </div>
+
+          <div class="form-group">
+            <label for="setRetentionDays">Durée de conservation (en jours) *</label>
+            <input type="number" id="setRetentionDays" name="retention_days" min="365" max="3650" value="${esc(a.retention_days || 1095)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Minimum 365 jours (1 an), valeur par défaut 1 095 jours (3 ans).</span>
+          </div>
+
+          ${canEdit ? `
+            <button type="submit" class="btn primary" id="settingsAuditSubmitBtn">
+              <span>Enregistrer la durée de conservation</span>
+            </button>
+          ` : '<p class="hint">Consultation seule.</p>'}
+        </form>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function handleSettingsAuditSubmit(form) {
+  const errorBox = document.getElementById('settingsAuditErrorBox');
+  const errorText = document.getElementById('settingsAuditErrorText');
+  const btn = document.getElementById('settingsAuditSubmitBtn');
+
+  const retention_days = parseInt(form.retention_days.value, 10);
+  if (isNaN(retention_days) || retention_days < 365) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'La durée de conservation doit être d\'au moins 365 jours.';
+    }
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/settings/audit', {
+      method: 'PUT',
+      body: { retention_days },
+    });
+    state.settingsAudit = res;
+    notify('Durée de conservation de l\'audit enregistrée avec succès.', 'success');
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer la rétention d\'audit.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadSettingsDashboardDefaults(role = 'responsable') {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.settingsDashboardRole = role;
+  const canEdit = hasPermission('dashboard.manage_defaults');
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement de la disposition par défaut du rôle…</p>`;
+
+  try {
+    const layout = await api(`/api/dashboard/defaults/${encodeURIComponent(role)}`);
+    state.settingsDashboardRoleLayout = layout;
+
+    const roles = ['admin', 'responsable', 'technicien', 'production'];
+    const widgets = (layout && Array.isArray(layout.widgets)) ? layout.widgets : [];
+
+    const widgetRows = widgets.map((w, idx) => `
+      <tr>
+        <td class="mono font-bold">${idx + 1}</td>
+        <td><b>${esc(DASHBOARD_TITLES[w.widget] || w.widget)}</b></td>
+        <td class="mono">${w.w} colonnes</td>
+        <td>
+          ${canEdit ? `
+            <div class="cell-actions">
+              <button type="button" class="btn sm" data-action="role-widget-up" data-args="${idx}" ${idx === 0 ? 'disabled' : ''}>▲</button>
+              <button type="button" class="btn sm" data-action="role-widget-down" data-args="${idx}" ${idx === widgets.length - 1 ? 'disabled' : ''}>▼</button>
+              <button type="button" class="btn sm danger" data-action="role-widget-remove" data-args="${idx}">${icon('i-trash')}</button>
+            </div>
+          ` : '<span class="hint">—</span>'}
+        </td>
+      </tr>
+    `).join('');
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <div class="card-head-between">
+          <h2>${icon('i-dash')} Dispositions par défaut des tableaux de bord</h2>
+          ${canEdit ? `
+            <button type="button" class="btn primary" data-action="save-role-dashboard-defaults">
+              ${icon('i-check')} <span>Enregistrer pour ce rôle</span>
+            </button>
+          ` : ''}
+        </div>
+        <p class="hint form-help">Modifiez la disposition des widgets assignée par défaut aux utilisateurs de chaque rôle.</p>
+
+        <div class="tabs-nav mb-4">
+          ${roles.map(r => `
+            <button type="button" class="tab-btn ${r === role ? 'on' : ''}" data-action="switch-role-dashboard-tab" data-args="${esc(r)}">
+              <span>${esc(formatRole(r))}</span>
+            </button>
+          `).join('')}
+        </div>
+
+        <div class="table-container mb-4">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Ordre</th>
+                <th>Widget</th>
+                <th>Largeur</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${widgetRows || '<tr><td colspan="4" class="empty-cell">Aucun widget configuré pour ce rôle.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+
+        ${canEdit ? `
+          <button type="button" class="btn secondary" data-action="open-add-role-widget-modal">
+            ${icon('i-plus')} <span>Ajouter un widget au rôle</span>
+          </button>
+        ` : ''}
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+async function saveRoleDashboardDefaults() {
+  const role = state.settingsDashboardRole || 'responsable';
+  const layout = state.settingsDashboardRoleLayout;
+  if (!layout) return;
+
+  try {
+    await api(`/api/dashboard/defaults/${encodeURIComponent(role)}`, {
+      method: 'PUT',
+      body: { widgets: layout.widgets || [] },
+    });
+    notify(`Disposition par défaut pour le rôle « ${formatRole(role)} » enregistrée.`, 'success');
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+function handleRoleDefaultMove(idx, dir) {
+  const widgets = (state.settingsDashboardRoleLayout && state.settingsDashboardRoleLayout.widgets) || [];
+  const target = dir === 'up' ? idx - 1 : idx + 1;
+  if (target < 0 || target >= widgets.length) return;
+
+  const tmp = widgets[idx];
+  widgets[idx] = widgets[target];
+  widgets[target] = tmp;
+
+  loadSettingsDashboardDefaults(state.settingsDashboardRole);
+}
+
+function handleRoleDefaultRemove(idx) {
+  const widgets = (state.settingsDashboardRoleLayout && state.settingsDashboardRoleLayout.widgets) || [];
+  widgets.splice(idx, 1);
+  loadSettingsDashboardDefaults(state.settingsDashboardRole);
+}
+
+async function openAddRoleWidgetModal() {
+  try {
+    if (!state.dashboardCatalog.length) {
+      const cat = await api('/api/dashboard/catalog');
+      state.dashboardCatalog = Array.isArray(cat) ? cat : [];
+    }
+
+    const cards = state.dashboardCatalog.map(it => `
+      <div class="widget-catalog-card">
+        <div>
+          <h4>${esc(it.title || it.widget)}</h4>
+          <p class="hint">${esc(it.widget)}</p>
+        </div>
+        <button type="button" class="btn primary sm" data-action="add-widget-to-role-layout" data-args="${jsArg(it.widget)}">
+          ${icon('i-plus')} <span>Ajouter</span>
+        </button>
+      </div>
+    `).join('');
+
+    openModal('Ajouter un widget par défaut', `<div class="widget-catalog-grid">${cards}</div>`, '<button type="button" class="btn" data-action="close-modal">Fermer</button>');
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+function addWidgetToRoleLayout(widgetKey) {
+  if (!state.settingsDashboardRoleLayout) {
+    state.settingsDashboardRoleLayout = { widgets: [] };
+  }
+  const widgets = state.settingsDashboardRoleLayout.widgets || [];
+  widgets.push({
+    id: `rw_${Date.now()}`,
+    widget: widgetKey,
+    x: 0,
+    y: widgets.length,
+    w: 6,
+    h: 3,
+    params: { period: '30d' },
+  });
+  closeModal();
+  loadSettingsDashboardDefaults(state.settingsDashboardRole);
+}
+
+// ============================================================================
 // 15. SURVEILLANCE SERVEUR ET HORLOGE
 // ============================================================================
 
@@ -10109,11 +15247,14 @@ function renderThemeToggle() {
 // ============================================================================
 
 function handleGlobalClick(e) {
-  // Clic à l'extérieur pour fermer le dropdown utilisateur
+  // Clic à l'extérieur pour fermer le dropdown utilisateur et les menus d'export
   const userDropdown = document.getElementById('userDropdown');
   const userBtn = document.getElementById('userBtn');
   if (userDropdown && !userDropdown.hidden && !userDropdown.contains(e.target) && !userBtn.contains(e.target)) {
     closeUserDropdown();
+  }
+  if (!e.target.closest('.dropdown-wrap')) {
+    document.querySelectorAll('.dropdown-menu').forEach(m => { m.hidden = true; });
   }
 
   const actEl = e.target.closest('[data-action]');
@@ -10459,17 +15600,148 @@ function handleGlobalClick(e) {
       openCounterHistoryModal(args);
       break;
 
+    // Phase 6 - Documents, Étiquettes & Paramètres
+    case 'open-upload-document':
+      openUploadDocModal(args || {});
+      break;
+    case 'open-new-version':
+      openNewVersionModal(args || {});
+      break;
+    case 'open-document-history':
+      openDocumentHistoryModal(args || {});
+      break;
+    case 'restore-doc-version':
+      restoreDocumentVersion(args || {});
+      break;
+    case 'open-edit-document':
+      openEditDocumentModal(args || {});
+      break;
+    case 'delete-document':
+      deleteDocument(args || {});
+      break;
+    case 'load-more-documents':
+      loadMoreDocuments();
+      break;
+    case 'print-equipment-label':
+      closeModal();
+      location.hash = `#/etiquettes?ids=${encodeURIComponent(args)}`;
+      break;
+    case 'trigger-print':
+      window.print();
+      break;
+    case 'switch-settings-tab':
+      switchSettingsTab(args);
+      break;
+    case 'open-create-storage':
+      openCreateStorageModal();
+      break;
+    case 'open-edit-storage':
+      openEditStorageModal(args);
+      break;
+    case 'test-storage':
+      testStorageConnection(args);
+      break;
+    case 'activate-storage':
+      activateStorage(args);
+      break;
+    case 'delete-storage':
+      deleteStorage(args);
+      break;
+
+    // Phase 7 — Pilotage, Tableaux de bord, Reporting, Audit, Exports, Paramètres
+    case 'toggle-export-dropdown':
+      toggleExportDropdown(actEl);
+      break;
+    case 'run-export':
+      handleRunExport(args);
+      break;
+    case 'download-intervention-pdf':
+      downloadFile(`/api/interventions/${encodeURIComponent(args)}/pdf`);
+      break;
+    case 'toggle-dashboard-customize':
+      toggleDashboardCustomize();
+      break;
+    case 'open-add-widget-modal':
+      openAddDashboardWidgetModal();
+      break;
+    case 'add-widget-from-catalog':
+      addWidgetFromCatalog(args);
+      break;
+    case 'move-widget-prev':
+      moveDashboardWidget(args, 'prev');
+      break;
+    case 'move-widget-next':
+      moveDashboardWidget(args, 'next');
+      break;
+    case 'cycle-widget-size':
+      cycleDashboardWidgetSize(args);
+      break;
+    case 'open-widget-config':
+      openDashboardWidgetConfigModal(args);
+      break;
+    case 'delete-dashboard-widget':
+      removeDashboardWidget(args);
+      break;
+    case 'save-dashboard-layout':
+      saveDashboardLayout();
+      break;
+    case 'reset-dashboard-layout':
+      resetDashboardLayout();
+      break;
+    case 'switch-reporting-tab':
+      switchReportingTab(args);
+      break;
+    case 'refresh-reporting-data':
+      loadReportingData();
+      break;
+    case 'refresh-audit-list':
+      loadAuditList(true);
+      break;
+    case 'load-more-audit':
+      loadAuditList(false);
+      break;
+    case 'open-audit-detail':
+      openAuditDetailModal(args);
+      break;
+    case 'test-smtp-settings':
+      handleTestSmtp();
+      break;
+    case 'switch-role-dashboard-tab':
+      loadSettingsDashboardDefaults(args);
+      break;
+    case 'save-role-dashboard-defaults':
+      saveRoleDashboardDefaults();
+      break;
+    case 'role-widget-up':
+      handleRoleDefaultMove(parseInt(args, 10), 'up');
+      break;
+    case 'role-widget-down':
+      handleRoleDefaultMove(parseInt(args, 10), 'down');
+      break;
+    case 'role-widget-remove':
+      handleRoleDefaultRemove(parseInt(args, 10));
+      break;
+    case 'open-add-role-widget-modal':
+      openAddRoleWidgetModal();
+      break;
+    case 'add-widget-to-role-layout':
+      addWidgetToRoleLayout(args);
+      break;
+    case 'nav-login':
+      showLoginScreen();
+      break;
+
     default:
       break;
   }
 }
 
 function handleGlobalSubmit(e) {
-  const form = e.target.closest('form[data-action]');
+  const form = e.target.closest('form');
   if (!form) return;
 
   e.preventDefault();
-  const action = form.dataset.action;
+  const action = form.dataset.action || form.id;
   let args = null;
   if (form.dataset.args) {
     try {
@@ -10607,16 +15879,89 @@ function handleGlobalSubmit(e) {
       handleAddEquipmentPartSubmit(form, args);
       break;
 
+    // Phase 6 - Documents, Étiquettes & Paramètres
+    case 'docUploadForm':
+      submitDocUpload(form);
+      break;
+    case 'docVersionForm':
+      submitNewVersion(form);
+      break;
+    case 'editDocForm':
+      submitEditDocument(form);
+      break;
+    case 'createStorageForm':
+      submitCreateStorage(form);
+      break;
+    case 'editStorageForm':
+      submitEditStorage(form);
+      break;
+    case 'settingsDocumentsForm':
+      submitSettingsDocuments(form);
+      break;
+    case 'settingsLabelsForm':
+      submitSettingsLabels(form);
+      break;
+
+    // Phase 7
+    case 'reset-password-request-submit':
+      handleResetPasswordRequestSubmit(form);
+      break;
+    case 'reset-password-confirm-submit':
+      handleResetPasswordConfirmSubmit(form);
+      break;
+    case 'save-widget-config-submit':
+      handleSaveWidgetConfigSubmit(args, form);
+      break;
+    case 'profile-email-submit':
+      handleProfileEmailSubmit(form);
+      break;
+    case 'profile-notifications-submit':
+      handleProfileNotificationsSubmit(form);
+      break;
+    case 'settings-general-submit':
+      handleSettingsGeneralSubmit(form);
+      break;
+    case 'settings-security-submit':
+      handleSettingsSecuritySubmit(form);
+      break;
+    case 'settings-stock-submit':
+      handleSettingsStockSubmit(form);
+      break;
+    case 'settings-smtp-submit':
+      handleSettingsSmtpSubmit(form);
+      break;
+    case 'settings-alerts-submit':
+      handleSettingsAlertsSubmit(form);
+      break;
+    case 'settings-audit-submit':
+      handleSettingsAuditSubmit(form);
+      break;
+
     default:
       break;
   }
 }
 
 function handleGlobalInput(e) {
+  if (e.target && e.target.id === 'documentsSearchInput') {
+    state.documentsSearchQuery = e.target.value;
+    debounce('documents-search', () => loadDocumentsList(true), 300);
+    return;
+  }
+
+  if (e.target && e.target.closest('#settingsLabelsForm')) {
+    updateLabelsPreviewLive();
+    return;
+  }
+
   const input = e.target.closest('input[data-action]');
   if (!input) return;
 
   const action = input.dataset.action;
+  if (action === 'change-labels-offset') {
+    changeLabelsOffset(input.value);
+    return;
+  }
   if (action === 'filter-users-search') {
     state.usersSearchQuery = input.value;
     renderUsersTable();
@@ -10638,6 +15983,9 @@ function handleGlobalInput(e) {
   } else if (action === 'filter-parts-search') {
     state.partsSearchQuery = input.value;
     debounce('parts-search', () => loadPartsListView(true), 300);
+  } else if (action === 'filter-audit-query') {
+    state.auditQuery = input.value;
+    debounce('audit-search', () => loadAuditList(true), 300);
   } else if (action === 'on-int-part-qty-input') {
     updateInterventionPartEstim();
   }
@@ -10648,7 +15996,13 @@ function handleGlobalChange(e) {
   if (e.target && e.target.id === 'siteSelect') {
     state.selectedSiteId = e.target.value;
     const r = currentRoute();
-    if (r === 'utilisateurs') {
+    if (r === 'tableau-de-bord') {
+      loadDashboard();
+    } else if (r === 'reporting') {
+      loadReportingData();
+    } else if (r === 'audit') {
+      loadAuditList(true);
+    } else if (r === 'utilisateurs') {
       renderUsersTable();
     } else if (r === 'lignes-de-production') {
       loadProductionLines(true);
@@ -10668,7 +16022,25 @@ function handleGlobalChange(e) {
       initStockPageView();
     } else if (r === 'maintenance-preventive') {
       initMaintenancePageView();
+    } else if (r === 'documents') {
+      loadDocumentsList(true);
     }
+    return;
+  }
+
+  if (e.target && e.target.id === 'docFileInput') {
+    const file = e.target.files && e.target.files[0];
+    if (file) {
+      const titleInput = document.getElementById('docTitleInput');
+      if (titleInput && !titleInput.value.trim()) {
+        titleInput.value = file.name.replace(/\.[^/.]+$/, '');
+      }
+    }
+    return;
+  }
+
+  if (e.target && e.target.closest('#settingsLabelsForm')) {
+    updateLabelsPreviewLive();
     return;
   }
 
@@ -10840,6 +16212,58 @@ function handleGlobalChange(e) {
         }
       }).catch(() => {});
     }
+  } else if (action === 'filter-documents-entity-type') {
+    state.documentsEntityTypeFilter = sel.value;
+    loadDocumentsList(true);
+  } else if (action === 'filter-documents-category') {
+    state.documentsCategoryFilter = sel.value;
+    loadDocumentsList(true);
+  } else if (action === 'toggle-storage-driver-fields') {
+    const isS3 = sel.value === 's3';
+    const folderFields = document.getElementById('storageFolderFields');
+    const s3Fields = document.getElementById('storageS3Fields');
+    if (folderFields) folderFields.hidden = isS3;
+    if (s3Fields) s3Fields.hidden = !isS3;
+  } else if (action === 'filter-reporting-period') {
+    state.reportingPeriod = sel.value;
+    const customDates = document.getElementById('reportingCustomDates');
+    if (customDates) customDates.hidden = sel.value !== 'custom';
+    loadReportingData();
+  } else if (action === 'filter-reporting-site') {
+    state.reportingSiteId = sel.value;
+    loadReportingData();
+  } else if (action === 'filter-reporting-line') {
+    state.reportingLineId = sel.value;
+    loadReportingData();
+  } else if (action === 'filter-reporting-equipment') {
+    state.reportingEquipmentId = sel.value;
+    loadReportingData();
+  } else if (action === 'filter-audit-action') {
+    state.auditAction = sel.value;
+    loadAuditList(true);
+  } else if (action === 'filter-audit-entity') {
+    state.auditEntity = sel.value;
+    loadAuditList(true);
+  } else if (action === 'filter-audit-site') {
+    state.auditSiteId = sel.value;
+    loadAuditList(true);
+  }
+
+  // Événements de changement sur inputs de type date
+  const dateInput = e.target.closest('input[type="date"][data-action]');
+  if (dateInput) {
+    const dAction = dateInput.dataset.action;
+    if (dAction === 'filter-reporting-from') {
+      state.reportingFrom = dateInput.value;
+      if (state.reportingPeriod === 'custom' && state.reportingFrom && state.reportingTo) {
+        loadReportingData();
+      }
+    } else if (dAction === 'filter-reporting-to') {
+      state.reportingTo = dateInput.value;
+      if (state.reportingPeriod === 'custom' && state.reportingFrom && state.reportingTo) {
+        loadReportingData();
+      }
+    }
   }
 }
 
@@ -10868,6 +16292,60 @@ async function init() {
   document.addEventListener('input', handleGlobalInput);
   document.addEventListener('change', handleGlobalChange);
   document.addEventListener('keydown', handleGlobalKeydown);
+  document.addEventListener('dragover', handleDropzoneDragOver);
+  document.addEventListener('dragleave', handleDropzoneDragLeave);
+  document.addEventListener('drop', handleDropzoneDrop);
+
+  // Glisser-déposer des widgets du tableau de bord
+  document.addEventListener('dragstart', e => {
+    const handle = e.target.closest('[data-action="widget-drag-handle"]');
+    if (!handle) return;
+    let widgetId = '';
+    try {
+      widgetId = handle.dataset.args ? JSON.parse(handle.dataset.args) : '';
+    } catch (_) {
+      widgetId = handle.dataset.args || '';
+    }
+    if (!widgetId) return;
+    const widgetEl = handle.closest('.dashboard-widget');
+    if (widgetEl) widgetEl.classList.add('dragging');
+    e.dataTransfer.setData('text/plain', widgetId);
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  document.addEventListener('dragend', e => {
+    const handle = e.target.closest('[data-action="widget-drag-handle"]');
+    if (handle) {
+      const widgetEl = handle.closest('.dashboard-widget');
+      if (widgetEl) widgetEl.classList.remove('dragging');
+    }
+  });
+
+  document.addEventListener('dragover', e => {
+    const targetWidget = e.target.closest('.dashboard-widget');
+    if (targetWidget && state.dashboardCustomizing) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    }
+  });
+
+  document.addEventListener('drop', e => {
+    const targetWidget = e.target.closest('.dashboard-widget');
+    if (!targetWidget || !state.dashboardCustomizing) return;
+    e.preventDefault();
+    const sourceId = e.dataTransfer.getData('text/plain');
+    const targetId = targetWidget.dataset.widgetId;
+    if (!sourceId || !targetId || sourceId === targetId) return;
+
+    const widgets = (state.dashboardLayout && state.dashboardLayout.widgets) || [];
+    const srcIdx = widgets.findIndex(w => w.id === sourceId);
+    const dstIdx = widgets.findIndex(w => w.id === targetId);
+    if (srcIdx !== -1 && dstIdx !== -1) {
+      const item = widgets.splice(srcIdx, 1)[0];
+      widgets.splice(dstIdx, 0, item);
+      renderDashboardGrid();
+    }
+  });
 
   // Synchronisation du thème si changement externe (OS)
   new MutationObserver(renderThemeToggle).observe(document.documentElement, { attributeFilter: ['data-theme'] });

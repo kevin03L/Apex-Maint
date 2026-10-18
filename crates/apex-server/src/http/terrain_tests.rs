@@ -22,6 +22,7 @@ async fn proxy_de_confiance_cookie_secure_et_hsts_sans_instance() {
     };
     let mut state = AppState {
         integration_rates: Default::default(),
+        widget_cache: Default::default(),
         tls_mode: "off".into(),
         trusted_proxies: Vec::new(),
         hsts_max_age: 86400,

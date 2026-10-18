@@ -323,7 +323,8 @@ pub async fn run(
         trusted_proxies: cfg.server.trusted_proxies.clone(),
         hsts_max_age: cfg.server.hsts_max_age,
         terrain_lock: Arc::new(tokio::sync::Mutex::new(())),
-        files,
+        widget_cache: Default::default(),
+        files: files.clone(),
         pool: pool.clone(),
         auth,
         secure_cookie: cfg.security.secure_cookie,
@@ -361,6 +362,42 @@ pub async fn run(
                 }
                 _ = interval.tick() => {
                     apex_core::maintenance::process_auto_generation(&scheduler_pool).await;
+                }
+            }
+        }
+    });
+
+    // File SMTP et récapitulatif ; la purge est quotidienne, sans bloquer l'API.
+    let pilotage_pool = pool.clone();
+    let pilotage_notify = Arc::clone(&shutdown_notify);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        let purge_seconds = if cfg!(debug_assertions) {
+            std::env::var("APEX_MAINT_TEST_AUDIT_PURGE_SECONDS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|n| *n > 0 && *n <= 86400)
+                .unwrap_or(86400)
+        } else {
+            86400
+        };
+        let mut purge_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(purge_seconds));
+        loop {
+            tokio::select! {
+                _ = pilotage_notify.notified() => break,
+                _ = purge_interval.tick() => {
+                    if let Err(e) = apex_core::pilotage::audit::purge(&pilotage_pool).await {
+                        tracing::error!("Purge du journal d'audit : {e}");
+                    }
+                }
+                _ = interval.tick() => {
+                    if let Err(e) = apex_core::pilotage::notifications::digest(&pilotage_pool).await {
+                        tracing::error!("Récapitulatif des échéances : {e}");
+                    }
+                    if let Err(e) = apex_core::pilotage::notifications::send_pending(&pilotage_pool, &files).await {
+                        tracing::error!("Traitement de la file d'e-mails : {e}");
+                    }
                 }
             }
         }
@@ -539,9 +576,10 @@ pub(crate) fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std
             .args(&grant_args)
             .output()?;
         if !result.status.success() {
-            return Err(std::io::Error::other(
-                "Restriction des permissions du jeton impossible",
-            ));
+            return Err(std::io::Error::other(format!(
+                "Restriction des permissions du fichier privé impossible : {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            )));
         }
         use std::io::Write;
         file.write_all(contents)?;
