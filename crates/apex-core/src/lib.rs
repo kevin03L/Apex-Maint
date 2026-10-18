@@ -6,6 +6,11 @@
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod services;
+pub mod store;
 
 pub use domain::{actor::Actor, actor::Role, pagination::Cursor, permission::Permission};
 pub use error::MaintError;
+
+#[cfg(test)]
+mod tests;

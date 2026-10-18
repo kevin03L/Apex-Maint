@@ -258,6 +258,8 @@ Les phases 0 et 1 fixent les conventions (Actor, erreurs, pagination, composants
 
 ## 5. Points à trancher plus tard
 
+Phase 1 : les dépôts utilisent provisoirement `sqlx::query` / `query_as` et `FromRow`, sans macros vérifiées à la compilation ni dépendance à `DATABASE_URL`.
+
 1. **Hors-ligne** : prévu en phase 9. Faut-il l'avancer ?
 2. **Génération automatique d'interventions préventives** : à vérifier dans l'ancien code si elle existait ou si c'était manuel.
 3. **Mot de passe oublié** : nécessite SMTP. Sinon, réinitialisation par un admin seulement (comme Supervision).

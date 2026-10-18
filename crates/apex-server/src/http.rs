@@ -6,12 +6,14 @@ use axum::{
     extract::{ConnectInfo, Request, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
 use tower_http::services::ServeDir;
+
+mod auth;
 
 /// En-têtes ajoutés par un proxy inverse (nginx, Caddy, Apache, IIS/ARR...).
 const PROXY_HEADERS: &[&str] = &[
@@ -40,6 +42,9 @@ pub struct RuntimeInfo {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub pool: sqlx::SqlitePool,
+    pub auth: apex_core::services::Auth,
+    pub secure_cookie: bool,
     pub runtime: Arc<RuntimeInfo>,
     pub control_token: String,
     pub shutdown_notify: Arc<tokio::sync::Notify>,
@@ -81,10 +86,13 @@ pub fn is_valid_control_token(headers: &HeaderMap, peer: &SocketAddr, expected: 
 /// Construit le routeur HTTP complet.
 pub fn router(state: AppState, web_dir: &FsPath) -> Router {
     let api_router = Router::new()
+        .merge(auth::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
         .route("/system/shutdown", post(api_system_shutdown))
-        .fallback(api_fallback_404);
+        .fallback(api_fallback_404)
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn_with_state(state.clone(), auth::guard));
 
     let static_service =
         ServeDir::new(web_dir).fallback(axum::routing::get(minimal_fallback_handler));
@@ -112,6 +120,32 @@ async fn minimal_fallback_handler() -> (
 async fn security_headers_middleware(req: Request, next: Next) -> Response {
     let is_api = req.uri().path().starts_with("/api/") || req.uri().path() == "/api";
     let mut res = next.run(req).await;
+    if is_api
+        && (res.status().is_client_error() || res.status().is_server_error())
+        && !res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|h| h.starts_with("application/json"))
+    {
+        let status = res.status();
+        let message = match status {
+            StatusCode::METHOD_NOT_ALLOWED => "Méthode HTTP non autorisée",
+            StatusCode::PAYLOAD_TOO_LARGE => "Corps de requête trop volumineux",
+            _ => "Requête refusée",
+        };
+        let replacement = (
+            status,
+            Json(serde_json::json!({"error":true,"message":message})),
+        )
+            .into_response();
+        res.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        res.headers_mut().remove(header::CONTENT_LENGTH);
+        *res.body_mut() = replacement.into_body();
+    }
     let h = res.headers_mut();
     h.insert(
         "x-content-type-options",

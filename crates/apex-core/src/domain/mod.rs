@@ -2,6 +2,7 @@
 
 pub mod actor;
 pub mod pagination;
+pub mod password;
 pub mod permission;
 
 pub use actor::{Actor, Role};

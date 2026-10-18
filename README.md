@@ -2,7 +2,7 @@
 
 GMAO (gestion de la maintenance assistée par ordinateur) multi-sites écrite en Rust : un moteur métier avec une IHM web pour les équipes de maintenance et de production. Deuxième produit de la gamme **Apex**, aux côtés d'[Apex Supervision](https://github.com/kevin03L/Apex-Supervision), dont il reprend l'architecture et les conventions.
 
-> **Statut : développement, phase 0 (`0.1.0-alpha.1`).** Le socle (configuration, cycle de vie, base SQLite, IHM, intégration continue) est en cours de construction. La feuille de route complète est dans [docs/PLAN.md](docs/PLAN.md).
+> **Statut : développement, phase 1 (`0.1.0-alpha.1`).** Authentification, sessions persistantes, sites, utilisateurs et matrice de permissions sont disponibles. La feuille de route complète est dans [docs/PLAN.md](docs/PLAN.md).
 
 ## Fonctionnalités prévues
 
@@ -27,6 +27,12 @@ target/debug/apex-maint run                             # Ctrl+C pour arrêter p
 ```
 
 L'IHM web est disponible sur <http://localhost:3100>.
+
+Au premier démarrage, le compte **`admin` / `admin123`** est créé ; le changement de ce mot de passe est obligatoire avant d'accéder aux fonctions d'administration. Le site « Site principal » est créé si aucun site n'existe.
+
+Avec `config init --demo` (qui active `[demo] enabled = true`), les comptes **`responsable`**, **`technicien`** et **`production`**, mot de passe **`demo1234`**, sont créés une seule fois sur le « Site de démonstration ». Réservez cette option aux instances de démonstration.
+
+Les sessions utilisent un cookie `HttpOnly`, `SameSite=Strict` et expirent après l'inactivité définie par `[security] session_ttl_hours` (12 heures par défaut). Activez `secure_cookie = true` derrière HTTPS. Les changements de droits, désactivations, suppressions et réinitialisations de mot de passe révoquent les sessions concernées.
 
 ## Développement
 

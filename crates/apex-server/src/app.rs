@@ -226,6 +226,10 @@ pub async fn run(
         StartupError::new(exit::DATABASE, message)
     })?;
     info!("Base SQLite : {} (mode WAL)", db_file.display());
+    let auth = apex_core::services::Auth::new(pool.clone(), cfg.security.session_ttl_hours);
+    auth.initialize(cfg.demo.enabled)
+        .await
+        .map_err(|e| StartupError::new(exit::DATABASE, e.to_string()))?;
 
     // 6. Jeton de contrôle local run/control.token (aléatoire 256 bits)
     let control_token = generate_control_token();
@@ -262,6 +266,9 @@ pub async fn run(
 
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
+        pool: pool.clone(),
+        auth,
+        secure_cookie: cfg.security.secure_cookie,
         runtime: Arc::new(runtime),
         control_token,
         shutdown_notify: Arc::clone(&shutdown_notify),

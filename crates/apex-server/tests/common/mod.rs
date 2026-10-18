@@ -176,6 +176,7 @@ pub fn spawn_engine(dir: &Path, config: &Path, prefix: &str) -> Child {
             cmd.env_remove(&key);
         }
     }
+    cmd.env("APEX_MAINT_TEST_LOCK_SECONDS", "3");
     cmd.spawn().expect("lancement du binaire apex-maint")
 }
 
@@ -365,6 +366,27 @@ impl Server {
 
     pub fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         wait_timeout(self.child.get(), timeout)
+    }
+
+    #[allow(dead_code)] // Utilisé par la suite auth, ce module est partagé entre suites.
+    pub fn restart(&mut self) {
+        // Redémarrage brutal volontaire : vérifie aussi la persistance dans le WAL.
+        self.child.kill();
+        self.child = ChildGuard(Some(spawn_engine(&self.dir.path, &self.config, "engine")));
+        self.wait_ready();
+    }
+
+    #[allow(dead_code)]
+    pub fn session_call(
+        &self,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        body: Option<&Value>,
+    ) -> Response {
+        let headers: Vec<_> = cookie.map(|c| vec![("Cookie", c)]).unwrap_or_default();
+        request_with_headers(self.port(), method, path, None, body, &headers)
+            .expect("requête de session")
     }
 }
 

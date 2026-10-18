@@ -101,11 +101,11 @@ fn en_tetes_de_securite_et_fichiers_statiques() {
         assert!(csp.contains("default-src 'self'"), "{path}");
     }
 
-    // Route inconnue sous /api -> 404 JSON avec Cache-Control: no-store
-    let r_404 = srv.call("GET", "/api/inexistant", None, None);
-    assert_eq!(r_404.status, 404);
-    assert_eq!(r_404.header("cache-control"), Some("no-store"));
-    assert_eq!(r_404.json()["error"], true);
+    // Route inconnue sous /api sans session -> 401 JSON (refus par défaut) avec Cache-Control: no-store
+    let r_401 = srv.call("GET", "/api/inexistant", None, None);
+    assert_eq!(r_401.status, 401);
+    assert_eq!(r_401.header("cache-control"), Some("no-store"));
+    assert_eq!(r_401.json()["error"], true);
 }
 
 // ============================================================================

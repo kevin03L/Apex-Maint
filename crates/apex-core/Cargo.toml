@@ -17,6 +17,10 @@ serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+argon2.workspace = true
+sha2.workspace = true
+rand.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
