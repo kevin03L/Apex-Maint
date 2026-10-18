@@ -26,6 +26,7 @@ pub struct User {
     pub id: String,
     pub site_id: Option<String>,
     pub username: String,
+    pub email: Option<String>,
     pub display_name: String,
     pub role: String,
     pub must_change_password: bool,
@@ -40,7 +41,7 @@ pub struct User {
     pub locked_until: Option<String>,
 }
 
-pub(crate) const USER_COLUMNS: &str = "id,site_id,username,display_name,role,must_change_password,active,last_login_at,created_at,updated_at,password_hash,locked_until,COALESCE(locked_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'),0) AS locked";
+pub(crate) const USER_COLUMNS: &str = "id,site_id,username,email,display_name,role,must_change_password,active,last_login_at,created_at,updated_at,password_hash,locked_until,COALESCE(locked_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'),0) AS locked";
 
 pub fn require_admin(actor: &Actor) -> Result<(), MaintError> {
     if actor.is_admin() {
@@ -211,6 +212,7 @@ pub async fn save_site(
 #[serde(deny_unknown_fields)]
 pub struct CreateUser {
     pub username: String,
+    pub email: Option<String>,
     pub display_name: String,
     pub role: Role,
     pub site_id: Option<String>,
@@ -267,6 +269,9 @@ pub async fn create_user(
     input: CreateUser,
 ) -> Result<User, MaintError> {
     actor.require_permission(Permission::UsersManage)?;
+    if let Some(value) = &input.email {
+        crate::pilotage::settings::email(value)?;
+    }
     text(&input.username)?;
     text(&input.display_name)?;
     password::validate_new_password(&input.password, None)?;
@@ -274,8 +279,8 @@ pub async fn create_user(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     check_assignment(&mut tx, actor, input.role, input.site_id.as_deref()).await?;
     let uid = id();
-    sqlx::query("INSERT INTO users(id,site_id,username,display_name,role,password_hash,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
-        .bind(&uid).bind(&input.site_id).bind(input.username.trim()).bind(input.display_name.trim()).bind(input.role.as_str()).bind(hash).bind(input.active).bind(now()).bind(now()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO users(id,site_id,username,email,display_name,role,password_hash,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(&uid).bind(&input.site_id).bind(input.username.trim()).bind(&input.email).bind(input.display_name.trim()).bind(input.role.as_str()).bind(hash).bind(input.active).bind(now()).bind(now()).execute(&mut *tx).await?;
     let saved = scoped_user(&mut tx, actor, &uid).await?;
     audit(
         &mut tx,
@@ -318,10 +323,17 @@ pub async fn update_user(
     let map = patch
         .as_object()
         .ok_or_else(|| MaintError::BadRequest("Objet JSON attendu".into()))?;
-    if map
-        .keys()
-        .any(|k| !["username", "display_name", "role", "site_id", "active"].contains(&k.as_str()))
-    {
+    if map.keys().any(|k| {
+        ![
+            "username",
+            "display_name",
+            "role",
+            "site_id",
+            "active",
+            "email",
+        ]
+        .contains(&k.as_str())
+    }) {
         return Err(MaintError::BadRequest("Champ utilisateur inconnu".into()));
     }
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -338,6 +350,7 @@ pub async fn update_user(
     #[derive(Deserialize)]
     struct Edit {
         username: String,
+        email: Option<String>,
         display_name: String,
         role: Role,
         site_id: Option<String>,
@@ -345,6 +358,9 @@ pub async fn update_user(
     }
     let edit: Edit = serde_json::from_value(next)
         .map_err(|_| MaintError::BadRequest("Champs utilisateur invalides".into()))?;
+    if let Some(value) = &edit.email {
+        crate::pilotage::settings::email(value)?;
+    }
     text(&edit.username)?;
     text(&edit.display_name)?;
     if !actor.is_admin() {
@@ -373,14 +389,15 @@ pub async fn update_user(
     if actor.is_admin() {
         check_assignment(&mut tx, actor, edit.role, edit.site_id.as_deref()).await?;
     }
-    sqlx::query("UPDATE users SET username=?,display_name=?,role=?,site_id=?,active=?,deleted_at=?,updated_at=? WHERE id=? AND (? OR site_id=?)")
-        .bind(edit.username.trim()).bind(edit.display_name.trim()).bind(edit.role.as_str()).bind(&edit.site_id).bind(edit.active)
+    sqlx::query("UPDATE users SET email=?,username=?,display_name=?,role=?,site_id=?,active=?,deleted_at=?,updated_at=? WHERE id=? AND (? OR site_id=?)")
+        .bind(&edit.email).bind(edit.username.trim()).bind(edit.display_name.trim()).bind(edit.role.as_str()).bind(&edit.site_id).bind(edit.active)
         .bind(if delete {Some(now())} else {None}).bind(now()).bind(uid).bind(actor.is_admin()).bind(&actor.site_id).execute(&mut *tx).await?;
     if delete || !edit.active || edit.role.as_str() != before.role || edit.site_id != before.site_id
     {
         revoke(&mut tx, actor, uid, None).await?;
     }
     let mut after = before.clone();
+    after.email = edit.email;
     after.username = edit.username.trim().into();
     after.display_name = edit.display_name.trim().into();
     after.role = edit.role.to_string();

@@ -17,6 +17,7 @@ mod auth;
 mod documents;
 mod interventions;
 mod maintenance;
+mod pilotage;
 mod referentiel;
 mod stock;
 
@@ -47,6 +48,7 @@ pub struct RuntimeInfo {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub widget_cache: pilotage::WidgetCache,
     pub files: apex_core::documents::storage::FileStore,
     pub pool: sqlx::SqlitePool,
     pub auth: apex_core::services::Auth,
@@ -98,6 +100,7 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
         .merge(stock::routes())
         .merge(maintenance::routes())
         .merge(documents::routes())
+        .merge(pilotage::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
         .route("/system/shutdown", post(api_system_shutdown))

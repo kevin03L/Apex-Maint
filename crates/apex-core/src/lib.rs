@@ -9,6 +9,7 @@ pub mod domain;
 pub mod error;
 pub mod interventions;
 pub mod maintenance;
+pub mod pilotage;
 pub mod referentiel;
 pub mod services;
 pub mod stock;
