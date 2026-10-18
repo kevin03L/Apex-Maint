@@ -31,6 +31,16 @@ d'écart, et chaque spécification de phase doit les reprendre.
   stockages sera un outil à part).
 - **Le QR code contient seulement le code de l'équipement** (ex. `PRS-01`). Il est lu par le scanner
   intégré à l'IHM (phase 9), qui ouvre la fiche. Étiquette imprimable : QR, code et nom.
+- **Documents joints** aux équipements, aux interventions, aux pièces détachées et aux plannings
+  préventifs.
+- **Types de fichiers paramétrables** par l'admin : PDF, images, Word, Excel et CAO (DWG, DXF,
+  STEP, IGES), choisis dans un catalogue sûr (SVG, HTML et exécutables interdits). La taille
+  maximale est réglable, 50 Mo par défaut.
+- **Historique des versions** : une nouvelle version remplace la version affichée, et les
+  anciennes restent consultables et restaurables.
+- **Format d'étiquette paramétrable** : planche (A4 ou Letter, colonnes, lignes, marges) ou
+  étiquette unitaire aux dimensions libres, pour une imprimante thermique ; le contenu affiché est
+  au choix.
 
 ## Phase 7 — Pilotage et paramètres
 
@@ -42,14 +52,41 @@ d'écart, et chaque spécification de phase doit les reprendre.
     ou non.
   Les paramètres SMTP serviront aussi aux alertes (stock bas, échéances).
 - **Interface en français seulement**, comme Supervision.
+- **Tableau de bord paramétrable** :
+  - une disposition par défaut pour chaque rôle, fixée par l'admin ;
+  - une disposition personnelle pour les utilisateurs qui ont `dashboard.customize` ;
+  - des widgets filtrés par permission ;
+  - indicateurs retenus : activité des interventions, fiabilité (MTBF, MTTR), préventif, coûts et
+    stock.
+- **Exports en CSV, Excel (.xlsx) et PDF** : listes filtrées, rapports, fiche intervention.
+- **Alertes par e-mail** : stock bas, échéances préventives, intervention critique ou machine à
+  l'arrêt, affectation d'un technicien. Chaque utilisateur choisit ses alertes ; les valeurs par
+  défaut viennent de son rôle.
+- **Journal d'audit** : durée de conservation paramétrable, 3 ans par défaut et 1 an au minimum.
 
 ## Phase 8 — Exploitation
 
 - **Pas d'import de l'ancienne GMAO** : `import-legacy` est retiré du plan, et on démarre à vide.
+- **Sauvegardes automatiques (quotidiennes) et manuelles**, avec rétention et dossier de
+  destination réglables.
+- **Fichiers joints dans les sauvegardes** : réglage paramétrable, qui par défaut inclut ceux d'un
+  stockage dossier et garde la seule référence d'un stockage S3. Il peut tout inclure, S3 compris,
+  ou rien.
+- **Purge** des données supprimées depuis longtemps (durée réglable) et des journaux anciens. Pas
+  de purge automatique des fichiers orphelins : ils sont seulement signalés par le contrôle
+  d'intégrité.
+- **Plateformes** : Windows (Inno Setup) et Debian / Ubuntu (DEB). Ni Docker ni archive portable
+  pour l'instant.
 
 ## Phase 9 — Terrain
 
 - Le mode hors-ligne des interventions **reste en phase 9**, une fois les écrans stabilisés.
+- **HTTPS paramétrable**, obligatoire pour le hors-ligne et la caméra : TLS intégré (certificat
+  fourni, ou autorité locale auto-signée générée) ou proxy inverse déclaré dans la configuration.
+- **Hors ligne, le technicien peut** consulter ses interventions, les équipements et les pièces,
+  avancer ses interventions (prise en charge, temps, compte rendu, clôture) et déclarer une
+  intervention. Les photos, les pièces jointes et la consommation de pièces restent réservées au
+  mode en ligne.
 
 ## Phase 10 — Liaison avec Apex Supervision
 
@@ -59,10 +96,15 @@ d'écart, et chaque spécification de phase doit les reprendre.
   bases restent séparées.
 - **Chaque type d'événement s'active séparément.** Sont retenus :
   - **compteurs d'heures** : ils alimentent les compteurs d'équipement, donc les plannings `counter` ;
-  - **statut de l'équipement** : l'arrêt ou la dégradation détectés par Supervision mettent à jour le
-    statut dans Maint.
+  - **état de l'équipement** : **affiché à titre d'information seulement** (bandeau sur la fiche,
+    historique, widget). Il ne modifie **pas** le statut de l'équipement dans Maint et ne crée pas
+    d'intervention. Cette décision du 2026-10-18 remplace la précédente, qui prévoyait une mise à
+    jour du statut.
   L'alarme qui créerait une demande d'intervention n'est pas retenue pour l'instant.
-- Correspondance des équipements : par code d'équipement, au sein du site de la clé.
+- Correspondance des équipements : par `external_ref` (référence Supervision) ou à défaut par le
+  code de l'équipement, au sein du site de la clé. Les compteurs sont rapprochés uniquement par leur
+  `external_ref`.
+- **Pas de sens Maint → Supervision** pour l'instant.
 
 ## Restent ouverts
 
