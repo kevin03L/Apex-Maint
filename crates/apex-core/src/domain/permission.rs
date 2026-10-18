@@ -51,6 +51,7 @@ pub enum Permission {
     MaintenanceManage,
     StockView,
     StockMovements,
+    StockAdjust,
     SuppliersView,
     SuppliersManage,
     UsersView,
@@ -90,6 +91,7 @@ impl Permission {
         Self::MaintenanceManage,
         Self::StockView,
         Self::StockMovements,
+        Self::StockAdjust,
         Self::SuppliersView,
         Self::SuppliersManage,
         Self::UsersView,
@@ -129,6 +131,7 @@ impl Permission {
             Self::MaintenanceManage => "maintenance.manage",
             Self::StockView => "stock.view",
             Self::StockMovements => "stock.movements",
+            Self::StockAdjust => "stock.adjust",
             Self::SuppliersView => "suppliers.view",
             Self::SuppliersManage => "suppliers.manage",
             Self::UsersView => "users.view",
@@ -169,6 +172,7 @@ impl Permission {
             "maintenance.manage" => Ok(Self::MaintenanceManage),
             "stock.view" => Ok(Self::StockView),
             "stock.movements" => Ok(Self::StockMovements),
+            "stock.adjust" => Ok(Self::StockAdjust),
             "suppliers.view" => Ok(Self::SuppliersView),
             "suppliers.manage" => Ok(Self::SuppliersManage),
             "users.view" => Ok(Self::UsersView),
@@ -225,7 +229,7 @@ mod tests {
 
     #[test]
     fn all_permissions_roundtrip() {
-        assert_eq!(Permission::ALL.len(), 34);
+        assert_eq!(Permission::ALL.len(), 35);
         for &perm in Permission::ALL {
             let s = perm.as_str();
             let parsed = Permission::parse(s).expect("analyse de la permission");

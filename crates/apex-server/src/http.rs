@@ -16,6 +16,7 @@ use tower_http::services::ServeDir;
 mod auth;
 mod interventions;
 mod referentiel;
+mod stock;
 
 /// En-têtes ajoutés par un proxy inverse (nginx, Caddy, Apache, IIS/ARR...).
 const PROXY_HEADERS: &[&str] = &[
@@ -91,6 +92,7 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
         .merge(auth::routes())
         .merge(referentiel::routes())
         .merge(interventions::routes())
+        .merge(stock::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
         .route("/system/shutdown", post(api_system_shutdown))

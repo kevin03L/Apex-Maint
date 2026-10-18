@@ -77,7 +77,7 @@ fn connexion_changement_impose_et_protection_des_routes() {
         .session_call("GET", "/api/auth/me", Some(&cookie), None)
         .json();
     assert_eq!(me["must_change_password"], true);
-    assert_eq!(me["permissions"].as_array().unwrap().len(), 34);
+    assert_eq!(me["permissions"].as_array().unwrap().len(), 35);
     assert!(me["user"].get("password_hash").is_none());
     assert!(me["user"].get("failed_attempts").is_none());
     assert!(me["user"].get("locked_until").is_none());
@@ -319,7 +319,7 @@ fn isolation_sites_permissions_et_garde_fous() {
     let r = srv.session_call("GET", "/api/permissions", Some(&admin), None);
     assert_eq!(
         r.json()["matrix"]["responsable"].as_array().unwrap().len(),
-        33
+        34
     );
     assert_eq!(
         srv.session_call(

@@ -427,37 +427,37 @@ pub struct InterventionFilter {
 
 // Ligne brute retournée par SQL avec les jointures
 #[derive(Debug, FromRow)]
-struct RawInterventionRow {
-    id: String,
-    site_id: String,
-    code: String,
-    title: String,
-    description: Option<String>,
+pub(crate) struct RawInterventionRow {
+    pub(crate) id: String,
+    pub(crate) site_id: String,
+    pub(crate) code: String,
+    pub(crate) title: String,
+    pub(crate) description: Option<String>,
     #[sqlx(rename = "type")]
-    r#type: String,
-    priority: String,
-    status: String,
-    machine_state: String,
-    equipment_id: Option<String>,
-    parent_id: Option<String>,
-    reported_by_id: String,
-    reported_at: String,
-    started_at: Option<String>,
-    completed_at: Option<String>,
-    duration_minutes: Option<i64>,
-    solution_report: Option<String>,
-    cancelled_at: Option<String>,
-    cancelled_by_id: Option<String>,
-    cancel_reason: Option<String>,
-    created_at: String,
-    updated_at: String,
-    equipment_code: Option<String>,
-    equipment_name: Option<String>,
-    reported_by_name: Option<String>,
-    cancelled_by_name: Option<String>,
-    parent_code: Option<String>,
-    parent_title: Option<String>,
-    sub_interventions_count: i64,
+    pub(crate) r#type: String,
+    pub(crate) priority: String,
+    pub(crate) status: String,
+    pub(crate) machine_state: String,
+    pub(crate) equipment_id: Option<String>,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) reported_by_id: String,
+    pub(crate) reported_at: String,
+    pub(crate) started_at: Option<String>,
+    pub(crate) completed_at: Option<String>,
+    pub(crate) duration_minutes: Option<i64>,
+    pub(crate) solution_report: Option<String>,
+    pub(crate) cancelled_at: Option<String>,
+    pub(crate) cancelled_by_id: Option<String>,
+    pub(crate) cancel_reason: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) equipment_code: Option<String>,
+    pub(crate) equipment_name: Option<String>,
+    pub(crate) reported_by_name: Option<String>,
+    pub(crate) cancelled_by_name: Option<String>,
+    pub(crate) parent_code: Option<String>,
+    pub(crate) parent_title: Option<String>,
+    pub(crate) sub_interventions_count: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -1231,6 +1231,16 @@ pub async fn complete_intervention(
             .await?;
     }
 
+    // Libération des réservations de pièces préparées non consommées (Phase 4 §7.3)
+    sqlx::query(
+        "UPDATE stock_reservations SET status = 'released', closed_at = ?, updated_at = ? WHERE intervention_id = ? AND status = 'prepared'",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+
     let updated = fetch_single_intervention_with_conn(&mut tx, id).await?;
 
     store::audit(
@@ -1306,6 +1316,16 @@ pub async fn cancel_intervention(
     if let Some(eq_id) = &current.equipment_id {
         recalculate_equipment_status(&mut tx, eq_id, None).await?;
     }
+
+    // Libération des réservations de pièces préparées (Phase 4 §7.3)
+    sqlx::query(
+        "UPDATE stock_reservations SET status = 'released', closed_at = ?, updated_at = ? WHERE intervention_id = ? AND status = 'prepared'",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
 
     let updated = fetch_single_intervention_with_conn(&mut tx, id).await?;
 
@@ -1457,6 +1477,16 @@ pub async fn delete_intervention(
     if let Some(eq_id) = &current.equipment_id {
         recalculate_equipment_status(&mut tx, eq_id, None).await?;
     }
+
+    // Libération des réservations de pièces préparées (Phase 4 §7.3)
+    sqlx::query(
+        "UPDATE stock_reservations SET status = 'released', closed_at = ?, updated_at = ? WHERE intervention_id = ? AND status = 'prepared'",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
 
     store::audit(
         &mut tx,
@@ -1873,7 +1903,7 @@ async fn validate_parent_for_sub_intervention(
 }
 
 /// Récupère une intervention brute avec contrôle d'accès multi-sites (404 si autre site).
-async fn scoped_intervention_raw(
+pub(crate) async fn scoped_intervention_raw(
     conn: &mut SqliteConnection,
     actor: &Actor,
     id: &str,

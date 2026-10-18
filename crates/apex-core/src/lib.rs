@@ -9,6 +9,7 @@ pub mod error;
 pub mod interventions;
 pub mod referentiel;
 pub mod services;
+pub mod stock;
 pub mod store;
 
 pub use domain::{actor::Actor, actor::Role, pagination::Cursor, permission::Permission};

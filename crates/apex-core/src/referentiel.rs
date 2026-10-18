@@ -1738,6 +1738,18 @@ pub async fn delete_location(
         ));
     }
 
+    let stock_count: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(quantity), 0) FROM stock WHERE location_id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    if stock_count > 0 {
+        return Err(MaintError::Conflict(
+            "Impossible de supprimer un emplacement contenant du stock".into(),
+        ));
+    }
+
     let now = store::now();
 
     sqlx::query(

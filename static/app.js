@@ -147,6 +147,159 @@ function formatDurationMinutes(minutes) {
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
 
+/** Formate un montant en centimes d'euro en chaîne lisible en euros (ex. 1450 -> "14,50 €"). */
+function formatCents(cents) {
+  if (cents === null || cents === undefined || cents === '') return '—';
+  const num = parseInt(cents, 10);
+  if (isNaN(num)) return '—';
+  return (num / 100).toLocaleString('fr-FR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }) + ' €';
+}
+
+/** Formate des centimes pour un champ de formulaire type number step 0.01. */
+function centsToEuroInput(cents) {
+  if (cents === null || cents === undefined || cents === '') return '';
+  const num = parseInt(cents, 10);
+  if (isNaN(num)) return '';
+  return (num / 100).toFixed(2);
+}
+
+/** Convertit une saisie utilisateur en euros ("14,50" ou "14.50") en centimes entiers. */
+function eurosToCents(val) {
+  if (val === null || val === undefined || val === '') return 0;
+  const cleaned = String(val).replace(',', '.').trim();
+  const num = parseFloat(cleaned);
+  if (isNaN(num) || num < 0) return 0;
+  return Math.round(num * 100);
+}
+
+/** Libellé convivial d'une catégorie de pièce détachée. */
+function formatPartCategory(category) {
+  switch (category) {
+    case 'roulement':
+      return 'Roulement';
+    case 'visserie':
+      return 'Visserie / Fixation';
+    case 'moteur':
+      return 'Moteur / Réducteur';
+    case 'pneumatique':
+      return 'Pneumatique';
+    case 'hydraulique':
+      return 'Hydraulique';
+    case 'electrique':
+      return 'Électrique';
+    case 'capteur':
+      return 'Capteur / Détection';
+    case 'mecanique':
+      return 'Mécanique';
+    case 'consommable':
+      return 'Consommable';
+    default:
+      return category || 'Autre';
+  }
+}
+
+/** Libellé convivial pour l'unité de gestion d'une pièce. */
+function formatPartUnit(unit) {
+  switch (unit) {
+    case 'piece':
+      return 'Pièce(s)';
+    case 'metre':
+      return 'Mètre(s)';
+    case 'litre':
+      return 'Litre(s)';
+    case 'kg':
+      return 'Kg';
+    case 'lot':
+      return 'Lot(s)';
+    case 'boite':
+      return 'Boîte(s)';
+    default:
+      return unit || 'Pièce';
+  }
+}
+
+/** Libellé convivial pour un type de mouvement de stock. */
+function formatMovementType(type) {
+  switch (type) {
+    case 'in':
+      return 'Entrée / Réception';
+    case 'out':
+      return 'Sortie intervention';
+    case 'transfer':
+      return 'Transfert interne';
+    case 'adjustment':
+      return 'Ajustement inventaire';
+    default:
+      return type || 'Mouvement';
+  }
+}
+
+/** Badge stylé pour un type de mouvement de stock. */
+function movementTypeBadge(type) {
+  return `<span class="badge badge-mvt-${esc(type)}">${esc(formatMovementType(type))}</span>`;
+}
+
+/** Libellé convivial pour un motif d'ajustement. */
+function formatAdjustmentKind(kind) {
+  switch (kind) {
+    case 'inventaire':
+      return 'Écart d\'inventaire';
+    case 'rebut':
+      return 'Mise au rebut (qualité)';
+    case 'perte':
+      return 'Perte constatée';
+    case 'casse':
+      return 'Casse accidentelle';
+    default:
+      return kind || 'Ajustement';
+  }
+}
+
+/** Libellé convivial pour un statut de réservation de pièce. */
+function formatReservationStatus(status) {
+  switch (status) {
+    case 'prepared':
+      return 'Préparée';
+    case 'consumed':
+      return 'Consommée';
+    case 'released':
+      return 'Remise en rayon';
+    default:
+      return status || '—';
+  }
+}
+
+/** Badge stylé pour un statut de réservation. */
+function reservationStatusBadge(status) {
+  return `<span class="badge badge-res-${esc(status)}">${esc(formatReservationStatus(status))}</span>`;
+}
+
+/** Badge stylé pour le niveau de stock d'une pièce (En stock, Stock bas, Rupture). */
+function partStockBadge(part) {
+  if (part.total_stock === 0) {
+    return `<span class="badge badge-stock-zero">${icon('i-alert')} <span>Rupture (0)</span></span>`;
+  }
+  if (part.is_low_stock) {
+    return `<span class="badge badge-stock-low">${icon('i-alert')} <span>Stock bas (${esc(part.total_stock)} / seuil ${esc(part.effective_threshold)})</span></span>`;
+  }
+  return `<span class="badge badge-stock-ok"><span>En stock (${esc(part.total_stock)})</span></span>`;
+}
+
+/** Groupe de pastilles détaillant En stock / Réservé / Disponible. */
+function stockLevelsPill(part) {
+  const availCls = part.available_stock === 0 ? 'avail-zero' : (part.is_low_stock ? 'avail-low' : '');
+  return `
+    <div class="stock-pill-group" title="Physique : ${esc(part.total_stock)} — Réservé : ${esc(part.reserved_stock)} — Disponible : ${esc(part.available_stock)}">
+      <span class="stock-pill">Stock: <b>${esc(part.total_stock)}</b></span>
+      ${part.reserved_stock > 0 ? `<span class="stock-pill" title="Pièces réservées préparées pour interventions">Réservé: <b>${esc(part.reserved_stock)}</b></span>` : ''}
+      <span class="stock-pill pill-avail ${availCls}">Dispo: <b>${esc(part.available_stock)}</b></span>
+    </div>
+  `;
+}
+
 /** Libellé convivial pour un statut d'intervention. */
 function formatInterventionStatus(status) {
   switch (status) {
@@ -422,6 +575,55 @@ async function api(path, options = {}) {
   return parseJsonSafe(res);
 }
 
+/**
+ * Adapte une ligne de stock, de mouvement, de réservation ou de pièce renvoyée à plat par le
+ * serveur (part_reference, location_name, user_display_name…) aux objets imbriqués lus par les
+ * vues (part, location, created_by…). Les champs déjà présents ne sont jamais écrasés.
+ */
+function adaptStock(o) {
+  if (!o || typeof o !== 'object') return o;
+  const r = { ...o };
+  const ref = (id, code, name) => ({ id, code, name });
+  if (!r.part && (o.part_reference || o.part_name)) {
+    r.part = { id: o.part_id, reference: o.part_reference, name: o.part_name, unit: o.part_unit };
+  }
+  if (!r.location && (o.location_code || o.location_name)) r.location = ref(o.location_id, o.location_code, o.location_name);
+  if (!r.from_location && o.from_location_id) r.from_location = ref(o.from_location_id, o.from_location_code, o.from_location_name);
+  if (!r.to_location && o.to_location_id) r.to_location = ref(o.to_location_id, o.to_location_code, o.to_location_name);
+  if (!r.created_by && o.user_display_name) r.created_by = { id: o.user_id, display_name: o.user_display_name };
+  if (!r.reserved_by && o.prepared_by_name) r.reserved_by = { id: o.prepared_by_id, display_name: o.prepared_by_name };
+  if (!r.intervention && o.intervention_id && o.intervention_code) {
+    r.intervention = { id: o.intervention_id, code: o.intervention_code, title: o.intervention_title };
+  }
+  if (r.reserved === undefined && o.reserved_quantity !== undefined) r.reserved = o.reserved_quantity;
+  if (r.available === undefined && o.available_quantity !== undefined) r.available = o.available_quantity;
+  if (r.available_stock === undefined && o.total_available !== undefined) r.available_stock = o.total_available;
+  if (r.total_price_cents === undefined && o.movement_id && Number.isInteger(o.unit_price_cents)) {
+    r.total_price_cents = o.quantity * o.unit_price_cents;
+  }
+  if (r.reference === undefined && o.part_reference) r.reference = o.part_reference;
+  if (r.name === undefined && o.part_name) r.name = o.part_name;
+  return r;
+}
+
+/**
+ * Charge une intervention avec ses pièces consommées et ses réservations, servies par le
+ * serveur sur des routes dédiées (absentes sans la permission stock.view).
+ */
+async function fetchInterventionFull(id) {
+  const base = `/api/interventions/${encodeURIComponent(id)}`;
+  const inter = await api(base);
+  if (hasPermission('stock.view')) {
+    const [parts, reservations] = await Promise.all([
+      api(`${base}/parts`).catch(() => []),
+      api(`${base}/reservations`).catch(() => []),
+    ]);
+    inter.parts = (Array.isArray(parts) ? parts : []).map(adaptStock);
+    inter.reservations = (Array.isArray(reservations) ? reservations : []).map(adaptStock);
+  }
+  return inter;
+}
+
 /** Tente de lire le corps d'une réponse sous forme JSON sans lever d'exception. */
 async function parseJsonSafe(res) {
   try {
@@ -514,8 +716,8 @@ function confirmDialog(title, message, confirmLabel = 'Confirmer', danger = fals
 // 5. MODULES, PERMISSIONS ET RÔLES
 // ============================================================================
 
-/** Phase actuelle du projet (Phase 3 : Module Interventions). */
-const CURRENT_PHASE = 3;
+/** Phase actuelle du projet (Phase 4 : Pièces & stock). */
+const CURRENT_PHASE = 4;
 
 /** Liste de tous les modules de l'application avec leur permission de vue requise. */
 const MODULES = [
@@ -588,6 +790,7 @@ const PERMISSION_DOMAINS = [
       { key: 'parts.delete', label: 'Supprimer une pièce' },
       { key: 'stock.view', label: 'Consulter le stock' },
       { key: 'stock.movements', label: 'Saisir des mouvements de stock' },
+      { key: 'stock.adjust', label: 'Ajuster les stocks (inventaires et rebuts)' },
       { key: 'suppliers.view', label: 'Consulter les fournisseurs' },
       { key: 'suppliers.manage', label: 'Gérer les fournisseurs' },
     ],
@@ -670,6 +873,33 @@ const state = {
   currentInterventionDetail: null,
   currentInterventionLoading: false,
 
+  // Pièces & Stock (Phase 4)
+  parts: [],
+  partsNextCursor: null,
+  partsLoading: false,
+  partsSearchQuery: '',
+  partsCategoryFilter: '',
+  partsSupplierFilter: '',
+  partsLowStockFilter: false,
+  partsLowStockCount: 0,
+  stockActiveTab: 'catalog', // 'catalog' | 'stock' | 'movements' | 'alerts'
+
+  stockLevels: [],
+  stockLevelsLoading: false,
+  stockLevelsLocationFilter: '',
+
+  stockMovements: [],
+  stockMovementsNextCursor: null,
+  stockMovementsLoading: false,
+  stockMovementsSearchQuery: '',
+  stockMovementsTypeFilter: '',
+
+  stockAlerts: [],
+  stockAlertsLoading: false,
+
+  currentPartDetail: null,
+  currentPartLoading: false,
+
   // Vue Utilisateurs
   usersTab: 'users', // 'users' | 'permissions'
   usersSearchQuery: '',
@@ -708,6 +938,9 @@ function canManageUsers() {
 function isModuleAllowed(mod) {
   if (!state.currentUser) return false;
   if (mod.adminOnly && !isAdmin()) return false;
+  if (mod.id === 'stock') {
+    return hasPermission('stock.view') || hasPermission('parts.view');
+  }
   if (mod.perm && !hasPermission(mod.perm)) return false;
   return true;
 }
@@ -1109,7 +1342,8 @@ function currentRouteInfo() {
   const path = raw.split(/[?#]/)[0].replace(/\/+$/, '');
   if (path === 'profil') return { route: 'profil', id: null };
   const parts = path.split('/');
-  const root = parts[0];
+  let root = parts[0];
+  if (root === 'pieces') root = 'stock';
   const id = parts.length > 1 ? parts.slice(1).join('/') : null;
   const mod = MODULES.find(m => m.id === root);
   return {
@@ -1171,6 +1405,14 @@ async function render() {
     } else {
       view.innerHTML = interventionsPage();
       await initInterventionsPageView();
+    }
+  } else if (route === 'stock') {
+    if (id) {
+      view.innerHTML = partDetailPage(id);
+      await initPartDetailPageView(id);
+    } else {
+      view.innerHTML = stockPage();
+      await initStockPageView();
     }
   } else if (route === 'utilisateurs') {
     view.innerHTML = usersPage();
@@ -2917,14 +3159,49 @@ async function openEquipmentDetailModal(equipmentId) {
     if (!eq) throw new Error('Équipement introuvable.');
 
     let subItems = [];
+    let eqParts = [];
     try {
-      const subRes = await api(`/api/equipments?parent_id=${encodeURIComponent(equipmentId)}&limit=100`);
+      const [subRes, partsRes] = await Promise.all([
+        api(`/api/equipments?parent_id=${encodeURIComponent(equipmentId)}&limit=100`),
+        api(`/api/equipments/${encodeURIComponent(equipmentId)}/parts`)
+      ]);
       subItems = subRes && Array.isArray(subRes.items) ? subRes.items : [];
+      eqParts = (Array.isArray(partsRes) ? partsRes : []).map(adaptStock);
     } catch (_) {}
 
     const canEdit = hasPermission('equipments.edit');
+    const canManageParts = canEdit && hasPermission('parts.edit');
     const lineLabel = eq.production_line ? `${eq.production_line.code} — ${eq.production_line.name}` : 'Aucune ligne rattachée';
     const parentLabel = eq.parent ? `${eq.parent.code} — ${eq.parent.name}` : 'Équipement racine (aucun parent)';
+
+    const partsRows = eqParts.map(item => {
+      const p = item.part || {};
+      const avail = p.available_stock !== undefined ? p.available_stock : (p.total_stock || 0);
+      return `
+        <tr>
+          <td>
+            <a href="#/pieces/${esc(p.id)}" class="link-action mono" data-action="close-modal">
+              <b>${esc(p.reference || '—')}</b>
+            </a>
+          </td>
+          <td>${esc(p.name || '—')}</td>
+          <td class="mono"><b>${esc(item.quantity_recommended || 1)}</b></td>
+          <td><span class="hint">${esc(item.notes || '—')}</span></td>
+          <td>
+            <span class="stock-pill pill-avail ${avail <= (p.effective_threshold || 0) ? 'avail-low' : ''}">
+              Dispo: <b>${esc(avail)}</b> ${esc(formatPartUnit(p.unit))}
+            </span>
+          </td>
+          ${canManageParts ? `
+            <td>
+              <button type="button" class="btn sm danger" title="Dissocier la pièce" data-action="delete-equipment-part" data-args="${jsArg({ equipmentId: eq.id, partId: p.id })}">
+                ${icon('i-trash')}
+              </button>
+            </td>
+          ` : ''}
+        </tr>
+      `;
+    }).join('');
 
     const bodyHtml = `
       <div class="detail-grid">
@@ -2951,6 +3228,38 @@ async function openEquipmentDetailModal(equipmentId) {
           </dl>
         </div>
       </div>
+
+      <!-- PIÈCES DÉTACHÉES RECOMMANDÉES -->
+      <div class="detail-card detail-card-spaced">
+        <div class="detail-nav-bar">
+          <h3>${icon('i-box')} Pièces détachées recommandées (${eqParts.length})</h3>
+          ${canManageParts ? `
+            <button type="button" class="btn sm" data-action="open-add-equipment-part" data-args="${jsArg(eq.id)}">
+              ${icon('i-plus')} <span>Associer une pièce</span>
+            </button>
+          ` : ''}
+        </div>
+        ${eqParts.length ? `
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Référence</th>
+                  <th>Désignation</th>
+                  <th>Qté préconisée</th>
+                  <th>Notes d'assemblage</th>
+                  <th>Stock magasin</th>
+                  ${canManageParts ? `<th>Action</th>` : ''}
+                </tr>
+              </thead>
+              <tbody>
+                ${partsRows}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="hint">Aucune pièce détachée n\'est encore associée à cet équipement.</p>'}
+      </div>
+
       <div class="detail-card detail-card-spaced">
         <h3>${icon('i-gear')} Sous-équipements (${subItems.length})</h3>
         ${subItems.length ? `
@@ -4300,7 +4609,7 @@ async function loadInterventionDetail(id) {
   container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des détails de l'intervention…</p>`;
 
   try {
-    const inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+    const inter = await fetchInterventionFull(id);
     state.currentInterventionDetail = inter;
     renderInterventionDetailView(inter);
   } catch (err) {
@@ -4507,6 +4816,80 @@ function renderInterventionDetailView(inter) {
     subRows = `<tr><td colspan="7" class="empty-cell">Aucune sous-intervention rattachée.</td></tr>`;
   }
 
+  // --- Phase 4 : Réservations et pièces consommées ---
+  const canManageParts = hasPermission('stock.movements') && (isOpen || isInProgress);
+
+  // Réservations de pièces préparées
+  const resList = Array.isArray(inter.reservations) ? inter.reservations : [];
+  let resRows = resList.map(r => {
+    const actions = [];
+    if (r.status === 'prepared' && canManageParts) {
+      actions.push(`
+        <button type="button" class="btn sm primary" data-action="open-consume-reservation" data-args="${jsArg({ reservationId: r.id, partName: r.part ? r.part.name : '', maxQuantity: r.quantity, interventionId: inter.id })}" title="Consommer sur l'intervention">
+          ${icon('i-check')} <span>Consommer</span>
+        </button>
+        <button type="button" class="btn sm danger" data-action="release-reservation" data-args="${jsArg({ reservationId: r.id, interventionId: inter.id })}" title="Remettre en rayon">
+          ${icon('i-ban')} <span>Remettre en rayon</span>
+        </button>
+      `);
+    }
+
+    return `
+      <tr>
+        <td>
+          <a href="#/pieces/${esc(r.part_id)}" class="link-action mono"><b>${esc(r.part ? r.part.reference : '—')}</b></a>
+          <div>${esc(r.part ? r.part.name : '—')}</div>
+        </td>
+        <td><b>${esc(r.location ? r.location.name : '—')}</b></td>
+        <td class="mono"><b>${esc(r.quantity)}</b> ${esc(formatPartUnit(r.part ? r.part.unit : 'piece'))}</td>
+        <td>${reservationStatusBadge(r.status)}</td>
+        <td>
+          ${esc(r.reserved_by ? r.reserved_by.display_name : '—')}
+          <div class="hint">${formatDate(r.created_at)}</div>
+        </td>
+        <td><div class="cell-actions">${actions.length ? actions.join('') : '—'}</div></td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!resList.length) {
+    resRows = `<tr><td colspan="6" class="empty-cell">Aucune pièce préparée pour cette intervention.</td></tr>`;
+  }
+
+  // Pièces consommées & valorisation
+  const partsList = Array.isArray(inter.parts) ? inter.parts : [];
+  let consumedPartsRows = partsList.map(ip => {
+    const actions = [];
+    if (canManageParts) {
+      actions.push(`
+        <button type="button" class="btn sm danger" data-action="delete-intervention-part" data-args="${jsArg({ interventionId: inter.id, itemId: ip.id })}" title="Annuler cette sortie et réintégrer le stock">
+          ${icon('i-trash')} <span>Annuler</span>
+        </button>
+      `);
+    }
+
+    return `
+      <tr>
+        <td>
+          <a href="#/pieces/${esc(ip.part_id)}" class="link-action mono"><b>${esc(ip.part ? ip.part.reference : '—')}</b></a>
+          <div>${esc(ip.part ? ip.part.name : '—')}</div>
+        </td>
+        <td>${esc(ip.location ? ip.location.name : '—')}</td>
+        <td class="mono"><b>${esc(ip.quantity)}</b> ${esc(formatPartUnit(ip.part ? ip.part.unit : 'piece'))}</td>
+        <td class="mono">${formatCents(ip.unit_price_cents)}</td>
+        <td class="mono font-bold">${formatCents(ip.total_price_cents)}</td>
+        <td>${formatDate(ip.created_at)}</td>
+        <td><div class="cell-actions">${actions.length ? actions.join('') : '—'}</div></td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!partsList.length) {
+    consumedPartsRows = `<tr><td colspan="7" class="empty-cell">Aucune pièce détachée consommée sur cette intervention.</td></tr>`;
+  }
+
+  const totalPartsCostCents = partsList.reduce((acc, p) => acc + (p.total_price_cents || 0), 0);
+
   container.innerHTML = `
     <!-- CARTE D'EN-TÊTE -->
     <section class="detail-header-card">
@@ -4585,6 +4968,69 @@ function renderInterventionDetailView(inter) {
       <div class="tech-total-box">
         <span>Durée totale cumulée passée sur l'intervention :</span>
         <span class="tech-total-value mono">${formatDurationMinutes(inter.duration_minutes)}</span>
+      </div>
+    </section>
+
+    <!-- PIÈCES PRÉPARÉES (RÉSERVATIONS) -->
+    <section class="card">
+      <div class="detail-nav-bar">
+        <h2>${icon('i-layers')} Pièces préparées (réservations) (${esc(resList.length)})</h2>
+        ${canManageParts ? `
+          <button type="button" class="btn sm" data-action="open-add-intervention-reservation" data-args="${jsArg(inter.id)}">
+            ${icon('i-plus')} <span>Préparer une pièce</span>
+          </button>
+        ` : ''}
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Pièce détachée</th>
+              <th>Emplacement</th>
+              <th>Quantité</th>
+              <th>Statut</th>
+              <th>Préparé par</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${resRows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- PIÈCES CONSOMMÉES ET COÛTS -->
+    <section class="card">
+      <div class="detail-nav-bar">
+        <h2>${icon('i-basket')} Pièces consommées & valorisation (${esc(partsList.length)})</h2>
+        ${canManageParts ? `
+          <button type="button" class="btn sm primary" data-action="open-add-intervention-part" data-args="${jsArg(inter.id)}">
+            ${icon('i-plus')} <span>Sortie de pièce</span>
+          </button>
+        ` : ''}
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Pièce détachée</th>
+              <th>Emplacement</th>
+              <th>Quantité</th>
+              <th>PMP unitaire HT</th>
+              <th>Total HT</th>
+              <th>Sortie le</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${consumedPartsRows}
+          </tbody>
+        </table>
+      </div>
+      <div class="parts-total-box">
+        <span>Coût total des pièces consommées (valorisation PMP) :</span>
+        <span class="parts-total-value mono font-bold">${formatCents(totalPartsCostCents)}</span>
       </div>
     </section>
 
@@ -4809,7 +5255,7 @@ async function openEditInterventionModal(id) {
   let inter = state.currentInterventionDetail;
   if (!inter || inter.id !== id) {
     try {
-      inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+      inter = await fetchInterventionFull(id);
     } catch (err) {
       notify(err.message, 'error');
       return;
@@ -4912,7 +5358,7 @@ async function openCompleteInterventionModal(id) {
   let inter = state.currentInterventionDetail;
   if (!inter || inter.id !== id) {
     try {
-      inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+      inter = await fetchInterventionFull(id);
     } catch (err) {
       notify(err.message, 'error');
       return;
@@ -4939,8 +5385,23 @@ async function openCompleteInterventionModal(id) {
     </div>
   `;
 
+  const activeReservations = Array.isArray(inter.reservations)
+    ? inter.reservations.filter(r => r.status === 'prepared')
+    : [];
+  let reservationWarningHtml = '';
+  if (activeReservations.length > 0) {
+    const totalQty = activeReservations.reduce((acc, r) => acc + (r.quantity || 0), 0);
+    reservationWarningHtml = `
+      <div class="machine-state-alert">
+        ${icon('i-alert')}
+        <span><b>Pièces préparées non consommées :</b> Cette intervention comporte ${activeReservations.length} ligne(s) de réservation (${totalQty} pièce(s)) en statut préparé. Lors de la clôture, elles seront automatiquement remises en rayon.</span>
+      </div>
+    `;
+  }
+
   const fieldsHtml = `
     ${timeWarningHtml}
+    ${reservationWarningHtml}
     <div class="form-group">
       <label for="closeReport">Compte-rendu technique de solution *</label>
       <textarea id="closeReport" name="solution_report" rows="4" required placeholder="Description détaillée du diagnostic, des réparations effectuées et de l'état final…"></textarea>
@@ -5020,7 +5481,7 @@ async function openCancelInterventionModal(id) {
   let inter = state.currentInterventionDetail;
   if (!inter || inter.id !== id) {
     try {
-      inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+      inter = await fetchInterventionFull(id);
     } catch (err) {
       notify(err.message, 'error');
       return;
@@ -5260,6 +5721,2215 @@ async function deleteIntervention(id) {
   } catch (err) {
     notify(err.message || 'Suppression refusée.', 'error');
   }
+}
+
+// ============================================================================
+// 14F. MODULE MAGASIN & PIÈCES DÉTACHÉES (PHASE 4)
+// ============================================================================
+
+function stockPage() {
+  const alertsCount = state.stockAlerts.length || state.partsLowStockCount || 0;
+
+  return `
+    <div class="page-head">
+      ${icon('i-basket')}
+      <h1>Magasin & Pièces détachées</h1>
+    </div>
+
+    <div class="tabs-bar">
+      <button type="button" class="tab-btn ${state.stockActiveTab === 'catalog' ? 'active' : ''}" data-action="switch-stock-tab" data-args="${jsArg('catalog')}">
+        ${icon('i-basket')} <span>Catalogue des pièces</span>
+      </button>
+      <button type="button" class="tab-btn ${state.stockActiveTab === 'stock' ? 'active' : ''}" data-action="switch-stock-tab" data-args="${jsArg('stock')}">
+        ${icon('i-layers')} <span>Niveaux par emplacement</span>
+      </button>
+      <button type="button" class="tab-btn ${state.stockActiveTab === 'movements' ? 'active' : ''}" data-action="switch-stock-tab" data-args="${jsArg('movements')}">
+        ${icon('i-transfer')} <span>Mouvements de stock</span>
+      </button>
+      <button type="button" class="tab-btn ${state.stockActiveTab === 'alerts' ? 'active' : ''}" data-action="switch-stock-tab" data-args="${jsArg('alerts')}">
+        ${icon('i-alert')} <span>Alertes stock bas</span>
+        ${alertsCount > 0 ? `<span class="badge-count">${alertsCount}</span>` : ''}
+      </button>
+    </div>
+
+    <div id="stockTabContent">
+      <p class="hint">${icon('i-clock')} Chargement du magasin…</p>
+    </div>
+  `;
+}
+
+async function initStockPageView() {
+  // Charge discrètement les alertes pour actualiser le compteur d'alerte
+  api('/api/stock/alerts').then(res => {
+    state.stockAlerts = (Array.isArray(res) ? res : (res && res.items ? res.items : [])).map(adaptStock);
+    state.partsLowStockCount = state.stockAlerts.length;
+    const alertTab = document.querySelector('[data-action="switch-stock-tab"][data-args*="alerts"]');
+    if (alertTab) {
+      const badge = alertTab.querySelector('.badge-count');
+      if (state.stockAlerts.length > 0) {
+        if (badge) badge.textContent = String(state.stockAlerts.length);
+        else alertTab.insertAdjacentHTML('beforeend', `<span class="badge-count">${state.stockAlerts.length}</span>`);
+      } else if (badge) {
+        badge.remove();
+      }
+    }
+  }).catch(() => {});
+
+  if (state.stockActiveTab === 'stock') {
+    await loadStockLevelsView();
+  } else if (state.stockActiveTab === 'movements') {
+    await loadStockMovementsListView(true);
+  } else if (state.stockActiveTab === 'alerts') {
+    await loadStockAlertsView();
+  } else {
+    state.stockActiveTab = 'catalog';
+    await loadPartsListView(true);
+  }
+}
+
+function partDetailPage(id) {
+  return `
+    <div id="partDetailContainer">
+      <p class="hint">${icon('i-clock')} Chargement des détails de la pièce…</p>
+    </div>
+  `;
+}
+
+async function initPartDetailPageView(id) {
+  await loadPartDetail(id);
+}
+
+async function loadPartDetail(id) {
+  const container = document.getElementById('partDetailContainer');
+  if (!container) return;
+
+  state.currentPartLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des détails de la pièce…</p>`;
+
+  try {
+    const part = await api(`/api/parts/${encodeURIComponent(id)}`);
+    state.currentPartDetail = part;
+    renderPartDetailView(part);
+  } catch (err) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement de la pièce : ${esc(err.message)}</p>
+        <p><a href="#/stock" class="btn">${icon('i-arrow-left')} <span>Retour au magasin</span></a></p>
+      </div>
+    `;
+  } finally {
+    state.currentPartLoading = false;
+  }
+}
+
+function renderPartDetailView(part) {
+  const container = document.getElementById('partDetailContainer');
+  if (!container) return;
+
+  const canMgParts = hasPermission('parts.manage');
+  const canMvStock = hasPermission('stock.movements');
+  const canAdjStock = hasPermission('stock.adjust');
+
+  const totalValueCents = (part.total_stock || 0) * (part.unit_price_cents || 0);
+
+  const quickActions = [];
+  if (canMvStock) {
+    quickActions.push(`
+      <button type="button" class="btn primary" data-action="open-movement-in" data-args="${jsArg({ partId: part.id })}">
+        ${icon('i-arrow-down')} <span>Entrée en stock</span>
+      </button>
+      <button type="button" class="btn" data-action="open-movement-transfer" data-args="${jsArg({ partId: part.id })}">
+        ${icon('i-transfer')} <span>Transférer</span>
+      </button>
+    `);
+  }
+  if (canAdjStock) {
+    quickActions.push(`
+      <button type="button" class="btn danger" data-action="open-movement-adjust" data-args="${jsArg({ partId: part.id })}">
+        ${icon('i-sliders')} <span>Ajuster</span>
+      </button>
+    `);
+  }
+  if (canMgParts) {
+    quickActions.push(`
+      <button type="button" class="btn" data-action="open-edit-part" data-args="${jsArg(part.id)}">
+        ${icon('i-edit')} <span>Modifier</span>
+      </button>
+      <button type="button" class="btn danger" data-action="delete-part" data-args="${jsArg(part.id)}">
+        ${icon('i-trash')} <span>Supprimer</span>
+      </button>
+    `);
+  }
+
+  // Stock par emplacement
+  const locationsList = Array.isArray(part.stock_by_location) ? part.stock_by_location : [];
+  let locRows = locationsList.map(loc => {
+    const isZero = loc.available_quantity <= 0;
+    return `
+      <tr>
+        <td>
+          <b>${esc(loc.location_name)}</b>
+          <div class="hint mono">${esc(loc.location_code)} (${esc(loc.location_kind)})</div>
+        </td>
+        <td class="mono font-bold">${esc(loc.quantity)}</td>
+        <td class="mono">${esc(loc.reserved_quantity)}</td>
+        <td class="mono font-bold ${isZero ? 'state-ko' : ''}">${esc(loc.available_quantity)}</td>
+        <td>
+          <div class="cell-actions">
+            ${canMvStock ? `
+              <button type="button" class="btn sm" data-action="open-movement-in" data-args="${jsArg({ partId: part.id, locationId: loc.location_id })}" title="Entrée sur cet emplacement">${icon('i-arrow-down')}</button>
+              <button type="button" class="btn sm" data-action="open-movement-transfer" data-args="${jsArg({ partId: part.id, fromLocationId: loc.location_id })}" title="Transférer depuis cet emplacement">${icon('i-transfer')}</button>
+            ` : ''}
+            ${canAdjStock ? `
+              <button type="button" class="btn sm danger" data-action="open-movement-adjust" data-args="${jsArg({ partId: part.id, locationId: loc.location_id })}" title="Ajuster cet emplacement">${icon('i-sliders')}</button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!locationsList.length) {
+    locRows = `<tr><td colspan="5" class="empty-cell">Aucun stock répertorié sur aucun emplacement pour cette pièce.</td></tr>`;
+  }
+
+  // Équipements associés
+  const eqList = Array.isArray(part.equipments) ? part.equipments : [];
+  let eqRows = eqList.map(eq => `
+    <tr>
+      <td>
+        <button type="button" class="link-action mono" data-action="open-detail-equipment" data-args="${jsArg(eq.equipment_id)}">
+          <b>${esc(eq.equipment_code)}</b> — ${esc(eq.equipment_name)}
+        </button>
+      </td>
+      <td class="mono">${esc(eq.quantity_recommended || 1)}</td>
+      <td>${esc(eq.notes || '—')}</td>
+      <td>
+        <div class="cell-actions">
+          <button type="button" class="btn sm" data-action="open-detail-equipment" data-args="${jsArg(eq.equipment_id)}" title="Voir l'équipement">${icon('i-eye')}</button>
+          ${canMgParts ? `
+            <button type="button" class="btn sm danger" data-action="delete-part-equipment" data-args="${jsArg({ partId: part.id, equipmentId: eq.equipment_id })}" title="Dissocier cet équipement">${icon('i-trash')}</button>
+          ` : ''}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+
+  if (!eqList.length) {
+    eqRows = `<tr><td colspan="4" class="empty-cell">Cette pièce n'est préconisée pour aucun équipement du parc.</td></tr>`;
+  }
+
+  // Mouvements récents
+  const mvts = Array.isArray(part.recent_movements) ? part.recent_movements : [];
+  let mvtRows = mvts.map(m => {
+    let locStr = '—';
+    if (m.movement_type === 'in') locStr = `Vers ${esc(m.to_location ? m.to_location.name : '—')}`;
+    else if (m.movement_type === 'out') locStr = `Depuis ${esc(m.from_location ? m.from_location.name : '—')}`;
+    else if (m.movement_type === 'transfer') locStr = `${esc(m.from_location ? m.from_location.name : '—')} → ${esc(m.to_location ? m.to_location.name : '—')}`;
+    else if (m.movement_type === 'adjustment') locStr = `Emplacement ${esc(m.from_location ? m.from_location.name : (m.to_location ? m.to_location.name : '—'))}`;
+
+    let qtyStr = '';
+    if (m.movement_type === 'in') qtyStr = `<span class="state-ok font-bold">+${esc(m.quantity)}</span>`;
+    else if (m.movement_type === 'out') qtyStr = `<span class="state-ko font-bold">-${esc(m.quantity)}</span>`;
+    else if (m.movement_type === 'adjustment') qtyStr = m.delta > 0 ? `<span class="state-ok font-bold">+${esc(m.delta)}</span>` : `<span class="state-ko font-bold">${esc(m.delta)}</span>`;
+    else qtyStr = `<span class="mono font-bold">${esc(m.quantity)}</span>`;
+
+    let contextStr = '—';
+    if (m.intervention) {
+      contextStr = `<a href="#/interventions/${esc(m.intervention.id)}" class="link-action mono">${esc(m.intervention.code)}</a>`;
+    } else if (m.adjustment_kind) {
+      contextStr = `<span class="badge">${esc(formatAdjustmentKind(m.adjustment_kind))}</span>`;
+    }
+
+    return `
+      <tr>
+        <td class="mono">${formatDate(m.created_at)}</td>
+        <td>${movementTypeBadge(m.movement_type)}</td>
+        <td>${locStr}</td>
+        <td class="mono">${qtyStr}</td>
+        <td class="mono">${formatCents(m.unit_price_cents)}</td>
+        <td>${contextStr}</td>
+        <td>${esc(m.created_by ? m.created_by.display_name : '—')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!mvts.length) {
+    mvtRows = `<tr><td colspan="7" class="empty-cell">Aucun mouvement enregistré pour cette référence.</td></tr>`;
+  }
+
+  container.innerHTML = `
+    <div class="breadcrumb">
+      <a href="#/stock" class="link-action">${icon('i-basket')} Magasin & Stock</a>
+      <span>/</span>
+      <span class="mono">${esc(part.reference)}</span>
+    </div>
+
+    <!-- CARTE D'EN-TÊTE -->
+    <section class="detail-header-card">
+      <div class="detail-header-top">
+        <div class="detail-title-block">
+          <div class="detail-code-row">
+            <span class="detail-code-label mono">${esc(part.reference)}</span>
+            <span class="detail-title-label">${esc(part.name)}</span>
+          </div>
+          <div class="detail-badges-row">
+            <span class="badge">${esc(formatPartCategory(part.category))}</span>
+            ${part.barcode ? `<span class="badge mono">${icon('i-barcode')} ${esc(part.barcode)}</span>` : ''}
+            ${partStockBadge(part.total_stock, part.effective_threshold)}
+          </div>
+        </div>
+      </div>
+      ${quickActions.length ? `<div class="quick-actions-bar">${quickActions.join('')}</div>` : ''}
+    </section>
+
+    <!-- INDICATEURS CLÉS / MÉTRIQUES -->
+    <section class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">Stock total</div>
+        <div class="metric-value mono">${esc(part.total_stock)} <small>${esc(formatPartUnit(part.unit))}</small></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Stock réservé</div>
+        <div class="metric-value mono">${esc(part.reserved_stock || 0)}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Stock disponible</div>
+        <div class="metric-value mono font-bold ${part.available_stock <= 0 ? 'state-ko' : ''}">${esc(part.available_stock !== undefined ? part.available_stock : part.total_stock)}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Prix moyen pondéré (PMP)</div>
+        <div class="metric-value mono font-bold">${formatCents(part.unit_price_cents)}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Valeur totale en stock</div>
+        <div class="metric-value mono font-bold">${formatCents(totalValueCents)}</div>
+      </div>
+    </section>
+
+    <!-- GRILLE D'INFORMATIONS -->
+    <div class="detail-grid">
+      <!-- INFORMATIONS GÉNÉRALES -->
+      <section class="card">
+        <h2>${icon('i-info')} Fiche technique</h2>
+        <dl class="detail-dl">
+          <dt>Catégorie</dt><dd>${esc(formatPartCategory(part.category))}</dd>
+          <dt>Unité de gestion</dt><dd>${esc(formatPartUnit(part.unit))}</dd>
+          <dt>Code-barres / EAN</dt><dd class="mono">${esc(part.barcode || '—')}</dd>
+          <dt>Fournisseur habituel</dt><dd>${part.supplier ? esc(part.supplier.name) : '—'}</dd>
+          <dt>Référence fournisseur</dt><dd class="mono">${esc(part.supplier_reference || '—')}</dd>
+          <dt>Fabricant d'origine</dt><dd>${esc(part.manufacturer || '—')}</dd>
+          <dt>Référence fabricant</dt><dd class="mono">${esc(part.manufacturer_reference || '—')}</dd>
+          <dt>Seuil d'alerte spécifique</dt><dd class="mono">${part.alert_threshold !== null && part.alert_threshold !== undefined ? esc(part.alert_threshold) : 'Non défini (utilise le seuil global)'}</dd>
+          <dt>Seuil effectif appliqué</dt><dd class="mono font-bold">${esc(part.effective_threshold)}</dd>
+          <dt>Créée le</dt><dd>${formatDate(part.created_at)}</dd>
+          <dt>Description</dt><dd>${esc(part.description || 'Aucune description complémentaire.')}</dd>
+        </dl>
+      </section>
+
+      <!-- STOCK PAR EMPLACEMENT -->
+      <section class="card">
+        <div class="detail-nav-bar">
+          <h2>${icon('i-layers')} Répartition par emplacement</h2>
+        </div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Emplacement</th>
+                <th>Total</th>
+                <th>Réservé</th>
+                <th>Disponible</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${locRows}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ÉQUIPEMENTS ASSOCIÉS -->
+    <section class="card">
+      <div class="detail-nav-bar">
+        <h2>${icon('i-gear')} Équipements compatibles préconisés (${esc(eqList.length)})</h2>
+        ${canMgParts ? `
+          <button type="button" class="btn sm" data-action="open-add-part-equipment" data-args="${jsArg(part.id)}">
+            ${icon('i-plus')} <span>Associer un équipement</span>
+          </button>
+        ` : ''}
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Équipement</th>
+              <th>Quantité préconisée</th>
+              <th>Notes d'assemblage</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${eqRows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- HISTORIQUE DES MOUVEMENTS RÉCENTS -->
+    <section class="card">
+      <div class="detail-nav-bar">
+        <h2>${icon('i-transfer')} Mouvements récents</h2>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date & Heure</th>
+              <th>Type</th>
+              <th>Emplacement(s)</th>
+              <th>Quantité</th>
+              <th>PMP (€)</th>
+              <th>Contexte</th>
+              <th>Auteur</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${mvtRows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+// --- SOUS-VUES DU MAGASIN ---
+
+async function loadPartsListView(reset = true) {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  if (reset) {
+    state.parts = [];
+    state.partsNextCursor = null;
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement du catalogue des pièces…</p>`;
+  }
+
+  state.partsLoading = true;
+  try {
+    const params = new URLSearchParams();
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    if (state.partsSearchQuery) params.set('q', state.partsSearchQuery);
+    if (state.partsCategoryFilter) params.set('category', state.partsCategoryFilter);
+    if (state.partsSupplierFilter) params.set('supplier_id', state.partsSupplierFilter);
+    if (state.partsLowStockFilter) params.set('low_stock', 'true');
+    if (!reset && state.partsNextCursor) params.set('cursor', state.partsNextCursor);
+    params.set('limit', '25');
+
+    const res = await api(`/api/parts?${params.toString()}`);
+    const items = (Array.isArray(res) ? res : (res && res.items ? res.items : [])).map(adaptStock);
+    state.partsNextCursor = res && res.next_cursor ? res.next_cursor : null;
+
+    if (reset) {
+      state.parts = items;
+    } else {
+      state.parts = state.parts.concat(items);
+    }
+
+    renderPartsListView();
+  } catch (err) {
+    if (reset) {
+      container.innerHTML = `<p class="hint state-ko">Erreur lors du chargement des pièces : ${esc(err.message)}</p>`;
+    } else {
+      notify(err.message || 'Erreur lors du chargement de la suite.', 'error');
+    }
+  } finally {
+    state.partsLoading = false;
+  }
+}
+
+function renderPartsListView() {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  const canMgParts = hasPermission('parts.manage');
+  const items = state.parts;
+
+  let rows = items.map(p => {
+    const isLow = typeof p.is_low_stock === 'boolean' ? p.is_low_stock : (p.total_stock <= (p.alert_threshold || 0));
+    const isZero = p.total_stock <= 0;
+    const badgeStock = isZero
+      ? `<span class="badge badge-stock-zero">Rupture (${esc(p.total_stock)})</span>`
+      : (isLow
+        ? `<span class="badge badge-stock-low">Stock bas (${esc(p.total_stock)})</span>`
+        : `<span class="badge badge-stock-ok">En stock (${esc(p.total_stock)})</span>`);
+
+    return `
+      <tr>
+        <td>
+          <a href="#/pieces/${esc(p.id)}" class="link-action mono"><b>${esc(p.reference)}</b></a>
+          ${p.barcode ? `<div class="hint mono">${icon('i-barcode')} ${esc(p.barcode)}</div>` : ''}
+        </td>
+        <td>
+          <a href="#/pieces/${esc(p.id)}" class="link-action"><b>${esc(p.name)}</b></a>
+          ${p.description ? `<div class="hint">${esc(p.description.slice(0, 70))}${p.description.length > 70 ? '…' : ''}</div>` : ''}
+        </td>
+        <td><span class="badge">${esc(formatPartCategory(p.category))}</span></td>
+        <td>${p.supplier ? esc(p.supplier.name) : '<span class="hint">—</span>'}</td>
+        <td class="mono font-bold">${formatCents(p.unit_price_cents)}</td>
+        <td class="mono"><b>${esc(p.total_stock)}</b> ${esc(formatPartUnit(p.unit))}</td>
+        <td>${badgeStock}</td>
+        <td>
+          <div class="cell-actions">
+            <a href="#/pieces/${esc(p.id)}" class="btn sm" title="Consulter la fiche">${icon('i-eye')} <span>Voir</span></a>
+            ${canMgParts ? `
+              <button type="button" class="btn sm" data-action="open-edit-part" data-args="${jsArg(p.id)}" title="Modifier la référence">${icon('i-edit')}</button>
+              <button type="button" class="btn sm danger" data-action="delete-part" data-args="${jsArg(p.id)}" title="Supprimer la référence">${icon('i-trash')}</button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!items.length) {
+    rows = `<tr><td colspan="8" class="empty-cell">Aucune pièce détachée trouvée.</td></tr>`;
+  }
+
+  container.innerHTML = `
+    <div class="list-toolbar">
+      <div class="toolbar-search">
+        <input type="search" placeholder="Rechercher par référence, désignation, code-barres…" value="${esc(state.partsSearchQuery)}" data-action="filter-parts-search" autocomplete="off" />
+      </div>
+      <div class="toolbar-filters">
+        <select data-action="filter-parts-category">
+          <option value="">Toutes catégories</option>
+          <option value="roulement" ${state.partsCategoryFilter === 'roulement' ? 'selected' : ''}>Roulement</option>
+          <option value="visserie" ${state.partsCategoryFilter === 'visserie' ? 'selected' : ''}>Visserie / Fixation</option>
+          <option value="moteur" ${state.partsCategoryFilter === 'moteur' ? 'selected' : ''}>Moteur / Réducteur</option>
+          <option value="pneumatique" ${state.partsCategoryFilter === 'pneumatique' ? 'selected' : ''}>Pneumatique</option>
+          <option value="hydraulique" ${state.partsCategoryFilter === 'hydraulique' ? 'selected' : ''}>Hydraulique</option>
+          <option value="electrique" ${state.partsCategoryFilter === 'electrique' ? 'selected' : ''}>Électrique</option>
+          <option value="capteur" ${state.partsCategoryFilter === 'capteur' ? 'selected' : ''}>Capteur / Détection</option>
+          <option value="mecanique" ${state.partsCategoryFilter === 'mecanique' ? 'selected' : ''}>Mécanique</option>
+          <option value="consommable" ${state.partsCategoryFilter === 'consommable' ? 'selected' : ''}>Consommable</option>
+        </select>
+        <label class="checkbox-label">
+          <input type="checkbox" data-action="filter-parts-low-stock" ${state.partsLowStockFilter ? 'checked' : ''} />
+          <span>${icon('i-alert')} Alertes stock bas uniquement</span>
+        </label>
+      </div>
+      <div class="toolbar-actions">
+        ${canMgParts ? `
+          <button type="button" class="btn primary" data-action="open-create-part">
+            ${icon('i-plus')} <span>Nouvelle pièce</span>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Référence</th>
+            <th>Désignation</th>
+            <th>Catégorie</th>
+            <th>Fournisseur</th>
+            <th>PMP unitaire HT</th>
+            <th>Stock total</th>
+            <th>État stock</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+
+    ${state.partsNextCursor ? `
+      <div class="pagination-bar">
+        <button type="button" class="btn" data-action="load-more-parts">
+          ${icon('i-arrow-down')} <span>Charger plus de pièces</span>
+        </button>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function loadStockLevelsView() {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des niveaux de stock par emplacement…</p>`;
+  state.stockLevelsLoading = true;
+
+  try {
+    const params = new URLSearchParams();
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    if (state.stockLevelsLocationFilter) params.set('location_id', state.stockLevelsLocationFilter);
+
+    const [stockRes, locRes] = await Promise.all([
+      api(`/api/stock?${params.toString()}`),
+      state.locations && state.locations.length ? Promise.resolve(state.locations) : api(`/api/locations${state.selectedSiteId ? `?site_id=${encodeURIComponent(state.selectedSiteId)}` : ''}`)
+    ]);
+
+    state.stockLevels = (Array.isArray(stockRes) ? stockRes : (stockRes && stockRes.items ? stockRes.items : [])).map(adaptStock);
+    if (Array.isArray(locRes)) state.locations = locRes;
+    else if (locRes && Array.isArray(locRes.items)) state.locations = locRes.items;
+
+    renderStockLevelsView();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">Erreur lors du chargement du stock : ${esc(err.message)}</p>`;
+  } finally {
+    state.stockLevelsLoading = false;
+  }
+}
+
+function renderStockLevelsView() {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  const canMvStock = hasPermission('stock.movements');
+  const canAdjStock = hasPermission('stock.adjust');
+  const items = state.stockLevels;
+  const locations = Array.isArray(state.locations) ? state.locations : [];
+
+  let rows = items.map(s => {
+    const isLow = s.available <= (s.effective_threshold !== undefined && s.effective_threshold !== null ? s.effective_threshold : (s.alert_threshold || 0));
+    const isZero = s.available <= 0;
+    const badge = isZero
+      ? `<span class="badge badge-stock-zero">Rupture</span>`
+      : (isLow ? `<span class="badge badge-stock-low">Stock bas</span>` : `<span class="badge badge-stock-ok">Normal</span>`);
+
+    return `
+      <tr>
+        <td>
+          <a href="#/pieces/${esc(s.part_id)}" class="link-action mono"><b>${esc(s.part ? s.part.reference : '—')}</b></a>
+          <div>${esc(s.part ? s.part.name : '—')}</div>
+        </td>
+        <td><b>${esc(s.location ? s.location.name : '—')}</b></td>
+        <td class="mono font-bold">${esc(s.quantity)}</td>
+        <td class="mono">${esc(s.reserved || 0)}</td>
+        <td class="mono font-bold">${esc(s.available)}</td>
+        <td class="mono">${esc(s.effective_threshold !== null && s.effective_threshold !== undefined ? s.effective_threshold : (s.alert_threshold || '—'))}</td>
+        <td>${badge}</td>
+        <td>
+          <div class="cell-actions">
+            ${canMvStock ? `
+              <button type="button" class="btn sm" data-action="open-movement-in" data-args="${jsArg({ partId: s.part_id, locationId: s.location_id })}" title="Réception / Entrée">${icon('i-arrow-down')} <span>Entrée</span></button>
+              <button type="button" class="btn sm" data-action="open-movement-transfer" data-args="${jsArg({ partId: s.part_id, fromLocationId: s.location_id })}" title="Transférer vers un autre emplacement">${icon('i-transfer')} <span>Transférer</span></button>
+            ` : ''}
+            ${canAdjStock ? `
+              <button type="button" class="btn sm danger" data-action="open-movement-adjust" data-args="${jsArg({ partId: s.part_id, locationId: s.location_id })}" title="Ajustement d'inventaire">${icon('i-sliders')} <span>Ajuster</span></button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!items.length) {
+    rows = `<tr><td colspan="8" class="empty-cell">Aucun stock répertorié sur cet emplacement.</td></tr>`;
+  }
+
+  container.innerHTML = `
+    <div class="list-toolbar">
+      <div class="toolbar-filters">
+        <select data-action="filter-stock-location">
+          <option value="">Tous les emplacements</option>
+          ${locations.map(l => `<option value="${esc(l.id)}" ${l.id === state.stockLevelsLocationFilter ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="toolbar-actions">
+        ${canMvStock ? `
+          <button type="button" class="btn primary" data-action="open-movement-in">
+            ${icon('i-arrow-down')} <span>Entrée en stock</span>
+          </button>
+          <button type="button" class="btn" data-action="open-movement-transfer">
+            ${icon('i-transfer')} <span>Transfert interne</span>
+          </button>
+        ` : ''}
+        ${canAdjStock ? `
+          <button type="button" class="btn danger" data-action="open-movement-adjust">
+            ${icon('i-sliders')} <span>Ajustement inventaire</span>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Pièce détachée</th>
+            <th>Emplacement</th>
+            <th>Stock total</th>
+            <th>Réservé</th>
+            <th>Disponible</th>
+            <th>Seuil alerte</th>
+            <th>Statut</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadStockMovementsListView(reset = true) {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  if (reset) {
+    state.stockMovements = [];
+    state.stockMovementsNextCursor = null;
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des mouvements de stock…</p>`;
+  }
+
+  state.stockMovementsLoading = true;
+  try {
+    const params = new URLSearchParams();
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    if (state.stockMovementsTypeFilter) params.set('movement_type', state.stockMovementsTypeFilter);
+    if (!reset && state.stockMovementsNextCursor) params.set('cursor', state.stockMovementsNextCursor);
+    params.set('limit', '25');
+
+    const res = await api(`/api/stock/movements?${params.toString()}`);
+    const items = (Array.isArray(res) ? res : (res && res.items ? res.items : [])).map(adaptStock);
+    state.stockMovementsNextCursor = res && res.next_cursor ? res.next_cursor : null;
+
+    if (reset) {
+      state.stockMovements = items;
+    } else {
+      state.stockMovements = state.stockMovements.concat(items);
+    }
+
+    renderStockMovementsListView();
+  } catch (err) {
+    if (reset) {
+      container.innerHTML = `<p class="hint state-ko">Erreur lors du chargement des mouvements : ${esc(err.message)}</p>`;
+    } else {
+      notify(err.message || 'Erreur lors du chargement de la suite.', 'error');
+    }
+  } finally {
+    state.stockMovementsLoading = false;
+  }
+}
+
+function renderStockMovementsListView() {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  const canMvStock = hasPermission('stock.movements');
+  const canAdjStock = hasPermission('stock.adjust');
+  const items = state.stockMovements;
+
+  let rows = items.map(m => {
+    let locStr = '—';
+    if (m.movement_type === 'in') {
+      locStr = `Vers <b>${esc(m.to_location ? m.to_location.name : '—')}</b>`;
+    } else if (m.movement_type === 'out') {
+      locStr = `Depuis <b>${esc(m.from_location ? m.from_location.name : '—')}</b>`;
+    } else if (m.movement_type === 'transfer') {
+      locStr = `${esc(m.from_location ? m.from_location.name : '—')} → <b>${esc(m.to_location ? m.to_location.name : '—')}</b>`;
+    } else if (m.movement_type === 'adjustment') {
+      locStr = `Emplacement <b>${esc(m.from_location ? m.from_location.name : (m.to_location ? m.to_location.name : '—'))}</b>`;
+    }
+
+    let qtyStr = '';
+    if (m.movement_type === 'in') {
+      qtyStr = `<span class="state-ok font-bold">+${esc(m.quantity)}</span>`;
+    } else if (m.movement_type === 'out') {
+      qtyStr = `<span class="state-ko font-bold">-${esc(m.quantity)}</span>`;
+    } else if (m.movement_type === 'adjustment') {
+      qtyStr = m.delta > 0
+        ? `<span class="state-ok font-bold">+${esc(m.delta)}</span>`
+        : `<span class="state-ko font-bold">${esc(m.delta)}</span>`;
+    } else {
+      qtyStr = `<span class="mono font-bold">${esc(m.quantity)}</span>`;
+    }
+
+    let contextStr = '—';
+    if (m.intervention) {
+      contextStr = `
+        <a href="#/interventions/${esc(m.intervention.id)}" class="link-action mono"><b>${esc(m.intervention.code)}</b></a>
+        <div class="hint">${esc(m.intervention.title || '')}</div>
+      `;
+    } else if (m.adjustment_kind) {
+      contextStr = `
+        <span class="badge">${esc(formatAdjustmentKind(m.adjustment_kind))}</span>
+        ${m.reason ? `<div class="hint">« ${esc(m.reason)} »</div>` : ''}
+      `;
+    }
+
+    return `
+      <tr>
+        <td class="mono">${formatDate(m.created_at)}</td>
+        <td>${movementTypeBadge(m.movement_type)}</td>
+        <td>
+          <a href="#/pieces/${esc(m.part_id)}" class="link-action mono"><b>${esc(m.part ? m.part.reference : '—')}</b></a>
+          <div>${esc(m.part ? m.part.name : '—')}</div>
+        </td>
+        <td>${locStr}</td>
+        <td class="mono">${qtyStr}</td>
+        <td class="mono">${formatCents(m.unit_price_cents)}</td>
+        <td>${contextStr}</td>
+        <td>${esc(m.created_by ? m.created_by.display_name : '—')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!items.length) {
+    rows = `<tr><td colspan="8" class="empty-cell">Aucun mouvement enregistré.</td></tr>`;
+  }
+
+  container.innerHTML = `
+    <div class="list-toolbar">
+      <div class="toolbar-filters">
+        <select data-action="filter-stock-movements-type">
+          <option value="">Tous les types de mouvements</option>
+          <option value="in" ${state.stockMovementsTypeFilter === 'in' ? 'selected' : ''}>Entrées en stock</option>
+          <option value="out" ${state.stockMovementsTypeFilter === 'out' ? 'selected' : ''}>Sorties interventions</option>
+          <option value="transfer" ${state.stockMovementsTypeFilter === 'transfer' ? 'selected' : ''}>Transferts internes</option>
+          <option value="adjustment" ${state.stockMovementsTypeFilter === 'adjustment' ? 'selected' : ''}>Ajustements d'inventaire</option>
+        </select>
+      </div>
+      <div class="toolbar-actions">
+        ${canMvStock ? `
+          <button type="button" class="btn primary" data-action="open-movement-in">
+            ${icon('i-arrow-down')} <span>Nouvelle entrée</span>
+          </button>
+          <button type="button" class="btn" data-action="open-movement-transfer">
+            ${icon('i-transfer')} <span>Transférer</span>
+          </button>
+        ` : ''}
+        ${canAdjStock ? `
+          <button type="button" class="btn danger" data-action="open-movement-adjust">
+            ${icon('i-sliders')} <span>Ajuster</span>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Date & Heure</th>
+            <th>Type</th>
+            <th>Pièce détachée</th>
+            <th>Emplacement(s)</th>
+            <th>Quantité</th>
+            <th>PMP unitaire HT</th>
+            <th>Contexte / Motif</th>
+            <th>Auteur</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+
+    ${state.stockMovementsNextCursor ? `
+      <div class="pagination-bar">
+        <button type="button" class="btn" data-action="load-more-stock-movements">
+          ${icon('i-arrow-down')} <span>Charger plus de mouvements</span>
+        </button>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function loadStockAlertsView() {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Analyse des niveaux de stock et recherche des alertes…</p>`;
+  state.stockAlertsLoading = true;
+
+  try {
+    const params = new URLSearchParams();
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+
+    const res = await api(`/api/stock/alerts?${params.toString()}`);
+    state.stockAlerts = (Array.isArray(res) ? res : (res && res.items ? res.items : [])).map(adaptStock);
+    state.partsLowStockCount = state.stockAlerts.length;
+
+    renderStockAlertsView();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">Erreur lors de la détection des alertes : ${esc(err.message)}</p>`;
+  } finally {
+    state.stockAlertsLoading = false;
+  }
+}
+
+function renderStockAlertsView() {
+  const container = document.getElementById('stockTabContent');
+  if (!container) return;
+
+  const canMvStock = hasPermission('stock.movements');
+  const items = state.stockAlerts;
+
+  if (!items.length) {
+    container.innerHTML = `
+      <div class="card card-empty-state">
+        ${icon('i-check')}
+        <h2>Aucune alerte de stock bas</h2>
+        <p class="hint">Toutes les pièces détachées enregistrées sont actuellement au-dessus de leur seuil d'alerte. Aucun approvisionnement d'urgence n'est requis.</p>
+      </div>
+    `;
+    return;
+  }
+
+  let rows = items.map(a => {
+    const deficit = Math.max(0, (a.effective_threshold || 0) - a.total_stock);
+    const isZero = a.total_stock <= 0;
+    const badge = isZero
+      ? `<span class="badge badge-stock-zero">Rupture totale</span>`
+      : `<span class="badge badge-stock-low">Stock bas critique</span>`;
+
+    return `
+      <tr>
+        <td>
+          <a href="#/pieces/${esc(a.id)}" class="link-action mono"><b>${esc(a.reference)}</b></a>
+        </td>
+        <td>
+          <a href="#/pieces/${esc(a.id)}" class="link-action"><b>${esc(a.name)}</b></a>
+          ${a.supplier ? `<div class="hint">Fournisseur : ${esc(a.supplier.name)}</div>` : ''}
+        </td>
+        <td><span class="badge">${esc(formatPartCategory(a.category))}</span></td>
+        <td class="mono font-bold ${isZero ? 'state-ko' : ''}">${esc(a.total_stock)} ${esc(formatPartUnit(a.unit))}</td>
+        <td class="mono font-bold">${esc(a.available_stock !== undefined ? a.available_stock : a.total_stock)}</td>
+        <td class="mono font-bold">${esc(a.effective_threshold)}</td>
+        <td class="mono state-ko font-bold">+${esc(deficit)}</td>
+        <td>${badge}</td>
+        <td>
+          <div class="cell-actions">
+            ${canMvStock ? `
+              <button type="button" class="btn sm primary" data-action="open-movement-in" data-args="${jsArg({ partId: a.id })}">
+                ${icon('i-arrow-down')} <span>Réceptionner</span>
+              </button>
+            ` : ''}
+            <a href="#/pieces/${esc(a.id)}" class="btn sm" title="Voir la fiche">${icon('i-eye')}</a>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="stock-warning-alert">
+      ${icon('i-alert')}
+      <div>
+        <b>${esc(items.length)} référence(s) en alerte de réapprovisionnement</b>
+        <div>Le stock disponible ou total de ces pièces est inférieur ou égal au seuil paramétré. Lancez les commandes de réapprovisionnement auprès de vos fournisseurs.</div>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Référence</th>
+            <th>Désignation</th>
+            <th>Catégorie</th>
+            <th>Stock total</th>
+            <th>Disponible</th>
+            <th>Seuil alerte</th>
+            <th>Déficit min.</th>
+            <th>Gravité</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// --- BOÎTES DE DIALOGUE MODALES (PHASE 4) ---
+
+async function openCreatePartModal() {
+  let suppliers = [];
+  const siteId = state.selectedSiteId || (state.site ? state.site.id : '');
+
+  try {
+    const siteParam = siteId ? `?site_id=${encodeURIComponent(siteId)}&limit=100` : '?limit=100';
+    const supRes = await api(`/api/suppliers${siteParam}`);
+    suppliers = Array.isArray(supRes) ? supRes : (supRes && Array.isArray(supRes.items) ? supRes.items : []);
+  } catch (_) {}
+
+  const fieldsHtml = `
+    ${renderSiteFormField(siteId)}
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pRef">Référence article *</label>
+        <input type="text" id="pRef" name="reference" required autocomplete="off" autofocus placeholder="ex. ROUL-6204-2RS" />
+        <span class="form-help">Code unique par site.</span>
+      </div>
+      <div class="form-group">
+        <label for="pName">Désignation *</label>
+        <input type="text" id="pName" name="name" required autocomplete="off" placeholder="ex. Roulement à billes étanche" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pCategory">Catégorie *</label>
+        <select id="pCategory" name="category" required>
+          <option value="roulement">Roulement</option>
+          <option value="visserie">Visserie / Fixation</option>
+          <option value="moteur">Moteur / Réducteur</option>
+          <option value="pneumatique">Pneumatique</option>
+          <option value="hydraulique">Hydraulique</option>
+          <option value="electrique">Électrique</option>
+          <option value="capteur">Capteur / Détection</option>
+          <option value="mecanique" selected>Mécanique</option>
+          <option value="consommable">Consommable</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="pUnit">Unité de gestion *</label>
+        <select id="pUnit" name="unit" required>
+          <option value="piece" selected>Pièce(s)</option>
+          <option value="metre">Mètre(s)</option>
+          <option value="litre">Litre(s)</option>
+          <option value="kg">Kg</option>
+          <option value="lot">Lot(s)</option>
+          <option value="boite">Boîte(s)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pPrice">Prix unitaire initial (€ HT)</label>
+        <input type="number" step="0.01" min="0" id="pPrice" name="unit_price" placeholder="0.00" />
+        <span class="form-help">Converti en centimes pour le calcul du PMP.</span>
+      </div>
+      <div class="form-group">
+        <label for="pAlertThreshold">Seuil d'alerte stock bas</label>
+        <input type="number" min="0" id="pAlertThreshold" name="alert_threshold" placeholder="Par défaut : 5" />
+        <span class="form-help">Laissez vide pour appliquer le seuil global.</span>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pSupplier">Fournisseur habituel</label>
+        <select id="pSupplier" name="supplier_id">
+          <option value="">-- Aucun fournisseur --</option>
+          ${suppliers.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="pSupplierRef">Réf. fournisseur</label>
+        <input type="text" id="pSupplierRef" name="supplier_reference" placeholder="ex. SKF-6204-2RSH" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pManufacturer">Fabricant</label>
+        <input type="text" id="pManufacturer" name="manufacturer" placeholder="ex. SKF, Festo, SMC…" />
+      </div>
+      <div class="form-group">
+        <label for="pManufacturerRef">Réf. fabricant</label>
+        <input type="text" id="pManufacturerRef" name="manufacturer_reference" placeholder="ex. 6204-2RSH" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="pBarcode">Code-barres / EAN</label>
+      <input type="text" id="pBarcode" name="barcode" placeholder="ex. 7316570534201" />
+    </div>
+    <div class="form-group">
+      <label for="pDesc">Description technique / Dimensions</label>
+      <textarea id="pDesc" name="description" rows="2" placeholder="Spécifications, cotes, compatibilité…"></textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Nouvelle pièce détachée',
+    formId: 'modalCreatePartForm',
+    submitAction: 'create-part-submit',
+    submitLabel: 'Créer la pièce',
+    fieldsHtml,
+  });
+}
+
+async function handleCreatePartSubmit(form) {
+  const btn = document.getElementById('modalCreatePartFormSubmitBtn');
+  const errBox = document.getElementById('modalCreatePartFormErrorBox');
+  const errText = document.getElementById('modalCreatePartFormErrorBoxText');
+
+  const site_id = form.site_id ? form.site_id.value : (state.site ? state.site.id : null);
+  const reference = (form.reference.value || '').trim();
+  const name = (form.name.value || '').trim();
+  const category = form.category.value;
+  const unit = form.unit.value;
+  const unit_price_cents = eurosToCents(form.unit_price.value);
+  const alert_threshold = form.alert_threshold.value !== '' ? parseInt(form.alert_threshold.value, 10) : null;
+  const supplier_id = form.supplier_id.value || null;
+  const supplier_reference = (form.supplier_reference.value || '').trim() || null;
+  const manufacturer = (form.manufacturer.value || '').trim() || null;
+  const manufacturer_reference = (form.manufacturer_reference.value || '').trim() || null;
+  const barcode = (form.barcode.value || '').trim() || null;
+  const description = (form.description.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    const payload = {
+      reference,
+      name,
+      category,
+      unit,
+      unit_price_cents,
+      alert_threshold,
+      supplier_id,
+      supplier_reference,
+      manufacturer,
+      manufacturer_reference,
+      barcode,
+      description,
+    };
+
+    if (isAdmin()) {
+      if (!site_id) throw new Error('Veuillez sélectionner un site.');
+      payload.site_id = site_id;
+    }
+
+    const created = await api('/api/parts', {
+      method: 'POST',
+      body: payload,
+    });
+
+    notify(`Pièce « ${reference} » créée avec succès.`, 'success');
+    closeModal();
+    if (state.stockActiveTab === 'catalog') {
+      await loadPartsListView(true);
+    } else {
+      location.hash = `#/pieces/${encodeURIComponent(created.id)}`;
+    }
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible de créer la pièce.';
+  }
+}
+
+async function openEditPartModal(partId) {
+  let part = state.currentPartDetail && state.currentPartDetail.id === partId ? state.currentPartDetail : null;
+  if (!part) {
+    part = state.parts.find(p => p.id === partId);
+  }
+  if (!part) {
+    try {
+      part = await api(`/api/parts/${encodeURIComponent(partId)}`);
+    } catch (err) {
+      notify('Impossible de charger la pièce : ' + err.message, 'error');
+      return;
+    }
+  }
+
+  let suppliers = [];
+  try {
+    const siteParam = part.site_id ? `?site_id=${encodeURIComponent(part.site_id)}&limit=100` : '?limit=100';
+    const supRes = await api(`/api/suppliers${siteParam}`);
+    suppliers = Array.isArray(supRes) ? supRes : (supRes && Array.isArray(supRes.items) ? supRes.items : []);
+  } catch (_) {}
+
+  const fieldsHtml = `
+    <div class="form-row">
+      <div class="form-group">
+        <label for="epRef">Référence article *</label>
+        <input type="text" id="epRef" name="reference" required autocomplete="off" value="${esc(part.reference)}" />
+      </div>
+      <div class="form-group">
+        <label for="epName">Désignation *</label>
+        <input type="text" id="epName" name="name" required autocomplete="off" value="${esc(part.name)}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="epCategory">Catégorie *</label>
+        <select id="epCategory" name="category" required>
+          <option value="roulement" ${part.category === 'roulement' ? 'selected' : ''}>Roulement</option>
+          <option value="visserie" ${part.category === 'visserie' ? 'selected' : ''}>Visserie / Fixation</option>
+          <option value="moteur" ${part.category === 'moteur' ? 'selected' : ''}>Moteur / Réducteur</option>
+          <option value="pneumatique" ${part.category === 'pneumatique' ? 'selected' : ''}>Pneumatique</option>
+          <option value="hydraulique" ${part.category === 'hydraulique' ? 'selected' : ''}>Hydraulique</option>
+          <option value="electrique" ${part.category === 'electrique' ? 'selected' : ''}>Électrique</option>
+          <option value="capteur" ${part.category === 'capteur' ? 'selected' : ''}>Capteur / Détection</option>
+          <option value="mecanique" ${part.category === 'mecanique' ? 'selected' : ''}>Mécanique</option>
+          <option value="consommable" ${part.category === 'consommable' ? 'selected' : ''}>Consommable</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="epUnit">Unité de gestion *</label>
+        <select id="epUnit" name="unit" required>
+          <option value="piece" ${part.unit === 'piece' ? 'selected' : ''}>Pièce(s)</option>
+          <option value="metre" ${part.unit === 'metre' ? 'selected' : ''}>Mètre(s)</option>
+          <option value="litre" ${part.unit === 'litre' ? 'selected' : ''}>Litre(s)</option>
+          <option value="kg" ${part.unit === 'kg' ? 'selected' : ''}>Kg</option>
+          <option value="lot" ${part.unit === 'lot' ? 'selected' : ''}>Lot(s)</option>
+          <option value="boite" ${part.unit === 'boite' ? 'selected' : ''}>Boîte(s)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>PMP courant HT</label>
+        <input type="text" readonly disabled value="${formatCents(part.unit_price_cents)}" />
+        <span class="form-help">Le PMP est actualisé automatiquement lors des réceptions d'entrées.</span>
+      </div>
+      <div class="form-group">
+        <label for="epAlertThreshold">Seuil d'alerte spécifique</label>
+        <input type="number" min="0" id="epAlertThreshold" name="alert_threshold" value="${part.alert_threshold !== null && part.alert_threshold !== undefined ? esc(part.alert_threshold) : ''}" placeholder="Seuil global par défaut" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="epSupplier">Fournisseur habituel</label>
+        <select id="epSupplier" name="supplier_id">
+          <option value="">-- Aucun fournisseur --</option>
+          ${suppliers.map(s => `<option value="${esc(s.id)}" ${s.id === part.supplier_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="epSupplierRef">Réf. fournisseur</label>
+        <input type="text" id="epSupplierRef" name="supplier_reference" value="${esc(part.supplier_reference || '')}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="epManufacturer">Fabricant</label>
+        <input type="text" id="epManufacturer" name="manufacturer" value="${esc(part.manufacturer || '')}" />
+      </div>
+      <div class="form-group">
+        <label for="epManufacturerRef">Réf. fabricant</label>
+        <input type="text" id="epManufacturerRef" name="manufacturer_reference" value="${esc(part.manufacturer_reference || '')}" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="epBarcode">Code-barres / EAN</label>
+      <input type="text" id="epBarcode" name="barcode" value="${esc(part.barcode || '')}" />
+    </div>
+    <div class="form-group">
+      <label for="epDesc">Description technique</label>
+      <textarea id="epDesc" name="description" rows="2">${esc(part.description || '')}</textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: `Modifier « ${part.reference} »`,
+    formId: 'modalEditPartForm',
+    submitAction: 'edit-part-submit',
+    submitArgs: part.id,
+    submitLabel: 'Enregistrer les modifications',
+    fieldsHtml,
+  });
+}
+
+async function handleEditPartSubmit(form, partId) {
+  const btn = document.getElementById('modalEditPartFormSubmitBtn');
+  const errBox = document.getElementById('modalEditPartFormErrorBox');
+  const errText = document.getElementById('modalEditPartFormErrorBoxText');
+
+  const reference = (form.reference.value || '').trim();
+  const name = (form.name.value || '').trim();
+  const category = form.category.value;
+  const unit = form.unit.value;
+  const alert_threshold = form.alert_threshold.value !== '' ? parseInt(form.alert_threshold.value, 10) : null;
+  const supplier_id = form.supplier_id.value || null;
+  const supplier_reference = (form.supplier_reference.value || '').trim() || null;
+  const manufacturer = (form.manufacturer.value || '').trim() || null;
+  const manufacturer_reference = (form.manufacturer_reference.value || '').trim() || null;
+  const barcode = (form.barcode.value || '').trim() || null;
+  const description = (form.description.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/parts/${encodeURIComponent(partId)}`, {
+      method: 'PATCH',
+      body: {
+        reference,
+        name,
+        category,
+        unit,
+        alert_threshold,
+        supplier_id,
+        supplier_reference,
+        manufacturer,
+        manufacturer_reference,
+        barcode,
+        description,
+      },
+    });
+
+    notify(`Pièce « ${reference} » mise à jour.`, 'success');
+    closeModal();
+    if (state.currentPartDetail && state.currentPartDetail.id === partId) {
+      await loadPartDetail(partId);
+    }
+    if (state.stockActiveTab === 'catalog') {
+      await loadPartsListView(true);
+    }
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible de modifier la pièce.';
+  }
+}
+
+async function handleDeletePart(partId) {
+  const part = (state.currentPartDetail && state.currentPartDetail.id === partId)
+    ? state.currentPartDetail
+    : state.parts.find(p => p.id === partId);
+  const ref = part ? part.reference : 'cette pièce';
+
+  if (part && part.total_stock > 0) {
+    notify(`Suppression impossible : la pièce possède encore ${part.total_stock} unité(s) en stock. Veuillez d'abord solder ou ajuster le stock.`, 'error');
+    return;
+  }
+
+  const ok = await confirmDialog(
+    'Supprimer la pièce détachée',
+    `Voulez-vous vraiment supprimer la pièce « ${ref} » du catalogue ?\nCette opération est irréversible si elle n'a plus de mouvements rattachés.`,
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/parts/${encodeURIComponent(partId)}`, {
+      method: 'DELETE',
+    });
+    notify(`Pièce « ${ref} » supprimée.`, 'success');
+    if (state.currentPartDetail && state.currentPartDetail.id === partId) {
+      location.hash = '#/stock';
+    } else {
+      await loadPartsListView(true);
+    }
+  } catch (err) {
+    notify(err.message || 'Suppression refusée.', 'error');
+  }
+}
+
+async function openMovementInModal(prefill = {}) {
+  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
+  let partsList = state.parts;
+  let locationsList = state.locations;
+
+  try {
+    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+    if (!partsList.length) {
+      const pRes = await api(`/api/parts${siteParam}`);
+      partsList = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
+    }
+    if (!locationsList.length) {
+      const lRes = await api(`/api/locations${siteParam}`);
+      locationsList = Array.isArray(lRes) ? lRes : (lRes && Array.isArray(lRes.items) ? lRes.items : []);
+    }
+  } catch (_) {}
+
+  const targetPartId = prefill.partId || '';
+  const targetLocId = prefill.locationId || '';
+
+  const selectedPart = partsList.find(p => p.id === targetPartId);
+  const defaultPrice = selectedPart ? centsToEuroInput(selectedPart.unit_price_cents) : '';
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="mInPart">Pièce détachée à réceptionner *</label>
+      <select id="mInPart" name="part_id" required data-action="on-movement-in-part-change">
+        <option value="" ${!targetPartId ? 'selected disabled' : ''}>-- Choisir une pièce --</option>
+        ${partsList.map(p => `
+          <option value="${esc(p.id)}" data-pmp="${esc(p.unit_price_cents)}" ${p.id === targetPartId ? 'selected' : ''}>
+            ${esc(p.reference)} — ${esc(p.name)} (${formatCents(p.unit_price_cents)} HT)
+          </option>
+        `).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="mInLoc">Emplacement de stockage de destination *</label>
+        <select id="mInLoc" name="to_location_id" required>
+          <option value="" ${!targetLocId ? 'selected disabled' : ''}>-- Choisir un emplacement --</option>
+          ${locationsList.map(l => `<option value="${esc(l.id)}" ${l.id === targetLocId ? 'selected' : ''}>${esc(l.name)} (${esc(l.code)})</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="mInQty">Quantité réceptionnée *</label>
+        <input type="number" min="1" step="1" id="mInQty" name="quantity" required placeholder="ex. 5" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="mInPrice">Prix d'achat unitaire HT (€) *</label>
+        <input type="number" min="0" step="0.01" id="mInPrice" name="unit_price" required value="${esc(defaultPrice)}" placeholder="ex. 14.50" />
+        <span class="form-help">Obligatoire pour l'actualisation du Prix Moyen Pondéré (PMP).</span>
+      </div>
+      <div class="form-group">
+        <label for="mInReason">N° Bon de livraison / Référence commande</label>
+        <input type="text" id="mInReason" name="reason" placeholder="ex. BL-2026-981" />
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Entrée en stock / Réception fournisseur',
+    formId: 'modalMovementInForm',
+    submitAction: 'movement-in-submit',
+    submitLabel: 'Valider la réception',
+    fieldsHtml,
+  });
+}
+
+async function handleMovementInSubmit(form) {
+  const btn = document.getElementById('modalMovementInFormSubmitBtn');
+  const errBox = document.getElementById('modalMovementInFormErrorBox');
+  const errText = document.getElementById('modalMovementInFormErrorBoxText');
+
+  const part_id = form.part_id.value;
+  const to_location_id = form.to_location_id.value;
+  const quantity = parseInt(form.quantity.value, 10);
+  const unit_price_cents = eurosToCents(form.unit_price.value);
+  const reason = (form.reason.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!part_id) throw new Error('Veuillez sélectionner une pièce.');
+    if (!to_location_id) throw new Error('Veuillez sélectionner un emplacement.');
+    if (isNaN(quantity) || quantity <= 0) throw new Error('La quantité doit être un nombre entier strictement positif.');
+    if (unit_price_cents < 0) throw new Error('Le prix d\'achat unitaire ne peut pas être négatif.');
+
+    await api('/api/stock/movements', {
+      method: 'POST',
+      body: {
+        movement_type: 'in',
+        part_id,
+        to_location_id,
+        quantity,
+        unit_price_cents,
+        reason,
+      },
+    });
+
+    notify('Entrée en stock enregistrée avec succès (PMP mis à jour).', 'success');
+    closeModal();
+
+    if (state.currentPartDetail && state.currentPartDetail.id === part_id) {
+      await loadPartDetail(part_id);
+    }
+    if (state.stockActiveTab === 'catalog') await loadPartsListView(true);
+    else if (state.stockActiveTab === 'stock') await loadStockLevelsView();
+    else if (state.stockActiveTab === 'movements') await loadStockMovementsListView(true);
+    else if (state.stockActiveTab === 'alerts') await loadStockAlertsView();
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible d\'enregistrer l\'entrée en stock.';
+  }
+}
+
+async function openMovementTransferModal(prefill = {}) {
+  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
+  let partsList = state.parts;
+  let locationsList = state.locations;
+
+  try {
+    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+    if (!partsList.length) {
+      const pRes = await api(`/api/parts${siteParam}`);
+      partsList = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
+    }
+    if (!locationsList.length) {
+      const lRes = await api(`/api/locations${siteParam}`);
+      locationsList = Array.isArray(lRes) ? lRes : (lRes && Array.isArray(lRes.items) ? lRes.items : []);
+    }
+  } catch (_) {}
+
+  const targetPartId = prefill.partId || '';
+  const targetFromLocId = prefill.fromLocationId || '';
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="mTrPart">Pièce à transférer *</label>
+      <select id="mTrPart" name="part_id" required>
+        <option value="" ${!targetPartId ? 'selected disabled' : ''}>-- Choisir une pièce --</option>
+        ${partsList.map(p => `
+          <option value="${esc(p.id)}" ${p.id === targetPartId ? 'selected' : ''}>
+            ${esc(p.reference)} — ${esc(p.name)}
+          </option>
+        `).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="mTrFromLoc">Emplacement d'origine *</label>
+        <select id="mTrFromLoc" name="from_location_id" required>
+          <option value="" ${!targetFromLocId ? 'selected disabled' : ''}>-- Emplacement de départ --</option>
+          ${locationsList.map(l => `<option value="${esc(l.id)}" ${l.id === targetFromLocId ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="mTrToLoc">Emplacement de destination *</label>
+        <select id="mTrToLoc" name="to_location_id" required>
+          <option value="" selected disabled>-- Emplacement d'arrivée --</option>
+          ${locationsList.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="mTrQty">Quantité à déplacer *</label>
+        <input type="number" min="1" step="1" id="mTrQty" name="quantity" required placeholder="ex. 2" />
+      </div>
+      <div class="form-group">
+        <label for="mTrReason">Commentaires / Motif</label>
+        <input type="text" id="mTrReason" name="reason" placeholder="ex. Réorganisation magasin" />
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Transfert interne d\'emplacement',
+    formId: 'modalMovementTransferForm',
+    submitAction: 'movement-transfer-submit',
+    submitLabel: 'Valider le transfert',
+    fieldsHtml,
+  });
+}
+
+async function handleMovementTransferSubmit(form) {
+  const btn = document.getElementById('modalMovementTransferFormSubmitBtn');
+  const errBox = document.getElementById('modalMovementTransferFormErrorBox');
+  const errText = document.getElementById('modalMovementTransferFormErrorBoxText');
+
+  const part_id = form.part_id.value;
+  const from_location_id = form.from_location_id.value;
+  const to_location_id = form.to_location_id.value;
+  const quantity = parseInt(form.quantity.value, 10);
+  const reason = (form.reason.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!part_id) throw new Error('Veuillez sélectionner une pièce.');
+    if (!from_location_id) throw new Error('Veuillez sélectionner l\'emplacement d\'origine.');
+    if (!to_location_id) throw new Error('Veuillez sélectionner l\'emplacement de destination.');
+    if (from_location_id === to_location_id) throw new Error('L\'emplacement d\'origine et de destination doivent être différents.');
+    if (isNaN(quantity) || quantity <= 0) throw new Error('La quantité doit être un entier strictement positif.');
+
+    await api('/api/stock/movements', {
+      method: 'POST',
+      body: {
+        movement_type: 'transfer',
+        part_id,
+        from_location_id,
+        to_location_id,
+        quantity,
+        reason,
+      },
+    });
+
+    notify('Transfert de stock effectué avec succès.', 'success');
+    closeModal();
+
+    if (state.currentPartDetail && state.currentPartDetail.id === part_id) {
+      await loadPartDetail(part_id);
+    }
+    if (state.stockActiveTab === 'stock') await loadStockLevelsView();
+    else if (state.stockActiveTab === 'movements') await loadStockMovementsListView(true);
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible d\'effectuer le transfert.';
+  }
+}
+
+async function openMovementAdjustModal(prefill = {}) {
+  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
+  let partsList = state.parts;
+  let locationsList = state.locations;
+
+  try {
+    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+    if (!partsList.length) {
+      const pRes = await api(`/api/parts${siteParam}`);
+      partsList = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
+    }
+    if (!locationsList.length) {
+      const lRes = await api(`/api/locations${siteParam}`);
+      locationsList = Array.isArray(lRes) ? lRes : (lRes && Array.isArray(lRes.items) ? lRes.items : []);
+    }
+  } catch (_) {}
+
+  const targetPartId = prefill.partId || '';
+  const targetLocId = prefill.locationId || '';
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="mAdjPart">Pièce à ajuster *</label>
+      <select id="mAdjPart" name="part_id" required>
+        <option value="" ${!targetPartId ? 'selected disabled' : ''}>-- Choisir une pièce --</option>
+        ${partsList.map(p => `
+          <option value="${esc(p.id)}" ${p.id === targetPartId ? 'selected' : ''}>
+            ${esc(p.reference)} — ${esc(p.name)}
+          </option>
+        `).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="mAdjLoc">Emplacement concerné *</label>
+      <select id="mAdjLoc" name="location_id" required>
+        <option value="" ${!targetLocId ? 'selected disabled' : ''}>-- Choisir l'emplacement --</option>
+        ${locationsList.map(l => `<option value="${esc(l.id)}" ${l.id === targetLocId ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="mAdjKind">Nature de l'ajustement *</label>
+        <select id="mAdjKind" name="adjustment_kind" required>
+          <option value="inventaire" selected>Écart d'inventaire</option>
+          <option value="rebut">Mise au rebut</option>
+          <option value="perte">Perte constatée</option>
+          <option value="casse">Casse accidentelle</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="mAdjDirection">Sens de la correction *</label>
+        <select id="mAdjDirection" name="direction" required>
+          <option value="sub">Retrait / Diminution (-)</option>
+          <option value="add">Ajout / Surplus (+)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="mAdjQty">Quantité d'ajustement *</label>
+      <input type="number" min="1" step="1" id="mAdjQty" name="quantity" required placeholder="ex. 1" />
+      <span class="form-help">Valeur absolue de la variation. Le stock résultant ne peut pas être négatif.</span>
+    </div>
+    <div class="form-group">
+      <label for="mAdjReason">Motif obligatoire de l'ajustement *</label>
+      <input type="text" id="mAdjReason" name="reason" required placeholder="ex. Contrôle tournant des stocks, colis détérioré…" />
+      <span class="form-help">Obligatoire pour la traçabilité et l'audit.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Ajustement d\'inventaire / Rebut',
+    formId: 'modalMovementAdjustForm',
+    submitAction: 'movement-adjust-submit',
+    submitLabel: 'Valider l\'ajustement',
+    fieldsHtml,
+  });
+}
+
+async function handleMovementAdjustSubmit(form) {
+  const btn = document.getElementById('modalMovementAdjustFormSubmitBtn');
+  const errBox = document.getElementById('modalMovementAdjustFormErrorBox');
+  const errText = document.getElementById('modalMovementAdjustFormErrorBoxText');
+
+  const part_id = form.part_id.value;
+  const location_id = form.location_id.value;
+  const adjustment_kind = form.adjustment_kind.value;
+  const direction = form.direction.value;
+  const qty = parseInt(form.quantity.value, 10);
+  const reason = (form.reason.value || '').trim();
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!part_id) throw new Error('Veuillez sélectionner une pièce.');
+    if (!location_id) throw new Error('Veuillez sélectionner un emplacement.');
+    if (isNaN(qty) || qty <= 0) throw new Error('La quantité doit être un nombre strictement positif.');
+    if (!reason) throw new Error('Le motif de l\'ajustement est obligatoire.');
+
+    const delta = direction === 'add' ? qty : -qty;
+
+    await api('/api/stock/adjustments', {
+      method: 'POST',
+      body: {
+        part_id,
+        location_id,
+        delta,
+        adjustment_kind,
+        reason,
+      },
+    });
+
+    notify(`Ajustement de stock enregistré (${delta > 0 ? `+${delta}` : delta} unités).`, 'success');
+    closeModal();
+
+    if (state.currentPartDetail && state.currentPartDetail.id === part_id) {
+      await loadPartDetail(part_id);
+    }
+    if (state.stockActiveTab === 'stock') await loadStockLevelsView();
+    else if (state.stockActiveTab === 'movements') await loadStockMovementsListView(true);
+    else if (state.stockActiveTab === 'alerts') await loadStockAlertsView();
+    else if (state.stockActiveTab === 'catalog') await loadPartsListView(true);
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible d\'enregistrer l\'ajustement.';
+  }
+}
+
+async function openAddInterventionPartModal(interventionId) {
+  const inter = (state.currentInterventionDetail && state.currentInterventionDetail.id === interventionId)
+    ? state.currentInterventionDetail
+    : await api(`/api/interventions/${encodeURIComponent(interventionId)}`);
+
+  const currentSiteId = inter.site_id || state.selectedSiteId || (state.site ? state.site.id : '');
+  const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+
+  let parts = [];
+  let recommendedParts = [];
+
+  try {
+    const [pRes, recRes] = await Promise.all([
+      api(`/api/parts${siteParam}`),
+      inter.equipment_id ? api(`/api/equipments/${encodeURIComponent(inter.equipment_id)}/parts`) : Promise.resolve([])
+    ]);
+    parts = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
+    recommendedParts = (Array.isArray(recRes) ? recRes : []).map(adaptStock);
+  } catch (_) {}
+
+  let recommendedHtml = '';
+  if (recommendedParts.length > 0) {
+    recommendedHtml = `
+      <div class="recommended-parts-block">
+        <div class="hint font-bold">${icon('i-wrench')} Pièces recommandées pour cet équipement :</div>
+        <div class="recommended-part-chips">
+          ${recommendedParts.map(rp => `
+            <button type="button" class="btn sm recommended-part-chip" data-action="quick-select-int-part" data-args="${jsArg(rp.part_id || rp.id)}">
+              ${icon('i-basket')} <span>${esc(rp.reference)} — ${esc(rp.name)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  const fieldsHtml = `
+    ${recommendedHtml}
+    <div class="form-group">
+      <label for="intPartId">Pièce détachée à consommer *</label>
+      <select id="intPartId" name="part_id" required data-action="on-int-part-select" data-args="${jsArg(currentSiteId)}">
+        <option value="" selected disabled>-- Choisir une pièce --</option>
+        ${parts.map(p => `
+          <option value="${esc(p.id)}" data-pmp="${esc(p.unit_price_cents)}" data-stock="${esc(p.total_stock)}">
+            ${esc(p.reference)} — ${esc(p.name)} (${esc(p.total_stock)} en stock, PMP: ${formatCents(p.unit_price_cents)})
+          </option>
+        `).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="intPartLoc">Emplacement de prélèvement *</label>
+        <select id="intPartLoc" name="location_id" required data-action="on-int-part-loc-select">
+          <option value="" selected disabled>-- Sélectionner d'abord une pièce --</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="intPartQty">Quantité consommée *</label>
+        <input type="number" min="1" step="1" id="intPartQty" name="quantity" required value="1" data-action="on-int-part-qty-input" />
+      </div>
+    </div>
+    <div id="intPartEstimBox" class="solution-report-box hint" hidden>
+      ${icon('i-info')}
+      <span>Valorisation estimée : <b id="intPartEstimTotal">0,00 €</b> (PMP unitaire : <span id="intPartEstimPmp">0,00 €</span> HT)</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Sortie de pièce sur intervention',
+    formId: 'modalAddInterventionPartForm',
+    submitAction: 'add-intervention-part-submit',
+    submitArgs: interventionId,
+    submitLabel: 'Confirmer la sortie',
+    fieldsHtml,
+  });
+}
+
+async function handleAddInterventionPartSubmit(form, interventionId) {
+  const btn = document.getElementById('modalAddInterventionPartFormSubmitBtn');
+  const errBox = document.getElementById('modalAddInterventionPartFormErrorBox');
+  const errText = document.getElementById('modalAddInterventionPartFormErrorBoxText');
+
+  const part_id = form.part_id.value;
+  const location_id = form.location_id.value;
+  const quantity = parseInt(form.quantity.value, 10);
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!part_id) throw new Error('Veuillez sélectionner une pièce détachée.');
+    if (!location_id) throw new Error('Veuillez sélectionner un emplacement de prélèvement.');
+    if (isNaN(quantity) || quantity <= 0) throw new Error('La quantité doit être un entier supérieur à 0.');
+
+    await api(`/api/interventions/${encodeURIComponent(interventionId)}/parts`, {
+      method: 'POST',
+      body: {
+        part_id,
+        location_id,
+        quantity,
+      },
+    });
+
+    notify('Pièce sortie avec succès sur l\'intervention.', 'success');
+    closeModal();
+    await loadInterventionDetail(interventionId);
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible de sortir la pièce.';
+  }
+}
+
+async function openAddInterventionReservationModal(interventionId) {
+  const inter = (state.currentInterventionDetail && state.currentInterventionDetail.id === interventionId)
+    ? state.currentInterventionDetail
+    : await api(`/api/interventions/${encodeURIComponent(interventionId)}`);
+
+  const currentSiteId = inter.site_id || state.selectedSiteId || (state.site ? state.site.id : '');
+  const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+
+  let parts = [];
+  try {
+    const pRes = await api(`/api/parts${siteParam}`);
+    parts = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
+  } catch (_) {}
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="intResPartId">Pièce à préparer / réserver *</label>
+      <select id="intResPartId" name="part_id" required data-action="on-int-part-select" data-args="${jsArg(currentSiteId)}">
+        <option value="" selected disabled>-- Choisir une pièce --</option>
+        ${parts.map(p => `
+          <option value="${esc(p.id)}" data-pmp="${esc(p.unit_price_cents)}" data-stock="${esc(p.total_stock)}">
+            ${esc(p.reference)} — ${esc(p.name)} (${esc(p.total_stock)} en stock)
+          </option>
+        `).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="intPartLoc">Emplacement réservé *</label>
+        <select id="intPartLoc" name="location_id" required>
+          <option value="" selected disabled>-- Sélectionner d'abord une pièce --</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="intResQty">Quantité à réserver *</label>
+        <input type="number" min="1" step="1" id="intResQty" name="quantity" required value="1" />
+        <span class="form-help">Mise de côté pour cette intervention.</span>
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Préparer / Réserver une pièce',
+    formId: 'modalAddInterventionReservationForm',
+    submitAction: 'add-intervention-reservation-submit',
+    submitArgs: interventionId,
+    submitLabel: 'Valider la réservation',
+    fieldsHtml,
+  });
+}
+
+async function handleAddInterventionReservationSubmit(form, interventionId) {
+  const btn = document.getElementById('modalAddInterventionReservationFormSubmitBtn');
+  const errBox = document.getElementById('modalAddInterventionReservationFormErrorBox');
+  const errText = document.getElementById('modalAddInterventionReservationFormErrorBoxText');
+
+  const part_id = form.part_id.value;
+  const location_id = form.location_id.value;
+  const quantity = parseInt(form.quantity.value, 10);
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!part_id) throw new Error('Veuillez sélectionner une pièce détachée.');
+    if (!location_id) throw new Error('Veuillez sélectionner un emplacement.');
+    if (isNaN(quantity) || quantity <= 0) throw new Error('La quantité doit être un entier supérieur à 0.');
+
+    await api(`/api/interventions/${encodeURIComponent(interventionId)}/reservations`, {
+      method: 'POST',
+      body: {
+        part_id,
+        location_id,
+        quantity,
+      },
+    });
+
+    notify('Pièce réservée et mise de côté avec succès.', 'success');
+    closeModal();
+    await loadInterventionDetail(interventionId);
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible de réserver la pièce.';
+  }
+}
+
+function openConsumeReservationModal(args) {
+  const fieldsHtml = `
+    <p>Vous vous apprêtez à consommer la pièce <b>${esc(args.partName)}</b> préparée pour cette intervention.</p>
+    <div class="form-group">
+      <label for="cResQty">Quantité consommée *</label>
+      <input type="number" min="1" max="${esc(args.maxQuantity)}" step="1" id="cResQty" name="quantity" required value="${esc(args.maxQuantity)}" />
+      <span class="form-help">Maximum préparé : ${esc(args.maxQuantity)} unité(s). Si vous consommez une quantité inférieure, le solde non utilisé sera automatiquement remis en rayon.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Consommer une pièce préparée',
+    formId: 'modalConsumeReservationForm',
+    submitAction: 'consume-reservation-submit',
+    submitArgs: args,
+    submitLabel: 'Consommer sur l\'intervention',
+    fieldsHtml,
+  });
+}
+
+async function handleConsumeReservationSubmit(form, args) {
+  const btn = document.getElementById('modalConsumeReservationFormSubmitBtn');
+  const errBox = document.getElementById('modalConsumeReservationFormErrorBox');
+  const errText = document.getElementById('modalConsumeReservationFormErrorBoxText');
+
+  const quantity = parseInt(form.quantity.value, 10);
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (isNaN(quantity) || quantity <= 0) throw new Error('La quantité doit être un entier supérieur à 0.');
+    if (quantity > args.maxQuantity) throw new Error(`La quantité ne peut pas excéder la quantité préparée (${args.maxQuantity}).`);
+
+    await api(`/api/reservations/${encodeURIComponent(args.reservationId)}/consume`, {
+      method: 'POST',
+      body: { quantity },
+    });
+
+    notify('Pièce(s) consommée(s) sur l\'intervention avec succès.', 'success');
+    closeModal();
+    if (args.interventionId) {
+      await loadInterventionDetail(args.interventionId);
+    }
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible de consommer la réservation.';
+  }
+}
+
+async function handleReleaseReservation(args) {
+  const ok = await confirmDialog(
+    'Remettre en rayon',
+    'Voulez-vous libérer cette réservation ? La pièce préparée ne sera pas consommée et sera réintégrée dans le stock disponible de son emplacement.',
+    'Remettre en rayon',
+    false
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/reservations/${encodeURIComponent(args.reservationId)}/release`, {
+      method: 'POST',
+    });
+    notify('Pièce remise en rayon avec succès.', 'success');
+    if (args.interventionId) {
+      await loadInterventionDetail(args.interventionId);
+    }
+  } catch (err) {
+    notify(err.message || 'Impossible de libérer la réservation.', 'error');
+  }
+}
+
+async function handleDeleteInterventionPart(args) {
+  const ok = await confirmDialog(
+    'Annuler la sortie de pièce',
+    'Êtes-vous sûr de vouloir annuler cette consommation ? La quantité sortie sera réintégrée dans le stock physique de son emplacement d\'origine.',
+    'Annuler la sortie',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(args.interventionId)}/parts/${encodeURIComponent(args.itemId)}`, {
+      method: 'DELETE',
+    });
+    notify('Sortie de pièce annulée et stock réintégré.', 'success');
+    await loadInterventionDetail(args.interventionId);
+  } catch (err) {
+    notify(err.message || 'Impossible d\'annuler la sortie de pièce.', 'error');
+  }
+}
+
+async function openAddPartEquipmentModal(partId) {
+  const part = state.currentPartDetail || state.parts.find(p => p.id === partId);
+  const currentSiteId = part ? part.site_id : (state.selectedSiteId || (state.site ? state.site.id : ''));
+
+  let equipments = [];
+  try {
+    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+    const eqRes = await api(`/api/equipments${siteParam}`);
+    equipments = Array.isArray(eqRes) ? eqRes : (eqRes && Array.isArray(eqRes.items) ? eqRes.items : []);
+  } catch (_) {}
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="peEquip">Équipement à associer *</label>
+      <select id="peEquip" name="equipment_id" required>
+        <option value="" selected disabled>-- Choisir un équipement --</option>
+        ${equipments.map(e => `<option value="${esc(e.id)}">${esc(e.code)} — ${esc(e.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="peQty">Quantité préconisée</label>
+        <input type="number" min="1" step="1" id="peQty" name="quantity_recommended" value="1" />
+        <span class="form-help">Nombre d'exemplaires installés sur cette machine.</span>
+      </div>
+      <div class="form-group">
+        <label for="peNotes">Notes d'assemblage / Repère plan</label>
+        <input type="text" id="peNotes" name="assembly_notes" placeholder="ex. Palier avant arbre primaire" />
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Associer à un équipement',
+    formId: 'modalPartEquipmentForm',
+    submitAction: 'add-part-equipment-submit',
+    submitArgs: partId,
+    submitLabel: 'Enregistrer l\'association',
+    fieldsHtml,
+  });
+}
+
+async function handleAddPartEquipmentSubmit(form, partId) {
+  const btn = document.getElementById('modalPartEquipmentFormSubmitBtn');
+  const errBox = document.getElementById('modalPartEquipmentFormErrorBox');
+  const errText = document.getElementById('modalPartEquipmentFormErrorBoxText');
+
+  const equipment_id = form.equipment_id.value;
+  const quantity_recommended = parseInt(form.quantity_recommended.value, 10) || 1;
+  const notes = (form.assembly_notes.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!equipment_id) throw new Error('Veuillez sélectionner un équipement.');
+
+    await api(`/api/equipments/${encodeURIComponent(equipment_id)}/parts`, {
+      method: 'POST',
+      body: {
+        part_id: partId,
+        quantity_recommended,
+        notes,
+      },
+    });
+
+    notify('Équipement associé à la pièce avec succès.', 'success');
+    closeModal();
+    if (state.currentPartDetail && state.currentPartDetail.id === partId) {
+      await loadPartDetail(partId);
+    }
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible d\'associer l\'équipement.';
+  }
+}
+
+async function handleDeletePartEquipment(partId, equipId) {
+  const ok = await confirmDialog(
+    'Dissocier l\'équipement',
+    'Voulez-vous retirer cette pièce des composants préconisés de l\'équipement ?',
+    'Dissocier',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/equipments/${encodeURIComponent(equipId)}/parts/${encodeURIComponent(partId)}`, {
+      method: 'DELETE',
+    });
+    notify('Équipement dissocié.', 'success');
+    if (state.currentPartDetail && state.currentPartDetail.id === partId) {
+      await loadPartDetail(partId);
+    }
+  } catch (err) {
+    notify(err.message || 'Dissociation refusée.', 'error');
+  }
+}
+
+async function openAddEquipmentPartModal(equipmentId) {
+  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
+  let parts = [];
+  try {
+    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+    const pRes = await api(`/api/parts${siteParam}`);
+    parts = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
+  } catch (_) {}
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="epPartId">Pièce détachée à associer *</label>
+      <select id="epPartId" name="part_id" required>
+        <option value="" selected disabled>-- Choisir une pièce --</option>
+        ${parts.map(p => `<option value="${esc(p.id)}">${esc(p.reference)} — ${esc(p.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="epQtyRec">Quantité préconisée</label>
+        <input type="number" min="1" step="1" id="epQtyRec" name="quantity_recommended" value="1" />
+      </div>
+      <div class="form-group">
+        <label for="epNotes">Notes d'assemblage / Repère</label>
+        <input type="text" id="epNotes" name="notes" placeholder="ex. Roulement d'arbre de sortie" />
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Associer une pièce détachée',
+    formId: 'modalEquipmentPartForm',
+    submitAction: 'add-equipment-part-submit',
+    submitArgs: equipmentId,
+    submitLabel: 'Associer la pièce',
+    fieldsHtml,
+  });
+}
+
+async function handleAddEquipmentPartSubmit(form, equipmentId) {
+  const btn = document.getElementById('modalEquipmentPartFormSubmitBtn');
+  const errBox = document.getElementById('modalEquipmentPartFormErrorBox');
+  const errText = document.getElementById('modalEquipmentPartFormErrorBoxText');
+
+  const part_id = form.part_id.value;
+  const quantity_recommended = parseInt(form.quantity_recommended.value, 10) || 1;
+  const notes = (form.notes.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    if (!part_id) throw new Error('Veuillez sélectionner une pièce détachée.');
+
+    await api(`/api/equipments/${encodeURIComponent(equipmentId)}/parts`, {
+      method: 'POST',
+      body: {
+        part_id,
+        quantity_recommended,
+        notes,
+      },
+    });
+
+    notify('Pièce détachée associée à l\'équipement.', 'success');
+    closeModal();
+    openEquipmentDetailModal(equipmentId);
+  } catch (err) {
+    btn.disabled = false;
+    errBox.hidden = false;
+    errText.textContent = err.message || 'Impossible d\'associer la pièce.';
+  }
+}
+
+async function handleDeleteEquipmentPart(args) {
+  const ok = await confirmDialog(
+    'Dissocier la pièce',
+    'Voulez-vous retirer cette pièce des composants préconisés de cet équipement ?',
+    'Dissocier',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/equipments/${encodeURIComponent(args.equipmentId)}/parts/${encodeURIComponent(args.partId)}`, {
+      method: 'DELETE',
+    });
+    notify('Pièce détachée dissociée de l\'équipement.', 'success');
+    openEquipmentDetailModal(args.equipmentId);
+  } catch (err) {
+    notify(err.message || 'Impossible de dissocier la pièce.', 'error');
+  }
+}
+
+async function updateInterventionPartLocations(partId, siteId) {
+  const locSelect = document.getElementById('intPartLoc');
+  if (!locSelect || !partId) return;
+
+  locSelect.innerHTML = `<option value="" disabled selected>Chargement des emplacements…</option>`;
+
+  try {
+    const siteParam = siteId ? `&site_id=${encodeURIComponent(siteId)}` : '';
+    const res = await api(`/api/stock?part_id=${encodeURIComponent(partId)}${siteParam}`);
+    const items = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+
+    if (!items.length) {
+      locSelect.innerHTML = `<option value="" disabled selected>Aucun stock disponible pour cette pièce</option>`;
+      return;
+    }
+
+    locSelect.innerHTML = `<option value="" disabled selected>-- Choisir l'emplacement --</option>` +
+      items.map(s => `
+        <option value="${esc(s.location_id)}" data-available="${esc(s.available)}">
+          ${esc(s.location ? s.location.name : 'Emplacement')} — Dispo : ${esc(s.available)} (Total : ${esc(s.quantity)})
+        </option>
+      `).join('');
+
+    const availableItems = items.filter(s => s.available > 0);
+    if (availableItems.length === 1) {
+      locSelect.value = availableItems[0].location_id;
+    }
+
+    updateInterventionPartEstim();
+  } catch (err) {
+    locSelect.innerHTML = `<option value="" disabled selected>Erreur : ${esc(err.message)}</option>`;
+  }
+}
+
+function updateInterventionPartEstim() {
+  const partSelect = document.getElementById('intPartId');
+  const qtyInput = document.getElementById('intPartQty');
+  const estimBox = document.getElementById('intPartEstimBox');
+  const totalEl = document.getElementById('intPartEstimTotal');
+  const pmpEl = document.getElementById('intPartEstimPmp');
+
+  if (!partSelect || !qtyInput || !estimBox) return;
+
+  const opt = partSelect.selectedOptions[0];
+  if (!opt || !opt.value) {
+    estimBox.hidden = true;
+    return;
+  }
+
+  const pmpCents = parseInt(opt.dataset.pmp, 10) || 0;
+  const qty = parseInt(qtyInput.value, 10) || 0;
+
+  if (pmpEl) pmpEl.textContent = formatCents(pmpCents);
+  if (totalEl) totalEl.textContent = formatCents(pmpCents * qty);
+  estimBox.hidden = false;
 }
 
 // ============================================================================
@@ -5534,6 +8204,75 @@ function handleGlobalClick(e) {
       loadInterventionsList(false);
       break;
 
+    // Phase 4 - Magasin & Pièces
+    case 'switch-stock-tab':
+      state.stockActiveTab = args;
+      render();
+      break;
+    case 'open-create-part':
+      openCreatePartModal();
+      break;
+    case 'open-detail-part':
+      location.hash = `#/pieces/${encodeURIComponent(args)}`;
+      break;
+    case 'open-edit-part':
+      openEditPartModal(args);
+      break;
+    case 'delete-part':
+      handleDeletePart(args);
+      break;
+    case 'load-more-parts':
+      loadPartsListView(false);
+      break;
+    case 'open-movement-in':
+      openMovementInModal(args || {});
+      break;
+    case 'open-movement-transfer':
+      openMovementTransferModal(args || {});
+      break;
+    case 'open-movement-adjust':
+      openMovementAdjustModal(args || {});
+      break;
+    case 'load-more-stock-movements':
+      loadStockMovementsListView(false);
+      break;
+    case 'open-add-intervention-part':
+      openAddInterventionPartModal(args);
+      break;
+    case 'delete-intervention-part':
+      handleDeleteInterventionPart(args);
+      break;
+    case 'open-add-intervention-reservation':
+      openAddInterventionReservationModal(args);
+      break;
+    case 'open-consume-reservation':
+      openConsumeReservationModal(args);
+      break;
+    case 'release-reservation':
+      handleReleaseReservation(args);
+      break;
+    case 'open-add-part-equipment':
+      openAddPartEquipmentModal(args);
+      break;
+    case 'delete-part-equipment':
+      handleDeletePartEquipment(args.partId, args.equipmentId);
+      break;
+    case 'open-add-equipment-part':
+      openAddEquipmentPartModal(args);
+      break;
+    case 'delete-equipment-part':
+      handleDeleteEquipmentPart(args);
+      break;
+    case 'quick-select-int-part': {
+      const partSelect = document.getElementById('intPartId') || document.getElementById('intResPartId');
+      if (partSelect) {
+        partSelect.value = args;
+        const siteId = partSelect.dataset.args ? JSON.parse(partSelect.dataset.args) : '';
+        updateInterventionPartLocations(args, siteId);
+      }
+      break;
+    }
+
     default:
       break;
   }
@@ -5545,6 +8284,12 @@ function handleGlobalSubmit(e) {
 
   e.preventDefault();
   const action = form.dataset.action;
+  let args = null;
+  if (form.dataset.args) {
+    try {
+      args = JSON.parse(form.dataset.args);
+    } catch (_) {}
+  }
 
   switch (action) {
     case 'login-submit':
@@ -5621,6 +8366,38 @@ function handleGlobalSubmit(e) {
       handleAssignTechnicianSubmit(form);
       break;
 
+    // Phase 4 - Magasin & Pièces
+    case 'create-part-submit':
+      handleCreatePartSubmit(form);
+      break;
+    case 'edit-part-submit':
+      handleEditPartSubmit(form, args);
+      break;
+    case 'movement-in-submit':
+      handleMovementInSubmit(form);
+      break;
+    case 'movement-transfer-submit':
+      handleMovementTransferSubmit(form);
+      break;
+    case 'movement-adjust-submit':
+      handleMovementAdjustSubmit(form);
+      break;
+    case 'add-intervention-part-submit':
+      handleAddInterventionPartSubmit(form, args);
+      break;
+    case 'add-intervention-reservation-submit':
+      handleAddInterventionReservationSubmit(form, args);
+      break;
+    case 'consume-reservation-submit':
+      handleConsumeReservationSubmit(form, args);
+      break;
+    case 'add-part-equipment-submit':
+      handleAddPartEquipmentSubmit(form, args);
+      break;
+    case 'add-equipment-part-submit':
+      handleAddEquipmentPartSubmit(form, args);
+      break;
+
     default:
       break;
   }
@@ -5646,6 +8423,11 @@ function handleGlobalInput(e) {
   } else if (action === 'filter-interventions-search') {
     state.interventionsSearchQuery = input.value;
     debounce('interventions-search', () => loadInterventionsList(true), 300);
+  } else if (action === 'filter-parts-search') {
+    state.partsSearchQuery = input.value;
+    debounce('parts-search', () => loadPartsListView(true), 300);
+  } else if (action === 'on-int-part-qty-input') {
+    updateInterventionPartEstim();
   }
 }
 
@@ -5670,8 +8452,21 @@ function handleGlobalChange(e) {
       loadSuppliers(true);
     } else if (r === 'interventions') {
       loadInterventionsList(true);
+    } else if (r === 'stock') {
+      initStockPageView();
     }
     return;
+  }
+
+  // Case à cocher
+  const chk = e.target.closest('input[type="checkbox"][data-action]');
+  if (chk) {
+    const chkAction = chk.dataset.action;
+    if (chkAction === 'filter-parts-low-stock') {
+      state.partsLowStockFilter = chk.checked;
+      loadPartsListView(true);
+      return;
+    }
   }
 
   const sel = e.target.closest('select[data-action]');
@@ -5702,6 +8497,26 @@ function handleGlobalChange(e) {
   } else if (action === 'filter-interventions-equipment') {
     state.interventionsEquipmentFilter = sel.value;
     loadInterventionsList(true);
+  } else if (action === 'filter-parts-category') {
+    state.partsCategoryFilter = sel.value;
+    loadPartsListView(true);
+  } else if (action === 'filter-stock-location') {
+    state.stockLevelsLocationFilter = sel.value;
+    loadStockLevelsView();
+  } else if (action === 'filter-stock-movements-type') {
+    state.stockMovementsTypeFilter = sel.value;
+    loadStockMovementsListView(true);
+  } else if (action === 'on-int-part-select') {
+    const siteId = sel.dataset.args ? JSON.parse(sel.dataset.args) : '';
+    updateInterventionPartLocations(sel.value, siteId);
+  } else if (action === 'on-int-part-loc-select') {
+    updateInterventionPartEstim();
+  } else if (action === 'on-movement-in-part-change') {
+    const opt = sel.selectedOptions[0];
+    const priceInput = document.getElementById('mInPrice');
+    if (opt && priceInput && opt.dataset.pmp) {
+      priceInput.value = centsToEuroInput(opt.dataset.pmp);
+    }
   } else if (action === 'on-intervention-type-change') {
     const isHorsEquip = sel.value === 'hors_equipement';
     const isAposteriori = sel.value === 'a_posteriori';
