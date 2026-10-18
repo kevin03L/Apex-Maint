@@ -15,6 +15,7 @@ use tower_http::services::ServeDir;
 
 mod auth;
 mod interventions;
+mod maintenance;
 mod referentiel;
 mod stock;
 
@@ -93,6 +94,7 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
         .merge(referentiel::routes())
         .merge(interventions::routes())
         .merge(stock::routes())
+        .merge(maintenance::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
         .route("/system/shutdown", post(api_system_shutdown))

@@ -158,6 +158,15 @@ pub fn write_config(dir: &Path, content: &str) -> PathBuf {
 // ============================================================================
 
 pub fn spawn_engine(dir: &Path, config: &Path, prefix: &str) -> Child {
+    spawn_engine_with_env(dir, config, prefix, &[])
+}
+
+pub fn spawn_engine_with_env(
+    dir: &Path,
+    config: &Path,
+    prefix: &str,
+    envs: &[(&str, &str)],
+) -> Child {
     let stdout = std::fs::File::create(dir.join(format!("{prefix}.stdout.log")))
         .expect("fichier de sortie standard");
     let stderr = std::fs::File::create(dir.join(format!("{prefix}.stderr.log")))
@@ -177,6 +186,9 @@ pub fn spawn_engine(dir: &Path, config: &Path, prefix: &str) -> Child {
         }
     }
     cmd.env("APEX_MAINT_TEST_LOCK_SECONDS", "3");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
     cmd.spawn().expect("lancement du binaire apex-maint")
 }
 
@@ -273,9 +285,15 @@ impl Server {
     }
 
     pub fn start_with(name: &str, settings: Settings) -> Self {
+        Self::start_with_env(name, settings, &[])
+    }
+
+    pub fn start_with_env(name: &str, settings: Settings, envs: &[(&str, &str)]) -> Self {
         let dir = TempDir::new(name);
         let config = write_config(&dir.path, &settings.render());
-        let child = ChildGuard(Some(spawn_engine(&dir.path, &config, "engine")));
+        let child = ChildGuard(Some(spawn_engine_with_env(
+            &dir.path, &config, "engine", envs,
+        )));
         let mut server = Server {
             child,
             settings,

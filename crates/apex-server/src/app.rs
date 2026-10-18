@@ -281,6 +281,33 @@ pub async fn run(
         warn!("Le serveur est accessible depuis le réseau ({addr}) en HTTP non chiffré");
     }
 
+    // Tâche de fond de maintenance préventive (§2.4)
+    let scheduler_pool = pool.clone();
+    let scheduler_notify = Arc::clone(&shutdown_notify);
+    let scheduler_secs = std::env::var("APEX_MAINT_TEST_SCHEDULER_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(15 * 60);
+
+    tokio::spawn(async move {
+        apex_core::maintenance::process_auto_generation(&scheduler_pool).await;
+
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(scheduler_secs.max(1)));
+        interval.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = scheduler_notify.notified() => {
+                    break;
+                }
+                _ = interval.tick() => {
+                    apex_core::maintenance::process_auto_generation(&scheduler_pool).await;
+                }
+            }
+        }
+    });
+
     // 7. Service HTTP et attente des signaux
     on_ready();
     let notify_clone = Arc::clone(&shutdown_notify);

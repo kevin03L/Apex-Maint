@@ -56,6 +56,7 @@ pub enum Permission {
     SuppliersManage,
     UsersView,
     UsersManage,
+    CountersRecord,
 }
 
 impl Permission {
@@ -96,6 +97,7 @@ impl Permission {
         Self::SuppliersManage,
         Self::UsersView,
         Self::UsersManage,
+        Self::CountersRecord,
     ];
 
     /// Représentation textuelle exacte de la clé de permission (ex. `dashboard.view`).
@@ -136,6 +138,7 @@ impl Permission {
             Self::SuppliersManage => "suppliers.manage",
             Self::UsersView => "users.view",
             Self::UsersManage => "users.manage",
+            Self::CountersRecord => "counters.record",
         }
     }
 
@@ -177,6 +180,7 @@ impl Permission {
             "suppliers.manage" => Ok(Self::SuppliersManage),
             "users.view" => Ok(Self::UsersView),
             "users.manage" => Ok(Self::UsersManage),
+            "counters.record" => Ok(Self::CountersRecord),
             other => Err(ParsePermissionError(other.to_string())),
         }
     }
@@ -229,7 +233,7 @@ mod tests {
 
     #[test]
     fn all_permissions_roundtrip() {
-        assert_eq!(Permission::ALL.len(), 35);
+        assert_eq!(Permission::ALL.len(), 36);
         for &perm in Permission::ALL {
             let s = perm.as_str();
             let parsed = Permission::parse(s).expect("analyse de la permission");

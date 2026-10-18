@@ -70,7 +70,7 @@ décale aussi les échéances de compteur des plannings liés (voir §2.3).
 | `counter_interval` | `INTEGER NULL CHECK (counter_interval IS NULL OR counter_interval > 0)` ; obligatoire si et seulement si `frequency = 'counter'` |
 | `anchor_date` | `TEXT NULL` : date de la première échéance des plannings calendaires, qui sert d'ancrage à toutes les suivantes |
 | `next_due_date` | `TEXT NULL` : prochaine échéance des plannings calendaires |
-| `anchor_counter` | `INTEGER NULL` |
+| `anchor_counter` | `INTEGER NULL` : valeur de référence des plannings de compteur (par défaut la valeur actuelle du compteur) ; la première échéance vaut `anchor_counter + counter_interval` |
 | `next_due_counter` | `INTEGER NULL` : prochaine valeur d'échéance des plannings de compteur |
 | `lead_days` | `INTEGER NOT NULL DEFAULT 7 CHECK (lead_days BETWEEN 0 AND 365)` : avance de génération des plannings calendaires |
 | `lead_counter` | `INTEGER NOT NULL DEFAULT 0 CHECK (lead_counter >= 0)` : avance de génération des plannings de compteur |

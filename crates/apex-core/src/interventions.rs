@@ -340,6 +340,12 @@ pub struct Intervention {
     pub sub_interventions_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_interventions: Option<Vec<Intervention>>,
+    /// Planning préventif d'origine `{id, code, title}` (fiche détaillée, intervention générée).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_plan: Option<serde_json::Value>,
+    /// Échéance traitée `{id, due_date, due_counter, status}` (fiche détaillée).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_occurrence: Option<serde_json::Value>,
 }
 
 /// Corps de requête pour la création d'une intervention.
@@ -671,6 +677,18 @@ pub async fn list_interventions(
 }
 
 /// Récupère le détail complet d'une intervention avec ses sous-interventions directes.
+/// Ligne de liaison intervention -> occurrence -> planning : id, due_date, due_counter, status de
+/// l'occurrence, puis id, code, title du planning.
+type PlanLinkRow = (
+    String,
+    Option<String>,
+    Option<i64>,
+    String,
+    String,
+    String,
+    String,
+);
+
 pub async fn get_intervention(
     pool: &SqlitePool,
     actor: &Actor,
@@ -740,11 +758,29 @@ pub async fn get_intervention(
         })
         .collect();
 
-    Ok(assemble_intervention(
-        raw,
-        technicians,
-        Some(sub_interventions),
-    ))
+    let mut intervention = assemble_intervention(raw, technicians, Some(sub_interventions));
+
+    // Lien vers le planning préventif d'origine (phase 5)
+    let link: Option<PlanLinkRow> = sqlx::query_as(
+        r#"
+            SELECT o.id, o.due_date, o.due_counter, o.status, p.id, p.code, p.title
+            FROM interventions i
+            JOIN maintenance_occurrences o ON o.id = i.maintenance_occurrence_id
+            JOIN maintenance_plans p ON p.id = o.plan_id
+            WHERE i.id = ?
+            "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    if let Some((occ_id, due_date, due_counter, status, plan_id, code, title)) = link {
+        intervention.maintenance_plan =
+            Some(serde_json::json!({ "id": plan_id, "code": code, "title": title }));
+        intervention.maintenance_occurrence = Some(serde_json::json!({
+            "id": occ_id, "due_date": due_date, "due_counter": due_counter, "status": status
+        }));
+    }
+    Ok(intervention)
 }
 
 /// Liste des sous-interventions rattachées à une intervention parente.
@@ -1240,6 +1276,8 @@ pub async fn complete_intervention(
     .bind(id)
     .execute(&mut *tx)
     .await?;
+    // Hook phase 5 : mise à jour de l'occurrence de maintenance liée
+    crate::maintenance::on_intervention_completed(&mut tx, id, &completed_at, ip).await?;
 
     let updated = fetch_single_intervention_with_conn(&mut tx, id).await?;
 
@@ -1326,6 +1364,8 @@ pub async fn cancel_intervention(
     .bind(id)
     .execute(&mut *tx)
     .await?;
+    // Hook phase 5 : mise à jour de l'occurrence de maintenance liée
+    crate::maintenance::on_intervention_cancelled(&mut tx, id, &reason, ip).await?;
 
     let updated = fetch_single_intervention_with_conn(&mut tx, id).await?;
 
@@ -1487,6 +1527,8 @@ pub async fn delete_intervention(
     .bind(id)
     .execute(&mut *tx)
     .await?;
+    // Hook phase 5 : remise en échéance non traitée de l'occurrence liée
+    crate::maintenance::on_intervention_deleted(&mut tx, id, ip).await?;
 
     store::audit(
         &mut tx,
@@ -1958,7 +2000,7 @@ pub(crate) async fn scoped_intervention_raw(
 }
 
 /// Récupère une intervention unique complète avec ses techniciens via une connexion ouverte.
-async fn fetch_single_intervention_with_conn(
+pub(crate) async fn fetch_single_intervention_with_conn(
     conn: &mut SqliteConnection,
     id: &str,
 ) -> Result<Intervention, MaintError> {
@@ -2183,11 +2225,13 @@ fn assemble_intervention(
         technicians,
         sub_interventions_count: r.sub_interventions_count,
         sub_interventions,
+        maintenance_plan: None,
+        maintenance_occurrence: None,
     }
 }
 
 /// Génère ou valide la référence unique d'intervention (format `INT-AAAA-XXXX`).
-async fn resolve_or_generate_code(
+pub(crate) async fn resolve_or_generate_code(
     conn: &mut SqliteConnection,
     site_id: &str,
     provided_code: Option<&str>,

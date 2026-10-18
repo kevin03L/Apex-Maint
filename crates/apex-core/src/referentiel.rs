@@ -1130,6 +1130,20 @@ pub async fn delete_equipment(
         ));
     }
 
+    let active_plans: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM maintenance_plans WHERE equipment_id = ? AND deleted_at IS NULL AND active = 1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if active_plans > 0 {
+        return Err(MaintError::Conflict(
+            "Impossible de supprimer un équipement ayant des plannings de maintenance actifs"
+                .into(),
+        ));
+    }
+
     let now = store::now();
 
     sqlx::query(
