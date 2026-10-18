@@ -2975,4 +2975,498 @@ footer.status {
   color: var(--text);
 }
 
+/* ============================================================================
+   PHASE 6 : DOCUMENTS, QR CODE, ÉTIQUETTES ET PARAMÈTRES
+   ============================================================================ */
+
+/* QR Code dans la fiche équipement */
+.equipment-qr-card {
+  display: flex;
+  align-items: center;
+  gap: 1.5em;
+  padding: 1.2em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  margin-top: 1em;
+}
+
+.equipment-qr-preview-box {
+  width: 90px;
+  height: 90px;
+  background: #ffffff;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+  flex-shrink: 0;
+}
+
+.qr-svg-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.equipment-qr-info {
+  display: flex;
+  flex-direction: column;
+  gap: .4em;
+}
+
+.equipment-qr-info .mono {
+  font-size: 1.2em;
+  color: var(--accent);
+}
+
+/* Zone de glisser-déposer de document (dropzone) */
+.doc-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .6em;
+  padding: 1.8em 1em;
+  border: 2px dashed var(--line-2);
+  border-radius: var(--r);
+  background: var(--glass);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all .2s ease;
+  text-align: center;
+  margin-bottom: 1em;
+}
+
+.doc-dropzone:hover,
+.doc-dropzone.dragover {
+  border-color: var(--accent);
+  background: var(--selected);
+  color: var(--text);
+}
+
+.doc-dropzone svg.i {
+  width: 2.2em;
+  height: 2.2em;
+  color: var(--accent);
+}
+
+/* Barre de progression de téléversement */
+.progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  margin: 1em 0;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width .2s ease;
+}
+
+.progress-text {
+  font-size: .85em;
+  font-family: monospace;
+  color: var(--muted);
+  min-width: 3.5em;
+  text-align: right;
+}
+
+/* Liste des documents d'une entité */
+.docs-list {
+  display: flex;
+  flex-direction: column;
+  gap: .8em;
+  margin-top: .8em;
+}
+
+.doc-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding: .9em 1.1em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  transition: border-color .15s;
+}
+
+.doc-card:hover {
+  border-color: var(--line-2);
+}
+
+.doc-card-left {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  min-width: 0;
+  flex: 1;
+}
+
+.doc-icon-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: rgba(56, 189, 248, .12);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.doc-icon-box svg.i {
+  width: 1.5em;
+  height: 1.5em;
+}
+
+.doc-card-details {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .25em;
+}
+
+.doc-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: .6em;
+  flex-wrap: wrap;
+}
+
+.doc-card-title {
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.doc-version-badge {
+  font-size: .75em;
+  font-weight: 700;
+  padding: .15em .5em;
+  border-radius: 4px;
+  background: rgba(129, 140, 248, .18);
+  color: var(--violet);
+  border: 1px solid rgba(129, 140, 248, .35);
+  font-family: monospace;
+}
+
+.doc-card-meta {
+  display: flex;
+  align-items: center;
+  gap: .8em;
+  font-size: .85em;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.doc-card-actions {
+  display: flex;
+  align-items: center;
+  gap: .4em;
+  flex-shrink: 0;
+}
+
+/* Page d'impression d'étiquettes */
+.labels-page-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5em;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.labels-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 1em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.labels-controls-group {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  flex-wrap: wrap;
+}
+
+.labels-print-area {
+  background: #ffffff;
+  color: #000000;
+  padding: 10mm;
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, .4);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+/* Grille de planche d'étiquettes */
+.labels-sheet-grid {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.label-sticker {
+  display: flex;
+  align-items: center;
+  gap: 6mm;
+  padding: 3mm 4mm;
+  border: 1px dashed #d1d5db;
+  box-sizing: border-box;
+  background: #ffffff;
+  color: #111827;
+  overflow: hidden;
+}
+
+.label-sticker-qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.label-sticker-qr img {
+  display: block;
+}
+
+.label-sticker-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1mm;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.label-sticker-code {
+  font-weight: 800;
+  font-size: 11pt;
+  letter-spacing: .5px;
+}
+
+.label-sticker-name {
+  font-size: 9pt;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.label-sticker-line {
+  font-size: 7.5pt;
+  color: #4b5563;
+}
+
+.label-sticker-site {
+  font-size: 7pt;
+  color: #6b7280;
+  text-transform: uppercase;
+}
+
+.label-sticker-empty {
+  border: 1px dashed #e5e7eb;
+  background: #f9fafb;
+}
+
+/* Onglets Paramètres */
+.settings-tabs-bar {
+  display: flex;
+  gap: .5em;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1.5em;
+  overflow-x: auto;
+}
+
+.settings-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: .6em;
+  padding: .8em 1.2em;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all .15s;
+  white-space: nowrap;
+}
+
+.settings-tab-btn:hover {
+  color: var(--text);
+}
+
+.settings-tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Configuration du stockage */
+.storage-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.2em;
+  margin-top: 1em;
+}
+
+.storage-card {
+  padding: 1.2em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: .9em;
+}
+
+.storage-card.active-backend {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(56, 189, 248, .15);
+}
+
+.storage-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8em;
+}
+
+.storage-card-title {
+  font-weight: 600;
+  font-size: 1.1em;
+  color: var(--text);
+}
+
+.storage-card-details {
+  font-size: .9em;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: .4em;
+  word-break: break-all;
+}
+
+.storage-card-actions {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+  margin-top: auto;
+  padding-top: .6em;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+/* Catalogue des formats de fichiers */
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: .8em;
+  margin: 1.2em 0;
+}
+
+.catalog-item-label {
+  display: flex;
+  align-items: flex-start;
+  gap: .8em;
+  padding: .8em 1em;
+  border-radius: var(--r);
+  background: var(--glass);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.catalog-item-label:hover {
+  border-color: var(--line-2);
+  background: var(--glass-2);
+}
+
+.catalog-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: .2em;
+}
+
+.catalog-item-exts {
+  font-size: .8em;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+/* Aperçu en direct des étiquettes dans les Paramètres */
+.labels-settings-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2em;
+  align-items: start;
+}
+
+.labels-preview-card {
+  padding: 1.2em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+}
+
+.labels-preview-box {
+  background: #ffffff;
+  padding: 15px;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+/* Adaptation responsive 375px */
+@media (max-width: 600px) {
+  .equipment-qr-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .labels-settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .doc-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .doc-card-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .labels-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+
 
