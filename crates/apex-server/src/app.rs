@@ -264,8 +264,41 @@ pub async fn run(
         full_version: apex_config::version::full_version(),
     };
 
+    let files_dir = layout.files_dir(cfg);
+    std::fs::create_dir_all(&files_dir).map_err(|e| {
+        StartupError::new(
+            exit::DATABASE,
+            format!("Dossier des documents inaccessible : {e}"),
+        )
+    })?;
+    let secret_file = layout.data_dir.join("secret.key");
+    if !secret_file.exists() {
+        use rand::RngCore;
+        let mut key = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut key);
+        if let Err(e) = write_private_file(&secret_file, &key) {
+            let _ = std::fs::remove_file(&secret_file);
+            return Err(StartupError::new(
+                exit::DATABASE,
+                format!("Création de la clé secrète impossible : {e}"),
+            ));
+        }
+    }
+    let key: [u8; 32] = std::fs::read(&secret_file)
+        .map_err(|e| {
+            StartupError::new(
+                exit::DATABASE,
+                format!("Lecture de la clé secrète impossible : {e}"),
+            )
+        })?
+        .try_into()
+        .map_err(|_| {
+            StartupError::new(exit::DATABASE, "Clé secrète invalide (32 octets attendus)")
+        })?;
+    let files = apex_core::documents::storage::FileStore::new(files_dir, key);
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
+        files,
         pool: pool.clone(),
         auth,
         secure_cookie: cfg.security.secure_cookie,
@@ -356,6 +389,11 @@ fn display_host(ip: std::net::IpAddr) -> String {
 
 /// Écrit le jeton de contrôle local avec des permissions restreintes.
 fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<()> {
+    write_private_file(path, token.as_bytes())
+}
+
+/// Même restriction d'accès pour le jeton local et la clé de chiffrement persistante.
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -367,11 +405,11 @@ fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<(
             .create(true)
             .write(true)
             .truncate(true)
-            .mode(0o640)
+            .mode(0o600)
             .open(path)?;
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o640))?;
-        file.write_all(token.as_bytes())?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents)?;
     }
 
     #[cfg(windows)]
@@ -404,7 +442,7 @@ fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<(
             ));
         }
         use std::io::Write;
-        file.write_all(token.as_bytes())?;
+        file.write_all(contents)?;
     }
     Ok(())
 }

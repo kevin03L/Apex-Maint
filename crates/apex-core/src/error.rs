@@ -6,6 +6,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum MaintError {
     #[error("{0}")]
+    UnsupportedMediaType(String),
+    #[error("{0}")]
+    Gone(String),
+    #[error("{0}")]
     PayloadTooLarge(String),
     #[error("{0}")]
     TooManyRequests(String),
@@ -38,6 +42,8 @@ impl MaintError {
     /// Code d'état HTTP correspondant à l'erreur.
     pub fn http_status(&self) -> u16 {
         match self {
+            Self::UnsupportedMediaType(_) => 415,
+            Self::Gone(_) => 410,
             Self::PayloadTooLarge(_) => 413,
             Self::TooManyRequests(_) => 429,
             Self::NotFound(_) => 404,
@@ -69,6 +75,11 @@ mod tests {
 
     #[test]
     fn http_status_mapping() {
+        assert_eq!(
+            MaintError::UnsupportedMediaType("test".into()).http_status(),
+            415
+        );
+        assert_eq!(MaintError::Gone("test".into()).http_status(), 410);
         assert_eq!(
             MaintError::PayloadTooLarge("test".into()).http_status(),
             413

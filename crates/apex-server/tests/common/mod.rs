@@ -478,8 +478,24 @@ pub fn request_with_headers(
     body: Option<&Value>,
     headers: &[(&str, &str)],
 ) -> io::Result<Response> {
-    let mut stream = connect(port)?;
     let payload = body.map(|b| b.to_string()).unwrap_or_default();
+    let mut headers = headers.to_vec();
+    if body.is_some() {
+        headers.push(("Content-Type", "application/json"));
+    }
+    request_bytes(port, method, path, token, payload.as_bytes(), &headers)
+}
+
+/// Corps binaire pour les envois multipart ; le même parseur lit les téléchargements.
+pub fn request_bytes(
+    port: u16,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    payload: &[u8],
+    headers: &[(&str, &str)],
+) -> io::Result<Response> {
+    let mut stream = connect(port)?;
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nAccept: application/json\r\n"
     );
@@ -489,15 +505,12 @@ pub fn request_with_headers(
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    if body.is_some() {
-        head.push_str("Content-Type: application/json\r\n");
-    }
-    if body.is_some() || method != "GET" {
+    if !payload.is_empty() || method != "GET" {
         head.push_str(&format!("Content-Length: {}\r\n", payload.len()));
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
-    stream.write_all(payload.as_bytes())?;
+    stream.write_all(payload)?;
     stream.flush()?;
 
     let mut raw = Vec::new();

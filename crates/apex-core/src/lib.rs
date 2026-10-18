@@ -4,6 +4,7 @@
 //! services de transaction.
 
 pub mod db;
+pub mod documents;
 pub mod domain;
 pub mod error;
 pub mod interventions;

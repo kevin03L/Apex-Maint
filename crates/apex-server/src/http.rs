@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use tower_http::services::ServeDir;
 
 mod auth;
+mod documents;
 mod interventions;
 mod maintenance;
 mod referentiel;
@@ -46,6 +47,7 @@ pub struct RuntimeInfo {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub files: apex_core::documents::storage::FileStore,
     pub pool: sqlx::SqlitePool,
     pub auth: apex_core::services::Auth,
     pub secure_cookie: bool,
@@ -95,11 +97,16 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
         .merge(interventions::routes())
         .merge(stock::routes())
         .merge(maintenance::routes())
+        .merge(documents::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
         .route("/system/shutdown", post(api_system_shutdown))
         .fallback(api_fallback_404)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            documents::upload_limit,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard));
 
     let static_service =
@@ -163,7 +170,9 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
 
     if is_api {
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        if !h.contains_key(header::CACHE_CONTROL) {
+            h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
     } else {
         if !h.contains_key(header::CACHE_CONTROL) {
             h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));

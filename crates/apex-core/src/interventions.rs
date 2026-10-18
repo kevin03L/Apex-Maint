@@ -338,6 +338,7 @@ pub struct Intervention {
     pub parent: Option<ParentRef>,
     pub technicians: Vec<AssignedTechnician>,
     pub sub_interventions_count: i64,
+    pub documents_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_interventions: Option<Vec<Intervention>>,
     /// Planning préventif d'origine `{id, code, title}` (fiche détaillée, intervention générée).
@@ -464,6 +465,7 @@ pub(crate) struct RawInterventionRow {
     pub(crate) parent_code: Option<String>,
     pub(crate) parent_title: Option<String>,
     pub(crate) sub_interventions_count: i64,
+    pub(crate) documents_count: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -522,7 +524,8 @@ pub async fn list_interventions(
             u_can.display_name AS cancelled_by_name,
             p.code AS parent_code,
             p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count
+            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
         FROM interventions i
         LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
@@ -733,7 +736,8 @@ pub async fn get_intervention(
             u_can.display_name AS cancelled_by_name,
             p.code AS parent_code,
             p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count
+            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
         FROM interventions i
         LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
@@ -825,7 +829,8 @@ pub async fn list_sub_interventions(
             u_can.display_name AS cancelled_by_name,
             p.code AS parent_code,
             p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count
+            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
         FROM interventions i
         LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
@@ -1981,7 +1986,8 @@ pub(crate) async fn scoped_intervention_raw(
             u_can.display_name AS cancelled_by_name,
             p.code AS parent_code,
             p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count
+            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
         FROM interventions i
         LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
@@ -2035,7 +2041,8 @@ pub(crate) async fn fetch_single_intervention_with_conn(
             u_can.display_name AS cancelled_by_name,
             p.code AS parent_code,
             p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count
+            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
         FROM interventions i
         LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
@@ -2224,6 +2231,7 @@ fn assemble_intervention(
         parent,
         technicians,
         sub_interventions_count: r.sub_interventions_count,
+        documents_count: r.documents_count,
         sub_interventions,
         maintenance_plan: None,
         maintenance_occurrence: None,
