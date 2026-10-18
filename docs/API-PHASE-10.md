@@ -211,3 +211,9 @@ Réponse (200 OK) :
 ```
 
 Passer `external_ref: null` dissocie la référence. Unicité stricte par site sur les entités non supprimées (409 en cas de doublon).
+
+## Référence Supervision dans les représentations existantes
+
+Les représentations `Equipment` (fiches et listes) et `EquipmentCounter` gagnent le champ à plat
+`"external_ref": null` (ou une chaîne), modifiable par `PATCH /api/equipments/{id}/external-ref` et
+`PATCH /api/counters/{id}/external-ref`.

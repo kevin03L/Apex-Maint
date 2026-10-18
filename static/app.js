@@ -14,6 +14,7 @@
    - responsive jusqu'à 375 px de large.
    ============================================================================ */
 'use strict';
+/* global ApexOffline, jsQR */
 
 // ============================================================================
 // 1. ÉCHAPPEMENT ET UTILITAIRES
@@ -1046,8 +1047,8 @@ function confirmDialog(title, message, confirmLabel = 'Confirmer', danger = fals
 // 5. MODULES, PERMISSIONS ET RÔLES
 // ============================================================================
 
-/** Phase actuelle du projet (Phase 7 : Pilotage et paramètres). */
-const CURRENT_PHASE = 7;
+/** Phase actuelle du projet (Phase 10 : Liaison Apex Supervision). */
+const CURRENT_PHASE = 10;
 
 /** Liste de tous les modules de l'application avec leur permission de vue requise. */
 const MODULES = [
@@ -1056,6 +1057,7 @@ const MODULES = [
   { grp: 'Maintenance' },
   { id: 'interventions', label: 'Interventions', icon: 'i-wrench', phase: 3, perm: 'interventions.view' },
   { id: 'maintenance-preventive', label: 'Maintenance préventive', icon: 'i-cal', phase: 5, perm: 'maintenance.view' },
+  { id: 'terrain', label: 'Terrain', icon: 'i-qrcode', phase: 9, perm: 'interventions.view' },
   { grp: 'Référentiel' },
   { id: 'equipements', label: 'Équipements', icon: 'i-gear', phase: 2, perm: 'equipments.view' },
   { id: 'lignes-de-production', label: 'Lignes de production', icon: 'i-line', phase: 2, perm: 'production_lines.view' },
@@ -1337,6 +1339,29 @@ const state = {
 
   // Profil & Notifications
   profileNotifications: null,
+
+  // Phase 8 : Exploitation & Sauvegardes
+  exploitationSettings: null,
+  exploitationStatus: null,
+  backupsList: [],
+  backupsNextCursor: null,
+  backupsLoading: false,
+
+  // Phase 9 : Terrain, Hors-ligne & PWA
+  terrainPendingCount: 0,
+  terrainConflicts: [],
+  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  scannerStream: null,
+
+  // Phase 10 : Intégrations & Supervision
+  integrationSettings: null,
+  integrationKeys: [],
+  integrationKeysNextCursor: null,
+  integrationEvents: [],
+  integrationEventsNextCursor: null,
+  newlyCreatedKey: null,
+  supervisionStatuses: new Map(),
+  filterSupervisionStopped: false,
 };
 
 /** L'utilisateur courant possède-t-il une permission donnée ? */
@@ -1432,6 +1457,8 @@ async function checkAuth() {
     await loadSites();
     renderNav();
     await render();
+    checkExploitationStatusAlert();
+    refreshOfflineSnapshot();
     return true;
   } catch (err) {
     if (err.status === 401) {
@@ -1806,6 +1833,22 @@ async function handleForcePasswordSubmit(form) {
  * Déconnexion de l'utilisateur courant.
  */
 async function handleLogout() {
+  if (typeof ApexOffline !== 'undefined') {
+    try {
+      const pending = await ApexOffline.getPendingOperations();
+      if (pending && pending.length > 0) {
+        const ok = await confirmDialog(
+          'Opérations hors-ligne non envoyées',
+          `Vous avez ${pending.length} opération(s) en attente dans la file hors-ligne. La déconnexion effacera définitivement ces données locales non synchronisées. Voulez-vous vraiment vous déconnecter ?`,
+          'Déconnexion et effacement',
+          'danger'
+        );
+        if (!ok) return;
+      }
+      await ApexOffline.clearAllOfflineData();
+    } catch (_) {}
+  }
+
   try {
     await api('/api/auth/logout', { method: 'POST' });
   } catch (_) {
@@ -2026,6 +2069,19 @@ async function render() {
     return;
   }
 
+  // Route spéciale : Synchronisation hors-ligne
+  if (route === 'synchronisation') {
+    if (!hasPermission('interventions.view')) {
+      document.title = 'Accès refusé — Apex Maint';
+      view.innerHTML = accessDeniedPage();
+      return;
+    }
+    document.title = 'Synchronisation hors-ligne — Apex Maint';
+    view.innerHTML = synchronisationPage();
+    await initSynchronisationPageView();
+    return;
+  }
+
   const mod = MODULES.find(m => m.id === route);
   if (!mod || !isModuleAllowed(mod)) {
     document.title = 'Accès refusé — Apex Maint';
@@ -2043,6 +2099,9 @@ async function render() {
   if (route === 'tableau-de-bord') {
     view.innerHTML = dashboardPage();
     await initDashboardPageView();
+  } else if (route === 'terrain') {
+    view.innerHTML = terrainPage();
+    await initTerrainPageView();
   } else if (route === 'reporting') {
     view.innerHTML = reportingPage();
     await initReportingPageView();
@@ -2337,6 +2396,7 @@ const DASHBOARD_TITLES = {
   my_interventions: 'Mes interventions',
   machines_down: 'Équipements à l’arrêt',
   maintenance_overdue: 'Maintenances en retard',
+  supervision_status: 'État Supervision (Apex Supervision)',
 };
 
 function dashboardPage() {
@@ -2440,12 +2500,18 @@ async function loadDashboardWidgetData(w) {
     if (params.to) query.set('to', params.to);
 
     const qs = query.toString() ? `?${query.toString()}` : '';
-    const res = await api(`/api/dashboard/widgets/${encodeURIComponent(w.widget)}${qs}`);
-    state.dashboardWidgetData.set(w.id, res ? res.data : null);
+    let res;
+    if (w.widget === 'supervision_status') {
+      res = await api(`/api/dashboard/widgets/supervision_status${qs}`).catch(() => api(`/api/integration/supervision-status?limit=10`));
+    } else {
+      res = await api(`/api/dashboard/widgets/${encodeURIComponent(w.widget)}${qs}`);
+    }
+    const widgetData = (res && res.data !== undefined) ? res.data : res;
+    state.dashboardWidgetData.set(w.id, widgetData);
 
     const cardBody = document.getElementById(`widget-body-${w.id}`);
     if (cardBody) {
-      cardBody.innerHTML = renderWidgetContent(w, res ? res.data : null);
+      cardBody.innerHTML = renderWidgetContent(w, widgetData);
     }
   } catch (err) {
     state.dashboardWidgetData.set(w.id, { _error: err.message });
@@ -2834,6 +2900,35 @@ function renderWidgetContent(w, data) {
               `).join('')}
             </tbody>
           </table>
+        </div>
+      `;
+    }
+
+    case 'supervision_status': {
+      const items = Array.isArray(data.items) ? data.items : (Array.isArray(data) ? data : []);
+      if (!items.length) {
+        return '<p class="hint text-ok">Aucun équipement à l\'arrêt ou en alarme selon Supervision.</p>';
+      }
+      return `
+        <div class="widget-supervision-list">
+          ${items.map(it => {
+            const isAlarm = it.state === 'alarm';
+            const stateClass = isAlarm ? 'badge-supervision-alarm' : 'badge-supervision-stopped';
+            const stateLabel = isAlarm ? 'En alarme' : 'À l\'arrêt';
+            return `
+              <div class="widget-supervision-item">
+                <div>
+                  <button type="button" class="link-action font-bold mono" data-action="open-detail-equipment" data-args="${jsArg(it.equipment_id)}">
+                    ${esc(it.equipment_code || it.code || 'EQ')}
+                  </button>
+                  <span> — ${esc(it.equipment_name || it.name || '')}</span>
+                  ${it.since ? `<div class="hint">${esc(stateLabel)} depuis ${formatTime(it.since)}</div>` : ''}
+                  ${it.message ? `<div class="hint mono">${esc(it.message)}</div>` : ''}
+                </div>
+                <span class="badge ${stateClass}">${esc(stateLabel)}</span>
+              </div>
+            `;
+          }).join('')}
         </div>
       `;
     }
@@ -5193,6 +5288,10 @@ function equipmentsPage() {
       <option value="">Toutes les lignes</option>
       ${state.productionLines.map(l => `<option value="${esc(l.id)}" ${state.equipmentsLineFilter === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
     </select>
+    <label class="filter-checkbox-label">
+      <input type="checkbox" data-action="toggle-filter-supervision-stopped" ${state.filterSupervisionStopped ? 'checked' : ''} />
+      <span>À l'arrêt selon Supervision</span>
+    </label>
     ${state.selectedEquipmentIds && state.selectedEquipmentIds.size > 0 ? `
       <button type="button" class="btn primary sm" data-action="open-print-selected-labels">
         ${icon('i-print')} <span>Imprimer les étiquettes (${state.selectedEquipmentIds.size})</span>
@@ -5280,6 +5379,12 @@ async function loadEquipmentsList(reset = true) {
 
     if (reset) {
       state.equipments = items;
+      try {
+        const supRes = await api('/api/integration/statuses?limit=200');
+        if (supRes && Array.isArray(supRes.items)) {
+          state.equipmentSupervisionStatuses = new Map(supRes.items.map(s => [s.equipment_id, s]));
+        }
+      } catch (_) {}
     } else {
       state.equipments = state.equipments.concat(items);
     }
@@ -5296,11 +5401,40 @@ async function loadEquipmentsList(reset = true) {
   renderEquipmentsListView();
 }
 
+function supervisionStateBadge(st) {
+  if (!st) return '—';
+  const s = st.state || st;
+  let cls = 'badge-supervision-unknown';
+  let lbl = 'Inconnu';
+  if (s === 'running') {
+    cls = 'badge-supervision-running';
+    lbl = 'En service';
+  } else if (s === 'stopped') {
+    cls = 'badge-supervision-stopped';
+    lbl = "À l'arrêt";
+  } else if (s === 'degraded') {
+    cls = 'badge-supervision-degraded';
+    lbl = 'Dégradé';
+  } else if (s === 'alarm') {
+    cls = 'badge-supervision-alarm';
+    lbl = 'En alarme';
+  }
+  const title = st.message ? ` title="${esc(st.message)}"` : '';
+  return `<span class="badge ${cls}"${title}>${esc(lbl)}${st.stale ? ' (périmé)' : ''}</span>`;
+}
+
 function renderEquipmentsListView() {
   const container = document.getElementById('equipmentsContainer');
   if (!container) return;
 
-  const items = state.equipments;
+  let items = state.equipments;
+  if (state.filterSupervisionStopped) {
+    items = items.filter(eq => {
+      const sup = state.equipmentSupervisionStatuses && state.equipmentSupervisionStatuses.get(eq.id);
+      return sup && sup.state === 'stopped';
+    });
+  }
+
   const canEdit = hasPermission('equipments.edit');
   const canDel = hasPermission('equipments.delete');
 
@@ -5309,7 +5443,7 @@ function renderEquipmentsListView() {
       <div class="table-container">
         <table class="data-table">
           <tbody>
-            <tr><td class="empty-cell">Aucun équipement correspondant aux critères.</td></tr>
+            <tr><td class="empty-cell">${state.filterSupervisionStopped ? "Aucun équipement à l'arrêt selon Supervision." : "Aucun équipement correspondant aux critères."}</td></tr>
           </tbody>
         </table>
       </div>
@@ -5323,6 +5457,8 @@ function renderEquipmentsListView() {
     const lineLabel = eq.production_line ? eq.production_line.name : '—';
     const parentLabel = eq.parent ? eq.parent.name : '—';
     const isSelected = state.selectedEquipmentIds.has(eq.id);
+    const sup = state.equipmentSupervisionStatuses ? state.equipmentSupervisionStatuses.get(eq.id) : null;
+    const supBadge = sup ? supervisionStateBadge(sup) : '—';
 
     const actionButtons = [
       `<button type="button" class="btn sm" title="Fiche détaillée" data-action="open-detail-equipment" data-args="${jsArg(eq.id)}">
@@ -5362,6 +5498,7 @@ function renderEquipmentsListView() {
           </button>
         </td>
         <td>${statusBadge(eq.status)}</td>
+        <td>${supBadge}</td>
         <td>${esc(lineLabel)}</td>
         <td>${esc(parentLabel)}</td>
         <td class="mono">${esc(eq.children_count || 0)}</td>
@@ -5381,6 +5518,7 @@ function renderEquipmentsListView() {
             <th>Code</th>
             <th>Nom de l'équipement</th>
             <th>Statut</th>
+            <th>Supervision</th>
             <th>Ligne</th>
             <th>Équipement parent</th>
             <th>Sous-équipements</th>
@@ -5531,17 +5669,23 @@ async function openEquipmentDetailModal(equipmentId) {
     let eqParts = [];
     let counters = [];
     let eqPlans = [];
+    let supStatus = null;
+    let supHistory = [];
     try {
-      const [subRes, partsRes, cntRes, planRes] = await Promise.all([
+      const [subRes, partsRes, cntRes, planRes, stRes, histRes] = await Promise.all([
         api(`/api/equipments?parent_id=${encodeURIComponent(equipmentId)}&limit=100`).catch(() => ({ items: [] })),
         hasPermission('parts.view') ? api(`/api/equipments/${encodeURIComponent(equipmentId)}/parts`).catch(() => []) : Promise.resolve([]),
         api(`/api/equipments/${encodeURIComponent(equipmentId)}/counters`).catch(() => []),
         hasPermission('maintenance.view') ? api(`/api/maintenance/plans?equipment_id=${encodeURIComponent(equipmentId)}&limit=100`).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+        hasPermission('equipments.view') ? api(`/api/equipments/${encodeURIComponent(equipmentId)}/supervision-status`).catch(() => null) : Promise.resolve(null),
+        hasPermission('equipments.view') ? api(`/api/equipments/${encodeURIComponent(equipmentId)}/supervision-history?limit=20`).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
       ]);
       subItems = subRes && Array.isArray(subRes.items) ? subRes.items : [];
       eqParts = (Array.isArray(partsRes) ? partsRes : []).map(adaptStock);
       counters = Array.isArray(cntRes) ? cntRes : (cntRes && Array.isArray(cntRes.items) ? cntRes.items : []);
       eqPlans = planRes && Array.isArray(planRes.items) ? planRes.items : [];
+      supStatus = stRes;
+      supHistory = histRes && Array.isArray(histRes.items) ? histRes.items : (Array.isArray(histRes) ? histRes : []);
     } catch (_) {}
 
     const canEdit = hasPermission('equipments.edit');
@@ -5551,6 +5695,34 @@ async function openEquipmentDetailModal(equipmentId) {
     const canManageMaintenance = hasPermission('maintenance.manage');
     const lineLabel = eq.production_line ? `${eq.production_line.code} — ${eq.production_line.name}` : 'Aucune ligne rattachée';
     const parentLabel = eq.parent ? `${eq.parent.code} — ${eq.parent.name}` : 'Équipement racine (aucun parent)';
+
+    // 1. Bandeau Supervision (Phase 10)
+    let supervisionBannerHtml = '';
+    if (supStatus && supStatus.state) {
+      const supLabels = {
+        running: 'En marche',
+        stopped: 'À l’arrêt',
+        degraded: 'Fonctionnement dégradé',
+        alarm: 'En alarme',
+        unknown: 'Inconnu'
+      };
+      const rawState = supStatus.state;
+      const sState = supStatus.stale ? 'stale' : rawState;
+      const labelText = supLabels[rawState] || rawState;
+      const timeStr = supStatus.since ? `depuis ${formatTime(supStatus.since)}` : '';
+      const staleNote = supStatus.stale ? ' (état périmé)' : '';
+      const messageText = supStatus.message ? ` — « ${esc(supStatus.message)} »` : '';
+
+      supervisionBannerHtml = `
+        <div class="supervision-status-banner supervision-state-${esc(sState)}">
+          <div class="banner-left">
+            ${icon(rawState === 'running' ? 'i-check' : (rawState === 'alarm' ? 'i-alert' : 'i-info'))}
+            <span><b>Supervision :</b> ${esc(labelText)} ${esc(timeStr)}${esc(staleNote)}${messageText}</span>
+          </div>
+          <span class="banner-tag">Information</span>
+        </div>
+      `;
+    }
 
     const countersSectionHtml = `
       <div class="detail-card detail-card-spaced">
@@ -5568,7 +5740,10 @@ async function openEquipmentDetailModal(equipmentId) {
               <div class="counter-card">
                 <div class="counter-card-header">
                   <div class="counter-card-title">${esc(c.name)}</div>
-                  <span class="badge ${c.active ? 'badge-active-on' : 'badge-active-off'}">${c.active ? 'Actif' : 'Inactif'}</span>
+                  <div class="cell-actions">
+                    <span class="badge ${c.active ? 'badge-active-on' : 'badge-active-off'}">${c.active ? 'Actif' : 'Inactif'}</span>
+                    ${c.external_ref ? `<span class="badge badge-supervision-running" title="Réf. Supervision : ${esc(c.external_ref)}">Supervision</span>` : ''}
+                  </div>
                 </div>
                 <div class="counter-value-box">
                   <span class="counter-large-val mono">${esc(c.current_value)}</span>
@@ -5579,6 +5754,14 @@ async function openEquipmentDetailModal(equipmentId) {
                 </div>
                 <div class="hint">
                   ${c.plans_count} planning${c.plans_count > 1 ? 's' : ''} associé${c.plans_count > 1 ? 's' : ''}
+                </div>
+                <div class="hint mono mt-1">
+                  Réf. Supervision : <b>${c.external_ref ? esc(c.external_ref) : '—'}</b>
+                  ${canEdit ? `
+                    <button type="button" class="btn sm" data-action="edit-counter-external-ref" data-args="${jsArg({ counterId: c.id, current: c.external_ref || '', equipmentId: eq.id })}" title="Modifier la référence Supervision du compteur">
+                      ${icon('i-edit')}
+                    </button>
+                  ` : ''}
                 </div>
                 <div class="counter-card-actions">
                   ${canRecordCounter ? `
@@ -5613,10 +5796,10 @@ async function openEquipmentDetailModal(equipmentId) {
     const plansSectionHtml = canViewMaintenance ? `
       <div class="detail-card detail-card-spaced">
         <div class="detail-nav-bar">
-          <h3>${icon('i-cal')} Plannings de maintenance préventive (${eqPlans.length})</h3>
+          <h3>${icon('i-calendar')} Plannings de maintenance préventive (${eqPlans.length})</h3>
           ${canManageMaintenance ? `
-            <button type="button" class="btn sm" data-action="open-create-maintenance-plan" data-args="${jsArg({ equipment_id: eq.id })}">
-              ${icon('i-plus')} <span>Nouveau planning</span>
+            <button type="button" class="btn sm" data-action="open-create-maintenance-plan" data-args="${jsArg(eq.id)}">
+              ${icon('i-plus')} <span>Créer un planning</span>
             </button>
           ` : ''}
         </div>
@@ -5684,7 +5867,44 @@ async function openEquipmentDetailModal(equipmentId) {
       `;
     }).join('');
 
+    // 2. Historique des états Supervision (Phase 10)
+    let supervisionHistoryHtml = '';
+    if (supHistory.length > 0) {
+      const historyRows = supHistory.map(h => {
+        return `
+          <tr>
+            <td><b>${formatDate(h.since || h.received_at)}</b></td>
+            <td>${supervisionStateBadge({ state: h.state })}</td>
+            <td>${esc(h.message || '—')}</td>
+            <td><span class="badge">${esc(!h.source || h.source === 'supervision' ? 'Supervision' : h.source)}</span></td>
+          </tr>
+        `;
+      }).join('');
+
+      supervisionHistoryHtml = `
+        <div class="detail-card detail-card-spaced">
+          <h3>${icon('i-history')} Historique des états Supervision (90 jours)</h3>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date / Heure</th>
+                  <th>État</th>
+                  <th>Message Supervision</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${historyRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
     const bodyHtml = `
+      ${supervisionBannerHtml}
       <div class="detail-grid">
         <div class="detail-card">
           <h3>${icon('i-gear')} Informations générales</h3>
@@ -5694,6 +5914,15 @@ async function openEquipmentDetailModal(equipmentId) {
             <dt>Statut</dt><dd>${statusBadge(eq.status)}</dd>
             <dt>Ligne</dt><dd>${esc(lineLabel)}</dd>
             <dt>Parent</dt><dd>${esc(parentLabel)}</dd>
+            <dt>Réf. Supervision</dt>
+            <dd class="mono">
+              <b>${eq.external_ref ? esc(eq.external_ref) : '—'}</b>
+              ${canEdit ? `
+                <button type="button" class="btn sm" data-action="edit-equipment-external-ref" data-args="${jsArg({ id: eq.id, current: eq.external_ref || '' })}" title="Modifier la référence Supervision">
+                  ${icon('i-edit')} <span>Modifier</span>
+                </button>
+              ` : ''}
+            </dd>
             <dt>Description</dt><dd>${esc(eq.description || '—')}</dd>
           </dl>
         </div>
@@ -5742,6 +5971,7 @@ async function openEquipmentDetailModal(equipmentId) {
       </div>
       ${countersSectionHtml}
       ${plansSectionHtml}
+      ${supervisionHistoryHtml}
 
       <div class="detail-card detail-card-spaced">
         <h3>${icon('i-gear')} Sous-équipements (${subItems.length})</h3>
@@ -7751,6 +7981,23 @@ async function handleCreateInterventionSubmit(form) {
 
   btn.disabled = true;
   errBox.hidden = true;
+
+  if (!navigator.onLine && typeof ApexOffline !== 'undefined') {
+    try {
+      const currentUserId = state.currentUser ? state.currentUser.id : null;
+      const currentSiteId = (state.site && state.site.id) || (state.currentUser && state.currentUser.site_id) || null;
+      await ApexOffline.localCreateIntervention(payload, currentUserId, currentSiteId);
+      closeModal();
+      notify('Intervention enregistrée localement (mode hors-ligne, référence provisoire).', 'info');
+      location.hash = '#/terrain';
+      return;
+    } catch (offlineErr) {
+      errText.textContent = offlineErr.message || 'Erreur lors de l\'enregistrement hors-ligne.';
+      errBox.hidden = false;
+      btn.disabled = false;
+      return;
+    }
+  }
 
   try {
     let created;
@@ -12248,18 +12495,25 @@ async function openCounterHistoryModal(arg) {
     const res = await api(`/api/counters/${encodeURIComponent(counterId)}/readings?limit=50`);
     const items = res && Array.isArray(res.items) ? res.items : [];
 
-    let rowsHtml = items.map(r => `
+    let rowsHtml = items.map(r => {
+      const isSupervision = r.source === 'supervision';
+      const sourceBadge = isSupervision
+        ? '<span class="badge badge-supervision-running">Supervision</span>'
+        : '<span class="badge">Manuel</span>';
+      return `
       <tr>
         <td><b>${formatDate(r.read_at)}</b></td>
         <td class="mono"><b>${esc(r.value)}</b></td>
         <td>${r.is_reset ? '<span class="badge badge-state-warn">Remise à zéro</span>' : '<span class="badge">Relevé normal</span>'}</td>
+        <td>${sourceBadge}</td>
         <td>${esc(r.recorded_by ? r.recorded_by.display_name : '—')}</td>
         <td>${esc(r.note || '—')}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     if (!items.length) {
-      rowsHtml = `<tr><td colspan="5" class="empty-cell">Aucun relevé enregistré pour ce compteur.</td></tr>`;
+      rowsHtml = `<tr><td colspan="6" class="empty-cell">Aucun relevé enregistré pour ce compteur.</td></tr>`;
     }
 
     const bodyHtml = `
@@ -12270,6 +12524,7 @@ async function openCounterHistoryModal(arg) {
               <th>Date du relevé</th>
               <th>Valeur</th>
               <th>Type</th>
+              <th>Source</th>
               <th>Enregistré par</th>
               <th>Note</th>
             </tr>
@@ -13492,6 +13747,12 @@ function settingsPage() {
       <button type="button" class="tab-btn ${tab === 'dashboard' ? 'on' : ''}" data-action="switch-settings-tab" data-args="dashboard">
         ${icon('i-dash')} <span>Tableau de bord</span>
       </button>
+      <button type="button" class="tab-btn ${tab === 'backups' ? 'on' : ''}" data-action="switch-settings-tab" data-args="backups">
+        ${icon('i-server')} <span>Sauvegardes</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'integrations' ? 'on' : ''}" data-action="switch-settings-tab" data-args="integrations">
+        ${icon('i-sliders')} <span>Intégrations</span>
+      </button>
     </div>
 
     <div id="settingsTabContent">
@@ -13535,6 +13796,10 @@ async function switchSettingsTab(tab) {
     await loadSettingsLabels();
   } else if (tab === 'dashboard') {
     await loadSettingsDashboardDefaults(state.settingsDashboardRole || 'responsable');
+  } else if (tab === 'backups') {
+    await loadSettingsBackups();
+  } else if (tab === 'integrations') {
+    await loadSettingsIntegrations();
   }
 }
 
@@ -15181,6 +15446,1638 @@ function addWidgetToRoleLayout(widgetKey) {
 }
 
 // ============================================================================
+// 14K. MODULE PARAMÈTRES — SAUVEGARDES ET EXPLOITATION (PHASE 8)
+// ============================================================================
+
+/** Formate une taille en octets en chaîne lisible (Ko, Mo, Go). */
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return '—';
+  const b = parseInt(bytes, 10);
+  if (b === 0) return '0 o';
+  const k = 1024;
+  const sizes = ['o', 'Ko', 'Mo', 'Go', 'To'];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+async function loadSettingsBackups() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit') && isAdmin();
+  const canView = hasPermission('settings.view') && isAdmin();
+
+  if (!canView) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-shield')} L'accès aux réglages de sauvegarde et d'exploitation globale exige le rôle Administrateur.</p>`;
+    return;
+  }
+
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des réglages et des sauvegardes…</p>`;
+
+  try {
+    const [settings, statusRes, backupsRes] = await Promise.all([
+      api('/api/exploitation/settings'),
+      api('/api/exploitation/status').catch(() => ({ backup: null, purge: null, verify: null })),
+      api('/api/backups?limit=50').catch(() => ({ items: [], next_cursor: null }))
+    ]);
+
+    state.exploitationSettings = settings;
+    state.exploitationStatus = statusRes;
+    state.backupsList = (backupsRes && Array.isArray(backupsRes.items)) ? backupsRes.items : [];
+    state.backupsNextCursor = backupsRes ? backupsRes.next_cursor : null;
+
+    renderSettingsBackupsView();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+function renderSettingsBackupsView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const s = state.exploitationSettings || {};
+  const st = state.exploitationStatus || {};
+  const canEdit = hasPermission('settings.edit') && isAdmin();
+
+  // Carte État des opérations d'exploitation
+  const backupSt = st.backup;
+  let backupStatusHtml = '<p class="hint">Aucune sauvegarde enregistrée pour le moment.</p>';
+  if (backupSt) {
+    const isOk = backupSt.ok;
+    const atStr = formatDate(backupSt.at);
+    if (isOk) {
+      const archName = (backupSt.result && backupSt.result.archive) ? backupSt.result.archive : 'Archive générée';
+      backupStatusHtml = `<p class="hint text-ok">${icon('i-check')} Dernière sauvegarde réussie le ${atStr} (<span class="mono">${esc(archName)}</span>).</p>`;
+    } else {
+      backupStatusHtml = `<p class="hint text-danger">${icon('i-alert')} Dernière sauvegarde en ÉCHEC le ${atStr} : ${esc(backupSt.message || 'Erreur non précisée')}.</p>`;
+    }
+  }
+
+  // Statut Purge
+  let purgeStatusHtml = '';
+  if (st.purge) {
+    const pOk = st.purge.ok;
+    const pAt = formatDate(st.purge.at);
+    if (pOk && st.purge.result) {
+      const pRes = st.purge.result;
+      const fDel = pRes.files_deleted || 0;
+      purgeStatusHtml = `<div class="hint">${icon('i-check')} Dernière purge hebdomadaire le ${pAt} : ${fDel} fichier(s) effacé(s).</div>`;
+    } else {
+      purgeStatusHtml = `<div class="hint text-warn">${icon('i-info')} Purge : ${esc(st.purge.message || 'Exécutée')} (${pAt}).</div>`;
+    }
+  }
+
+  // Statut Intégrité des fichiers
+  let verifyStatusHtml = '';
+  if (st.verify) {
+    const vOk = st.verify.ok;
+    const vAt = formatDate(st.verify.at);
+    if (vOk && st.verify.result) {
+      const vRes = st.verify.result;
+      const anom = (vRes.anomalies && vRes.anomalies.length) || 0;
+      verifyStatusHtml = `<div class="hint">${icon(anom ? 'i-alert' : 'i-check')} Contrôle d'intégrité (${vAt}) : ${vRes.checked || 0} fichier(s) vérifié(s), ${anom} anomalie(s).</div>`;
+    }
+  }
+
+  // Tableau des archives
+  const backups = state.backupsList || [];
+  const backupRows = backups.map(b => {
+    let typeLabel = 'Manuelle';
+    if (b.name && b.name.includes('-auto-')) typeLabel = 'Automatique';
+    return `
+      <tr>
+        <td class="mono font-bold">${esc(b.name)}</td>
+        <td class="mono">${esc(formatBytes(b.size_bytes))}</td>
+        <td><span class="badge ${typeLabel === 'Automatique' ? 'badge-active-on' : 'badge-freq'}">${esc(typeLabel)}</span></td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="card settings-card">
+      <div class="card-head-between">
+        <h2>${icon('i-server')} État de l'exploitation</h2>
+        ${canEdit ? `
+          <button type="button" class="btn primary" data-action="trigger-backup-now" id="btnBackupNow">
+            ${icon('i-download')} <span>Lancer une sauvegarde maintenant</span>
+          </button>
+        ` : ''}
+      </div>
+      <div class="card-body">
+        ${backupStatusHtml}
+        ${purgeStatusHtml}
+        ${verifyStatusHtml}
+      </div>
+    </div>
+
+    <!-- PARAMÈTRES DE PLANIFICATION ET PURGE -->
+    <div class="card settings-card">
+      <h2>${icon('i-cog')} Configuration des sauvegardes et purges</h2>
+      <p class="hint form-help">Les sauvegardes automatiques génèrent une archive ZIP cohérente protégée contre l'écriture concurrente.</p>
+
+      <form class="form-grid" id="settingsBackupsForm" data-action="settings-backups-submit">
+        <div id="settingsBackupsErrorBox" class="form-error" hidden>
+          ${icon('i-alert')}
+          <span id="settingsBackupsErrorText"></span>
+        </div>
+
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="backup_enabled" ${s['backup.enabled'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span><b>Activer les sauvegardes quotidiennes automatiques</b></span>
+          </label>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="setDailyHour">Heure d'exécution quotidienne (0 à 23 h) *</label>
+            <input type="number" id="setDailyHour" name="backup_daily_hour" min="0" max="23" value="${esc(s['backup.daily_hour'] !== undefined ? s['backup.daily_hour'] : 2)}" required ${!canEdit ? 'disabled' : ''} />
+          </div>
+          <div class="form-group">
+            <label for="setIncludeFiles">Fichiers joints inclus dans l'archive *</label>
+            <select id="setIncludeFiles" name="backup_include_files" required ${!canEdit ? 'disabled' : ''}>
+              <option value="folder_only" ${s['backup.include_files'] === 'folder_only' ? 'selected' : ''}>Dossiers locaux seulement (par défaut)</option>
+              <option value="all" ${s['backup.include_files'] === 'all' ? 'selected' : ''}>Tous les stockages (y compris stockage S3 distant)</option>
+              <option value="none" ${s['backup.include_files'] === 'none' ? 'selected' : ''}>Base seule (aucun fichier joint)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="setBackupDir">Dossier de destination personnalisé</label>
+          <input type="text" id="setBackupDir" name="backup_dir" value="${esc(s['backup.dir'] || '')}" placeholder="Laisser vide pour le dossier par défaut (data/backups)" ${!canEdit ? 'disabled' : ''} />
+          <span class="form-help">Chemin absolu ou dossier sur partage réseau (le compte de service doit disposer des droits d'écriture).</span>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="setKeepDaily">Nombre de sauvegardes quotidiennes conservées *</label>
+            <input type="number" id="setKeepDaily" name="backup_keep_daily" min="1" max="36500" value="${esc(s['backup.keep_daily'] || 14)}" required ${!canEdit ? 'disabled' : ''} />
+          </div>
+          <div class="form-group">
+            <label for="setKeepWeekly">Nombre de sauvegardes hebdomadaires conservées *</label>
+            <input type="number" id="setKeepWeekly" name="backup_keep_weekly" min="1" max="36500" value="${esc(s['backup.keep_weekly'] || 8)}" required ${!canEdit ? 'disabled' : ''} />
+          </div>
+        </div>
+
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="backup_include_secret_key" ${s['backup.include_secret_key'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span>Inclure la clé de chiffrement (<span class="mono">secret.key</span>) dans l'archive (recommandé si mot de passe configuré)</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label for="setBackupPassword">Mot de passe de chiffrement de l'archive ZIP (AES-256)</label>
+          <input type="password" id="setBackupPassword" name="backup_password" placeholder="${s['backup.has_password'] ? 'Mot de passe configuré (laisser vide pour ne pas modifier)' : 'Facultatif'}" autocomplete="new-password" ${!canEdit ? 'disabled' : ''} />
+          <span class="form-help">${s['backup.has_password'] ? 'Un mot de passe protège actuellement les archives.' : 'Optionnel : protège les sauvegardes par mot de passe compatible 7-Zip.'}</span>
+        </div>
+
+        <h3 class="mt-4">${icon('i-trash')} Purge des données et rétention des journaux</h3>
+        
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="purge_enabled" ${s['purge.enabled'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span><b>Activer la purge automatique hebdomadaire des données supprimées</b></span>
+          </label>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="setPurgeYears">Délai avant purge physique définitive (années) *</label>
+            <input type="number" id="setPurgeYears" name="purge_deleted_after_years" min="2" max="100" value="${esc(s['purge.deleted_after_years'] || 5)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Données supprimées logiquement depuis plus de N ans (minimum 2 ans).</span>
+          </div>
+          <div class="form-group">
+            <label for="setLogRetention">Conservation des journaux du moteur (jours) *</label>
+            <input type="number" id="setLogRetention" name="logging_retention_days" min="7" max="3650" value="${esc(s['logging.retention_days'] || 90)}" required ${!canEdit ? 'disabled' : ''} />
+          </div>
+        </div>
+
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="files_verify_weekly" ${s['files.verify_weekly'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span>Vérification hebdomadaire automatique de l'intégrité des fichiers et détection d'orphelins</span>
+          </label>
+        </div>
+
+        ${canEdit ? `
+          <button type="submit" class="btn primary" id="settingsBackupsSubmitBtn">
+            <span>Enregistrer les réglages d'exploitation</span>
+          </button>
+        ` : '<p class="hint">Consultation seule.</p>'}
+      </form>
+    </div>
+
+    <!-- LISTE DES ARCHIVES DE SAUVEGARDE -->
+    <div class="card settings-card">
+      <h2>${icon('i-database')} Archives de sauvegarde disponibles (${backups.length})</h2>
+      <p class="hint form-help">Liste des archives enregistrées dans le dossier de destination.</p>
+
+      ${backups.length ? `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Nom de l'archive</th>
+                <th>Taille</th>
+                <th>Type</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${backupRows}
+            </tbody>
+          </table>
+        </div>
+        ${state.backupsNextCursor ? `
+          <div class="load-more-wrap">
+            <button type="button" class="btn sm" data-action="load-more-backups">
+              <span>Charger plus de sauvegardes</span>
+            </button>
+          </div>
+        ` : ''}
+      ` : '<p class="hint">Aucune archive de sauvegarde trouvée dans le dossier.</p>'}
+    </div>
+  `;
+}
+
+async function handleSettingsBackupsSubmit(form) {
+  const errorBox = document.getElementById('settingsBackupsErrorBox');
+  const errorText = document.getElementById('settingsBackupsErrorText');
+  const btn = document.getElementById('settingsBackupsSubmitBtn');
+
+  const backup_enabled = form.backup_enabled.checked;
+  const backup_daily_hour = parseInt(form.backup_daily_hour.value, 10);
+  const backup_dir = (form.backup_dir.value || '').trim();
+  const backup_include_files = form.backup_include_files.value;
+  const backup_keep_daily = parseInt(form.backup_keep_daily.value, 10);
+  const backup_keep_weekly = parseInt(form.backup_keep_weekly.value, 10);
+  const backup_include_secret_key = form.backup_include_secret_key.checked;
+  const purge_enabled = form.purge_enabled.checked;
+  const purge_deleted_after_years = parseInt(form.purge_deleted_after_years.value, 10);
+  const logging_retention_days = parseInt(form.logging_retention_days.value, 10);
+  const files_verify_weekly = form.files_verify_weekly.checked;
+
+  const payload = {
+    'backup.enabled': backup_enabled,
+    'backup.daily_hour': backup_daily_hour,
+    'backup.dir': backup_dir,
+    'backup.include_files': backup_include_files,
+    'backup.files_mode': 'full',
+    'backup.keep_daily': backup_keep_daily,
+    'backup.keep_weekly': backup_keep_weekly,
+    'backup.include_secret_key': backup_include_secret_key,
+    'purge.enabled': purge_enabled,
+    'purge.deleted_after_years': purge_deleted_after_years,
+    'logging.retention_days': logging_retention_days,
+    'files.verify_weekly': files_verify_weekly,
+  };
+
+  const pwdInput = form.backup_password ? form.backup_password.value : '';
+  if (pwdInput) {
+    payload['backup.password'] = pwdInput;
+  }
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/exploitation/settings', {
+      method: 'PUT',
+      body: payload,
+    });
+    state.exploitationSettings = res;
+    notify('Réglages d\'exploitation enregistrés avec succès.', 'success');
+    renderSettingsBackupsView();
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer les réglages.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleTriggerBackupNow() {
+  const btn = document.getElementById('btnBackupNow');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `${icon('i-clock')} <span>Sauvegarde en cours…</span>`;
+  }
+
+  try {
+    const res = await api('/api/backups', { method: 'POST', body: {} });
+    const archName = res && res.archive ? res.archive : 'sauvegarde';
+    notify(`Sauvegarde effectuée avec succès : ${archName}`, 'success');
+    await loadSettingsBackups();
+  } catch (err) {
+    notify(`Échec de la sauvegarde : ${err.message}`, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `${icon('i-download')} <span>Lancer une sauvegarde maintenant</span>`;
+    }
+  }
+}
+
+async function loadMoreBackups() {
+  if (!state.backupsNextCursor || state.backupsLoading) return;
+  state.backupsLoading = true;
+  try {
+    const res = await api(`/api/backups?cursor=${encodeURIComponent(state.backupsNextCursor)}&limit=50`);
+    const newItems = res && Array.isArray(res.items) ? res.items : [];
+    state.backupsList = state.backupsList.concat(newItems);
+    state.backupsNextCursor = res ? res.next_cursor : null;
+    renderSettingsBackupsView();
+  } catch (err) {
+    notify(`Erreur lors du chargement : ${err.message}`, 'error');
+  } finally {
+    state.backupsLoading = false;
+  }
+}
+
+/** Vérifie si la dernière sauvegarde a échoué et affiche le bandeau d'alerte pour les administrateurs. */
+async function checkExploitationStatusAlert() {
+  if (!state.currentUser || state.currentUser.role !== 'admin' || !hasPermission('settings.view')) {
+    return;
+  }
+  try {
+    const st = await api('/api/exploitation/status');
+    state.exploitationStatus = st;
+    const banner = document.getElementById('globalBanner');
+    if (!banner) return;
+
+    if (st && st.backup && st.backup.ok === false) {
+      banner.className = 'global-banner banner-danger';
+      banner.innerHTML = `
+        <div class="banner-content">
+          ${icon('i-alert')}
+          <span><b>Alerte Sauvegarde :</b> La dernière sauvegarde du ${formatDate(st.backup.at)} a échoué (${esc(st.backup.message || 'erreur inconnue')}).</span>
+        </div>
+        <div class="banner-actions">
+          <button type="button" class="btn sm danger" data-action="go-to-backups-settings">Voir les sauvegardes</button>
+          <button type="button" class="ib sm" data-action="close-global-banner" aria-label="Fermer le bandeau">${icon('i-x')}</button>
+        </div>
+      `;
+      banner.hidden = false;
+    }
+  } catch (_) {
+    // Ne pas bloquer l'IHM
+  }
+}
+
+// ============================================================================
+// 14L. MODULE PARAMÈTRES — INTÉGRATIONS ET SUPERVISION (PHASE 10)
+// ============================================================================
+
+async function loadSettingsIntegrations() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+  const canView = hasPermission('settings.view');
+
+  if (!canView) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-shield')} Vous ne disposez pas des droits nécessaires pour consulter les intégrations.</p>`;
+    return;
+  }
+
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres d'intégration et des clés…</p>`;
+
+  try {
+    const [settings, keysRes, eventsRes] = await Promise.all([
+      api('/api/integration/settings'),
+      api('/api/integration/keys?limit=50').catch(() => ({ items: [], next_cursor: null })),
+      api('/api/integration/events?limit=50').catch(() => ({ items: [], next_cursor: null })),
+    ]);
+
+    state.integrationSettings = settings;
+    state.integrationKeys = (keysRes && Array.isArray(keysRes.items)) ? keysRes.items : (Array.isArray(keysRes) ? keysRes : []);
+    state.integrationKeysNextCursor = keysRes ? keysRes.next_cursor : null;
+    state.integrationEvents = (eventsRes && Array.isArray(eventsRes.items)) ? eventsRes.items : (Array.isArray(eventsRes) ? eventsRes : []);
+    state.integrationEventsNextCursor = eventsRes ? eventsRes.next_cursor : null;
+
+    renderSettingsIntegrationsView();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+function renderSettingsIntegrationsView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const s = state.integrationSettings || {};
+  const canEdit = hasPermission('settings.edit');
+  const keys = state.integrationKeys || [];
+  const events = state.integrationEvents || [];
+
+  // Carte de clé nouvellement créée (Affichage unique !)
+  let newlyCreatedCardHtml = '';
+  if (state.newlyCreatedKey) {
+    newlyCreatedCardHtml = `
+      <div class="api-key-reveal-card" role="alert">
+        <h3>${icon('i-key')} Nouvelle clé de service Apex Supervision générée</h3>
+        <p><b>Important :</b> Copiez cette clé immédiatement. Pour des raisons de sécurité, elle est stockée hachée et ne pourra <b>plus jamais être réaffichée</b>.</p>
+        <div class="api-key-display">
+          <span class="api-key-code mono" id="newlyCreatedKeyText">${esc(state.newlyCreatedKey)}</span>
+          <button type="button" class="btn sm primary" data-action="copy-api-key" data-args="${jsArg(state.newlyCreatedKey)}">
+            ${icon('i-copy')} <span>Copier la clé</span>
+          </button>
+        </div>
+        <button type="button" class="btn sm" data-action="dismiss-new-key">J'ai bien noté cette clé</button>
+      </div>
+    `;
+  }
+
+  // Tableau des clés
+  const keyRows = keys.map(k => {
+    const isRevoked = Boolean(k.revoked_at);
+    const isExpired = Boolean(k.expires_at && new Date(k.expires_at) < new Date());
+    let statusBadgeHtml = '<span class="badge badge-active-on">Active</span>';
+    if (isRevoked) {
+      statusBadgeHtml = `<span class="badge badge-active-off" title="Révoquée le ${formatDate(k.revoked_at)}">Révoquée</span>`;
+    } else if (isExpired) {
+      statusBadgeHtml = `<span class="badge badge-state-warn" title="Expirée le ${formatDate(k.expires_at)}">Expirée</span>`;
+    }
+
+    const scopesList = Array.isArray(k.scopes) ? k.scopes.map(sc => sc === 'counters' ? 'Compteurs' : (sc === 'status' ? 'État' : sc)).join(', ') : '—';
+    const siteObj = state.sites.find(st => st.id === k.site_id);
+    const siteName = siteObj ? siteObj.name : (k.site_id ? k.site_id.slice(0, 8) : 'Global');
+
+    return `
+      <tr>
+        <td><b>${esc(k.label || 'Sans libellé')}</b></td>
+        <td class="mono font-bold">${esc(k.key_prefix)}…</td>
+        <td>${esc(siteName)}</td>
+        <td><span class="badge badge-freq">${esc(scopesList)}</span></td>
+        <td>${formatDate(k.created_at)}</td>
+        <td>${k.last_used_at ? `${formatDate(k.last_used_at)} ${k.last_used_ip ? `<small class="hint">(${esc(k.last_used_ip)})</small>` : ''}` : 'Jamais utilisée'}</td>
+        <td>${statusBadgeHtml}</td>
+        <td>
+          ${canEdit && !isRevoked ? `
+            <button type="button" class="btn sm danger" data-action="revoke-integration-key" data-args="${jsArg(k.id)}" title="Révoquer cette clé">
+              ${icon('i-ban')} <span>Révoquer</span>
+            </button>
+          ` : ''}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  // Tableau du journal des échanges
+  const eventRows = events.map(ev => {
+    const typeLabel = ev.kind === 'counters' ? 'Compteurs' : (ev.kind === 'status' ? 'État machine' : ev.kind);
+    const hasRejections = ev.rejected > 0;
+    const errorsList = Array.isArray(ev.errors) ? ev.errors : [];
+    return `
+      <tr>
+        <td><b>${formatDate(ev.received_at)}</b></td>
+        <td><span class="badge ${ev.kind === 'counters' ? 'badge-freq' : 'badge-active-on'}">${esc(typeLabel)}</span></td>
+        <td class="mono">${ev.items_count || 0}</td>
+        <td class="mono text-ok font-bold">${ev.accepted || 0}</td>
+        <td class="mono ${hasRejections ? 'text-danger font-bold' : ''}">${ev.rejected || 0}</td>
+        <td class="mono">${ev.duration_ms !== null && ev.duration_ms !== undefined ? `${ev.duration_ms} ms` : '—'}</td>
+        <td>
+          ${errorsList.length ? `
+            <button type="button" class="btn sm" data-action="view-event-errors" data-args="${jsArg(errorsList)}" title="Consulter les erreurs du lot">
+              ${icon('i-alert')} <span>${errorsList.length} erreur(s)</span>
+            </button>
+          ` : '<span class="hint text-ok">Aucune erreur</span>'}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    ${newlyCreatedCardHtml}
+
+    <!-- CARTE PARAMÈTRES GÉNÉRAUX SUPERVISION -->
+    <div class="card settings-card">
+      <h2>${icon('i-sliders')} Liaison avec Apex Supervision</h2>
+      <p class="hint form-help">La liaison permet à Apex Supervision d'alimenter automatiquement les compteurs d'heures et de remonter l'état de fonctionnement des équipements.</p>
+
+      <form class="form-grid" id="settingsIntegrationsForm" data-action="settings-integrations-submit">
+        <div id="settingsIntegrationsErrorBox" class="form-error" hidden>
+          ${icon('i-alert')}
+          <span id="settingsIntegrationsErrorText"></span>
+        </div>
+
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" name="supervision_enabled" ${s['integration.supervision.enabled'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span><b>Activer la liaison avec Apex Supervision</b></span>
+          </label>
+        </div>
+
+        <h3>Événements acceptés</h3>
+        <div class="checkbox-grid">
+          <label class="checkbox-label">
+            <input type="checkbox" name="counters_enabled" ${s['integration.supervision.counters_enabled'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span>Alimentation des compteurs (heures de marche, cycles…)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="status_enabled" ${s['integration.supervision.status_enabled'] ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+            <span>État de l'équipement (à titre d'information seulement)</span>
+          </label>
+        </div>
+
+        <div class="form-row mt-4">
+          <div class="form-group">
+            <label for="setCounterInterval">Intervalle minimal entre deux relevés d'un compteur (minutes) *</label>
+            <input type="number" id="setCounterInterval" name="counter_min_interval_min" min="1" max="1440" value="${esc(s['integration.supervision.counter_min_interval_min'] || 15)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Les relevés intermédiaires actualisent la valeur courante sans surcharger l'historique (sauf si un seuil de planning préventif est franchi).</span>
+          </div>
+          <div class="form-group">
+            <label for="setStatusStale">Délai avant péremption de l'état Supervision (minutes) *</label>
+            <input type="number" id="setStatusStale" name="status_stale_after_min" min="1" max="1440" value="${esc(s['integration.supervision.status_stale_after_min'] || 30)}" required ${!canEdit ? 'disabled' : ''} />
+            <span class="form-help">Sans remontée depuis cette durée, l'état est affiché comme périmé / inconnu.</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="setStatusHistoryDays">Conservation de l'historique des changements d'état (jours) *</label>
+          <input type="number" id="setStatusHistoryDays" name="status_history_days" min="7" max="365" value="${esc(s['integration.supervision.status_history_days'] || 90)}" required ${!canEdit ? 'disabled' : ''} />
+        </div>
+
+        ${canEdit ? `
+          <button type="submit" class="btn primary" id="settingsIntegrationsSubmitBtn">
+            <span>Enregistrer les paramètres d'intégration</span>
+          </button>
+        ` : '<p class="hint">Consultation seule.</p>'}
+      </form>
+    </div>
+
+    <!-- CARTE GESTION DES CLÉS DE SERVICE -->
+    <div class="card settings-card">
+      <div class="card-head-between">
+        <h2>${icon('i-key')} Clés de service Supervision (${keys.length})</h2>
+        ${canEdit ? `
+          <button type="button" class="btn primary" data-action="open-create-integration-key-modal">
+            ${icon('i-plus')} <span>Créer une clé de service</span>
+          </button>
+        ` : ''}
+      </div>
+      <p class="hint form-help">Chaque clé de service permet à une instance d'Apex Supervision de s'authentifier par jeton Bearer sur les routes de son site.</p>
+
+      ${keys.length ? `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Libellé</th>
+                <th>Préfixe</th>
+                <th>Site</th>
+                <th>Portées</th>
+                <th>Créée le</th>
+                <th>Dernière utilisation</th>
+                <th>Statut</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${keyRows}
+            </tbody>
+          </table>
+        </div>
+      ` : '<p class="hint">Aucune clé de service Supervision créée.</p>'}
+    </div>
+
+    <!-- CARTE JOURNAL DES ÉCHANGES -->
+    <div class="card settings-card">
+      <h2>${icon('i-history')} Journal des échanges récents (${events.length})</h2>
+      <p class="hint form-help">Historique des lots transmis par Supervision au cours des 30 derniers jours.</p>
+
+      ${events.length ? `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Date / Heure</th>
+                <th>Type</th>
+                <th>Reçus</th>
+                <th>Acceptés</th>
+                <th>Rejetés</th>
+                <th>Durée</th>
+                <th>Détail</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${eventRows}
+            </tbody>
+          </table>
+        </div>
+        ${state.integrationEventsNextCursor ? `
+          <div class="load-more-wrap">
+            <button type="button" class="btn sm" data-action="load-more-integration-events">
+              <span>Charger plus d'événements</span>
+            </button>
+          </div>
+        ` : ''}
+      ` : '<p class="hint">Aucun échange enregistré récemment.</p>'}
+    </div>
+  `;
+}
+
+async function handleSettingsIntegrationsSubmit(form) {
+  const errorBox = document.getElementById('settingsIntegrationsErrorBox');
+  const errorText = document.getElementById('settingsIntegrationsErrorText');
+  const btn = document.getElementById('settingsIntegrationsSubmitBtn');
+
+  const supervision_enabled = form.supervision_enabled.checked;
+  const counters_enabled = form.counters_enabled.checked;
+  const status_enabled = form.status_enabled.checked;
+  const counter_min_interval_min = parseInt(form.counter_min_interval_min.value, 10);
+  const status_stale_after_min = parseInt(form.status_stale_after_min.value, 10);
+  const status_history_days = parseInt(form.status_history_days.value, 10);
+
+  if (isNaN(counter_min_interval_min) || counter_min_interval_min < 1) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = 'L\'intervalle minimal des compteurs doit être d\'au moins 1 minute.';
+    }
+    return;
+  }
+
+  const payload = {
+    'integration.supervision.enabled': supervision_enabled,
+    'integration.supervision.counters_enabled': counters_enabled,
+    'integration.supervision.status_enabled': status_enabled,
+    'integration.supervision.counter_min_interval_min': counter_min_interval_min,
+    'integration.supervision.status_stale_after_min': status_stale_after_min,
+    'integration.supervision.status_history_days': status_history_days,
+  };
+
+  if (btn) btn.disabled = true;
+  if (errorBox) errorBox.hidden = true;
+
+  try {
+    const res = await api('/api/integration/settings', {
+      method: 'PUT',
+      body: payload,
+    });
+    state.integrationSettings = res;
+    notify('Paramètres d\'intégration enregistrés avec succès.', 'success');
+    renderSettingsIntegrationsView();
+  } catch (err) {
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorText.textContent = err.message || 'Impossible d\'enregistrer les paramètres.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function openCreateIntegrationKeyModal() {
+  const sites = state.sites || [];
+  const siteOptions = sites.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="keyLabel">Libellé de la clé *</label>
+      <input type="text" id="keyLabel" name="label" required placeholder="Ex. Supervision Atelier A" autofocus />
+    </div>
+
+    <div class="form-group">
+      <label for="keySite">Site rattaché *</label>
+      <select id="keySite" name="site_id" required>
+        ${siteOptions}
+      </select>
+      <span class="form-help">Une clé n'a accès qu'aux équipements et compteurs de son site.</span>
+    </div>
+
+    <div class="form-group">
+      <label>Portées autorisées *</label>
+      <div class="checkbox-grid">
+        <label class="checkbox-label">
+          <input type="checkbox" name="scope_counters" checked />
+          <span>Compteurs (<span class="mono">counters</span>)</span>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" name="scope_status" checked />
+          <span>État des équipements (<span class="mono">status</span>)</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="keyExpires">Date d'expiration (facultatif)</label>
+      <input type="date" id="keyExpires" name="expires_at" />
+      <span class="form-help">Laisser vide pour une clé sans date d'expiration.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Créer une clé de service Supervision',
+    formId: 'modalCreateIntegrationKeyForm',
+    submitAction: 'create-integration-key-submit',
+    submitLabel: 'Générer la clé',
+    fieldsHtml,
+  });
+}
+
+async function handleCreateIntegrationKeySubmit(form) {
+  const btn = document.getElementById('modalCreateIntegrationKeyFormSubmitBtn');
+  const errBox = document.getElementById('modalCreateIntegrationKeyFormErrorBox');
+  const errText = document.getElementById('modalCreateIntegrationKeyFormErrorBoxText');
+
+  const label = (form.label.value || '').trim();
+  const site_id = form.site_id.value;
+  const scopes = [];
+  if (form.scope_counters.checked) scopes.push('counters');
+  if (form.scope_status.checked) scopes.push('status');
+
+  if (!scopes.length) {
+    if (errBox) {
+      errBox.hidden = false;
+      errText.textContent = 'Sélectionnez au moins une portée pour la clé.';
+    }
+    return;
+  }
+
+  const expires_at = form.expires_at.value ? `${form.expires_at.value}T23:59:59.000Z` : null;
+
+  if (btn) btn.disabled = true;
+  if (errBox) errBox.hidden = true;
+
+  try {
+    const res = await api('/api/integration/keys', {
+      method: 'POST',
+      body: { site_id, label, scopes, expires_at }
+    });
+
+    closeModal();
+    if (res && res.key) {
+      state.newlyCreatedKey = res.key;
+    }
+    notify('Clé de service générée avec succès.', 'success');
+    await loadSettingsIntegrations();
+  } catch (err) {
+    if (errBox) {
+      errBox.hidden = false;
+      errText.textContent = err.message || 'Impossible de créer la clé.';
+    }
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleRevokeIntegrationKey(keyId) {
+  const ok = await confirmDialog(
+    'Révoquer la clé de service',
+    'Êtes-vous certain de vouloir révoquer cette clé ? Les requêtes de Supervision utilisant cette clé seront immédiatement refusées.',
+    'Révoquer la clé',
+    'danger'
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/integration/keys/${encodeURIComponent(keyId)}/revoke`, { method: 'POST', body: {} });
+    notify('Clé révoquée avec succès.', 'success');
+    await loadSettingsIntegrations();
+  } catch (err) {
+    notify(`Erreur lors de la révocation : ${err.message}`, 'error');
+  }
+}
+
+async function handleCopyApiKey(keyText) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(keyText);
+      notify('Clé copiée dans le presse-papiers.', 'success');
+    } else {
+      // Fallback
+      notify('Presse-papiers non disponible, veuillez copier manuellement le texte affiché.', 'info');
+    }
+  } catch (_) {
+    notify('Impossible de copier automatiquement dans le presse-papiers.', 'error');
+  }
+}
+
+async function loadMoreIntegrationEvents() {
+  if (!state.integrationEventsNextCursor) return;
+  try {
+    const res = await api(`/api/integration/events?cursor=${encodeURIComponent(state.integrationEventsNextCursor)}&limit=50`);
+    const newItems = res && Array.isArray(res.items) ? res.items : [];
+    state.integrationEvents = state.integrationEvents.concat(newItems);
+    state.integrationEventsNextCursor = res ? res.next_cursor : null;
+    renderSettingsIntegrationsView();
+  } catch (err) {
+    notify(`Erreur de chargement : ${err.message}`, 'error');
+  }
+}
+
+
+// ============================================================================
+// 14M. TERRAIN, HORS-LIGNE, PWA & SCANNER QR (PHASE 9)
+// ============================================================================
+
+/** Initialisation du Service Worker et de la détection de mise à jour. */
+function initServiceWorker() {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    reg.addEventListener('updatefound', () => {
+      const newWorker = reg.installing;
+      if (!newWorker) return;
+      newWorker.addEventListener('statechange', () => {
+        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+          showAppUpdateBanner(newWorker);
+        }
+      });
+    });
+  }).catch(err => {
+    console.warn('Enregistrement du service worker ignoré :', err);
+  });
+}
+
+function showAppUpdateBanner(worker) {
+  const banner = document.getElementById('globalBanner');
+  if (!banner) return;
+  banner.className = 'global-banner banner-info';
+  banner.innerHTML = `
+    <div class="banner-content">
+      ${icon('i-refresh')}
+      <span>Une nouvelle version d'Apex Maint est disponible.</span>
+    </div>
+    <div class="banner-actions">
+      <button type="button" class="btn sm primary" data-action="apply-app-update">Recharger</button>
+      <button type="button" class="ib sm" data-action="close-global-banner" aria-label="Fermer">${icon('i-x')}</button>
+    </div>
+  `;
+  banner.hidden = false;
+  state._pendingServiceWorker = worker;
+}
+
+/** Gestion des événements de connectivité réseau. */
+function setupNetworkListeners() {
+  window.addEventListener('online', async () => {
+    state.isOnline = true;
+    updateNetworkBanner();
+    notify('Connexion réseau rétablie.', 'success');
+    await triggerSyncNow();
+    await refreshOfflineSnapshot();
+  });
+
+  window.addEventListener('offline', () => {
+    state.isOnline = false;
+    updateNetworkBanner();
+    notify('Vous êtes hors ligne. Les modifications seront enregistrées localement.', 'info');
+  });
+}
+
+/** Met à jour le bandeau global d'alerte réseau. */
+function updateNetworkBanner() {
+  const banner = document.getElementById('globalBanner');
+  if (!banner) return;
+
+  if (!navigator.onLine) {
+    banner.className = 'global-banner banner-offline';
+    banner.innerHTML = `
+      <div class="banner-content">
+        ${icon('i-wifi-off')}
+        <span><b>Mode hors-ligne :</b> vos modifications sont conservées sur l'appareil et seront envoyées au retour du réseau.</span>
+      </div>
+      <div class="banner-actions">
+        <a href="#/synchronisation" class="btn sm">File d'attente</a>
+      </div>
+    `;
+    banner.hidden = false;
+  } else if (!state.exploitationStatus || !state.exploitationStatus.backup || state.exploitationStatus.backup.ok !== false) {
+    // Si en ligne et aucune alerte de sauvegarde
+    banner.hidden = true;
+  }
+}
+
+function hideGlobalBanner() {
+  const banner = document.getElementById('globalBanner');
+  if (banner) banner.hidden = true;
+}
+
+function applyAppUpdate() {
+  if (state._pendingServiceWorker) {
+    state._pendingServiceWorker.postMessage({ type: 'SKIP_WAITING' });
+  }
+  window.location.reload();
+}
+
+function goToBackupsSettings() {
+  hideGlobalBanner();
+  location.hash = '#/settings';
+  switchSettingsTab('backups');
+}
+
+/** Rafraîchit l'instantané hors-ligne pour le technicien connecté. */
+async function refreshOfflineSnapshot() {
+  if (!navigator.onLine || !state.currentUser || !hasPermission('interventions.view')) return;
+  if (typeof ApexOffline === 'undefined') return;
+
+  try {
+    const lastSync = await ApexOffline.getMeta('last_sync_at');
+    const qs = lastSync ? `?since=${encodeURIComponent(lastSync)}` : '';
+    const snap = await api(`/api/offline/snapshot${qs}`);
+    if (snap) {
+      await ApexOffline.saveSnapshot(snap, state.currentUser.id, state.site ? state.site.id : null);
+    }
+  } catch (_) {
+    // Ne pas bloquer l'IHM
+  }
+}
+
+/** Vue principale Terrain (#/terrain). */
+function terrainPage() {
+  if (!hasPermission('interventions.view')) {
+    return accessDeniedPage();
+  }
+
+  const isNetOnline = navigator.onLine;
+
+  return `
+    <div class="terrain-view">
+      <div class="terrain-header-card">
+        <div>
+          <h2>${icon('i-qrcode')} Espace Terrain</h2>
+          <p class="hint">Interface tactile simplifiée pour interventions sur site.</p>
+        </div>
+        <div class="terrain-network-status ${isNetOnline ? 'online' : 'offline'}">
+          ${icon(isNetOnline ? 'i-wifi' : 'i-wifi-off')}
+          <span>${isNetOnline ? 'Connecté' : 'Hors ligne'}</span>
+        </div>
+      </div>
+
+      <!-- GROS BOUTONS D'ACTION TACTILES -->
+      <div class="terrain-actions-grid">
+        <button type="button" class="terrain-btn-big" data-action="open-qr-scanner">
+          <span class="icon-wrap">${icon('i-camera')}</span>
+          <span class="text-wrap">
+            <span class="btn-title">Scanner un équipement</span>
+            <span class="btn-desc">Ouvrir la caméra pour lire le QR code d'une machine</span>
+          </span>
+          ${icon('i-chevron-right')}
+        </button>
+
+        <a href="#/interventions" class="terrain-btn-big">
+          <span class="icon-wrap">${icon('i-wrench')}</span>
+          <span class="text-wrap">
+            <span class="btn-title">Mes interventions</span>
+            <span class="btn-desc">Consulter et avancer mes interventions en cours</span>
+          </span>
+          ${icon('i-chevron-right')}
+        </a>
+
+        <button type="button" class="terrain-btn-big" data-action="open-quick-declare">
+          <span class="icon-wrap">${icon('i-plus')}</span>
+          <span class="text-wrap">
+            <span class="btn-title">Déclarer une intervention</span>
+            <span class="btn-desc">Signaler une panne ou une demande de maintenance</span>
+          </span>
+          ${icon('i-chevron-right')}
+        </button>
+      </div>
+
+      <!-- CARTE SYNCHRONISATION -->
+      <div class="card settings-card">
+        <div class="card-head-between">
+          <div>
+            <h3>${icon('i-sync')} Synchronisation hors-ligne</h3>
+            <p class="hint" id="terrainSyncSummary">Chargement de l'état de la file d'attente…</p>
+          </div>
+          <a href="#/synchronisation" class="btn sm primary">
+            <span>Gérer la file</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- CERTIFICAT TLS AUTO-SIGNÉ -->
+      <div class="card settings-card">
+        <div class="card-head-between">
+          <div>
+            <h3>${icon('i-shield')} Certificat de sécurité local</h3>
+            <p class="hint">Pour les tablettes et smartphones utilisant l'autorité locale de l'instance.</p>
+          </div>
+          <a href="/api/tls/ca.pem" download="apex-ca.pem" class="btn sm">
+            ${icon('i-download')} <span>Télécharger ca.pem</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function initTerrainPageView() {
+  if (typeof ApexOffline === 'undefined') return;
+  try {
+    const pending = await ApexOffline.getPendingOperations();
+    const conflicts = await ApexOffline.getConflictOperations();
+    const summary = document.getElementById('terrainSyncSummary');
+    if (summary) {
+      if (!pending.length && !conflicts.length) {
+        summary.textContent = 'Toutes vos opérations sont synchronisées avec le serveur.';
+      } else {
+        const parts = [];
+        if (pending.length) parts.push(`${pending.length} opération(s) en attente`);
+        if (conflicts.length) parts.push(`${conflicts.length} à résoudre`);
+        summary.textContent = parts.join(', ') + '.';
+      }
+    }
+  } catch (_) {}
+}
+
+/** Page dédiée à la gestion de la synchronisation et des conflits (#/synchronisation). */
+function synchronisationPage() {
+  if (!hasPermission('interventions.view')) {
+    return accessDeniedPage();
+  }
+
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-sync')}
+        <div>
+          <h1>Synchronisation hors-ligne</h1>
+          <p class="hint">Suivi des opérations locales, transmission différée et résolution des conflits.</p>
+        </div>
+      </div>
+      <div class="page-head-actions">
+        <button type="button" class="btn primary" data-action="sync-now" id="btnSyncNow">
+          ${icon('i-sync')} <span>Synchroniser maintenant</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="syncPageContainer">
+      <p class="hint">${icon('i-clock')} Chargement de la file d'attente…</p>
+    </div>
+  `;
+}
+
+async function initSynchronisationPageView() {
+  await renderSyncPageContent();
+}
+
+async function renderSyncPageContent() {
+  const container = document.getElementById('syncPageContainer');
+  if (!container || typeof ApexOffline === 'undefined') return;
+
+  try {
+    const [allOps, lastSyncAt] = await Promise.all([
+      ApexOffline.getAllOperations(),
+      ApexOffline.getMeta('last_sync_at')
+    ]);
+
+    const pending = allOps.filter(o => o.status === 'pending');
+    const conflicts = allOps.filter(o => o.status === 'conflict');
+    const isNetOnline = navigator.onLine;
+
+    const conflictsRows = conflicts.map(c => `
+      <div class="sync-item-card is-conflict">
+        <div class="sync-item-header">
+          <div>
+            <b>${esc(formatOpType(c.type))}</b>
+            <span class="hint mono">${esc(c.url)}</span>
+          </div>
+          <span class="badge badge-supervision-alarm">À résoudre</span>
+        </div>
+        <div class="sync-item-body">
+          <div>Exécuté le : <b>${formatDate(c.occurred_at)}</b></div>
+          <div class="sync-conflict-box">
+            ${icon('i-alert')} <span>${esc(c.error_message || 'Conflit de synchronisation')}</span>
+          </div>
+        </div>
+        <div class="cell-actions mt-2">
+          <button type="button" class="btn sm danger" data-action="abandon-offline-op" data-args="${jsArg(c.id)}">
+            ${icon('i-trash')} <span>Abandonner l'opération</span>
+          </button>
+          <button type="button" class="btn sm" data-action="retry-offline-op" data-args="${jsArg(c.id)}">
+            ${icon('i-refresh')} <span>Réessayer</span>
+          </button>
+        </div>
+      </div>
+    `).join('');
+
+    const pendingRows = pending.map(p => `
+      <div class="sync-item-card">
+        <div class="sync-item-header">
+          <div>
+            <b>${esc(formatOpType(p.type))}</b>
+            <span class="hint mono">${esc(p.url)}</span>
+          </div>
+          <span class="badge badge-freq">En attente</span>
+        </div>
+        <div class="sync-item-body">
+          <div>Horodatage réel : <b>${formatDate(p.occurred_at)}</b></div>
+          ${p.temp_id ? `<div class="hint mono">Identifiant temporaire : ${esc(p.temp_id)}</div>` : ''}
+          ${p.depends_on ? `<div class="hint mono">Dépend de : ${esc(p.depends_on)}</div>` : ''}
+        </div>
+      </div>
+    `).join('');
+
+    container.innerHTML = `
+      <div class="card settings-card">
+        <div class="card-head-between">
+          <div>
+            <h3>${icon(isNetOnline ? 'i-wifi' : 'i-wifi-off')} État de la liaison</h3>
+            <p class="hint">Statut actuel du réseau : <b>${isNetOnline ? 'Connecté à Internet / intranet' : 'Déconnecté (hors ligne)'}</b></p>
+            <p class="hint">Dernier instantané du serveur : <b>${lastSyncAt ? formatDate(lastSyncAt) : 'Jamais'}</b></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- OPÉRATIONS EN CONFLIT (À RÉSOUDRE) -->
+      ${conflicts.length ? `
+        <div class="card settings-card">
+          <h2>${icon('i-alert')} Opérations à résoudre (${conflicts.length})</h2>
+          <p class="hint form-help">Le serveur a refusé ces opérations. Vous pouvez les réexaminer ou les abandonner sans affecter les autres données.</p>
+          <div class="sync-section">
+            ${conflictsRows}
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- OPÉRATIONS EN ATTENTE -->
+      <div class="card settings-card">
+        <h2>${icon('i-clock')} Opérations en attente de synchronisation (${pending.length})</h2>
+        <p class="hint form-help">Ces modifications ont été appliquées immédiatement sur votre appareil et seront transmises au serveur par ordre chronologique.</p>
+        ${pending.length ? `
+          <div class="sync-section">
+            ${pendingRows}
+          </div>
+        ` : '<p class="hint text-ok">Aucune opération en attente.</p>'}
+      </div>
+
+      <!-- ACTIONS DE MAINTENANCE DES DONNÉES LOCALES -->
+      <div class="card settings-card">
+        <h2>${icon('i-database')} Outils de données locales</h2>
+        <p class="hint form-help">Sauvegarde de secours ou réinitialisation complète du cache de l'appareil.</p>
+        <div class="cell-actions">
+          <button type="button" class="btn sm" data-action="export-outbox-json">
+            ${icon('i-download')} <span>Exporter la file d'attente (JSON)</span>
+          </button>
+          <button type="button" class="btn sm danger" data-action="clear-offline-data">
+            ${icon('i-trash')} <span>Effacer le stockage hors ligne</span>
+          </button>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">Erreur lors de la lecture du stockage hors ligne : ${esc(err.message)}</p>`;
+  }
+}
+
+function formatOpType(type) {
+  switch (type) {
+    case 'create_intervention': return 'Déclaration d\'intervention';
+    case 'take_intervention': return 'Prise en charge';
+    case 'record_time': return 'Saisie de temps';
+    case 'patch_intervention': return 'Compte rendu / modification';
+    case 'complete_intervention': return 'Clôture de l\'intervention';
+    default: return type || 'Opération';
+  }
+}
+
+async function triggerSyncNow() {
+  if (typeof ApexOffline === 'undefined') return;
+  if (!navigator.onLine) {
+    notify('Impossible de synchroniser : appareil hors ligne.', 'info');
+    return;
+  }
+
+  const btn = document.getElementById('btnSyncNow');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `${icon('i-clock')} <span>Synchronisation…</span>`;
+  }
+
+  try {
+    const report = await ApexOffline.syncOutbox(
+      fetch,
+      state.currentUser ? state.currentUser.id : null,
+      state.site ? state.site.id : null
+    );
+
+    if (report.stoppedReason === 'USER_MISMATCH') {
+      notify('Conflit d\'utilisateur : des opérations appartiennent à un autre compte.', 'error');
+    } else if (report.sent > 0) {
+      notify(`${report.sent} opération(s) synchronisée(s) avec succès.`, 'success');
+    } else if (report.conflicts > 0) {
+      notify(`${report.conflicts} opération(s) passée(s) en « À résoudre ».`, 'warn');
+    } else {
+      notify('File d\'attente à jour.', 'info');
+    }
+
+    if (currentRoute() === 'synchronisation') {
+      await renderSyncPageContent();
+    }
+  } catch (err) {
+    notify(`Erreur lors de la synchronisation : ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `${icon('i-sync')} <span>Synchroniser maintenant</span>`;
+    }
+  }
+}
+
+async function handleAbandonOfflineOp(opId) {
+  const ok = await confirmDialog(
+    'Abandonner l\'opération',
+    'Voulez-vous définitivement supprimer cette opération non synchronisée ? Cette action est irréversible.',
+    'Abandonner',
+    'danger'
+  );
+  if (!ok) return;
+
+  try {
+    await ApexOffline.removeOperation(opId);
+    notify('Opération retirée de la file.', 'success');
+    await renderSyncPageContent();
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+async function handleRetryOfflineOp(opId) {
+  try {
+    const all = await ApexOffline.getAllOperations();
+    const op = all.find(o => o.id === opId);
+    if (op) {
+      op.status = 'pending';
+      op.error_message = null;
+      op.error_status = null;
+      await ApexOffline.enqueueOperation(op);
+      notify('Opération remise en attente de synchronisation.', 'success');
+      await renderSyncPageContent();
+    }
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+async function handleExportOutboxJson() {
+  try {
+    const ops = await ApexOffline.getAllOperations();
+    const blob = new Blob([JSON.stringify(ops, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `apex-maint-outbox-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    notify('Export terminé.', 'success');
+  } catch (err) {
+    notify(`Erreur lors de l'export : ${err.message}`, 'error');
+  }
+}
+
+async function handleClearOfflineData() {
+  const ok = await confirmDialog(
+    'Effacer les données locales',
+    'Attention : cette action effacera complètement l\'instantané local et toutes les opérations en attente de synchronisation. Voulez-vous continuer ?',
+    'Tout effacer',
+    'danger'
+  );
+  if (!ok) return;
+
+  try {
+    await ApexOffline.clearAllOfflineData();
+    notify('Stockage hors-ligne réinitialisé.', 'success');
+    await renderSyncPageContent();
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+// ----------------------------------------------------------------------------
+// SCANNER DE QR CODE (CAMÉRA & jsQR)
+// ----------------------------------------------------------------------------
+
+let scannerActiveStream = null;
+let scannerAnimFrameId = null;
+
+async function openQrScannerModal() {
+  const bodyHtml = `
+    <div class="scanner-container">
+      <div class="scanner-video-wrap">
+        <video id="qrScannerVideo" class="scanner-video" playsinline autoplay muted></video>
+        <div class="scanner-overlay">
+          <div class="scanner-target"></div>
+        </div>
+      </div>
+      <p class="hint">Pointez la caméra vers le QR code figurant sur l'étiquette de l'équipement.</p>
+
+      <!-- SAISIE MANUELLE EN SECOURS -->
+      <div class="scanner-manual-box">
+        <h4>Saisie manuelle du code équipement</h4>
+        <form class="form-row mt-2" data-action="scanner-manual-submit">
+          <input type="text" name="manual_code" placeholder="Ex. PRS-01" required class="mono uppercase" />
+          <button type="submit" class="btn primary">Valider</button>
+        </form>
+      </div>
+    </div>
+  `;
+
+  openModal('Scanner un équipement', bodyHtml, '<button type="button" class="btn" data-action="close-qr-scanner">Fermer la caméra</button>');
+
+  const video = document.getElementById('qrScannerVideo');
+  if (!video) return;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    scannerActiveStream = stream;
+    video.srcObject = stream;
+    await video.play();
+
+    // Démarrer la boucle de lecture
+    startQrCodeDetectionLoop(video);
+  } catch (err) {
+    closeModal();
+    notify(`Impossible d'accéder à la caméra : ${err.message}. Vous pouvez saisir le code manuellement.`, 'warn');
+    openManualEquipmentCodeModal();
+  }
+}
+
+function closeQrScannerModal() {
+  if (scannerActiveStream) {
+    scannerActiveStream.getTracks().forEach(t => t.stop());
+    scannerActiveStream = null;
+  }
+  if (scannerAnimFrameId) {
+    cancelAnimationFrame(scannerAnimFrameId);
+    scannerAnimFrameId = null;
+  }
+  closeModal();
+}
+
+/** Charge jsQR 1.4.0 si BarcodeDetector natif n'est pas disponible dans le navigateur. */
+function ensureJsQrLoaded() {
+  return new Promise((resolve, reject) => {
+    if (typeof jsQR !== 'undefined') {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = '/vendor/jsqr/jsQR.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Impossible de charger le lecteur de QR code.'));
+    document.head.appendChild(script);
+  });
+}
+
+async function startQrCodeDetectionLoop(video) {
+  const hasNativeDetector = typeof window.BarcodeDetector !== 'undefined';
+  let nativeDetector = null;
+
+  if (hasNativeDetector) {
+    try {
+      nativeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+    } catch (_) {
+      nativeDetector = null;
+    }
+  }
+
+  let canvas = null;
+  let ctx = null;
+
+  if (!nativeDetector) {
+    try {
+      await ensureJsQrLoaded();
+      canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+    } catch (_) {
+      // Fallback manuel si jsQR ne charge pas
+    }
+  }
+
+  async function checkFrame() {
+    if (!scannerActiveStream || video.readyState < 2) {
+      scannerAnimFrameId = requestAnimationFrame(checkFrame);
+      return;
+    }
+
+    try {
+      if (nativeDetector) {
+        const barcodes = await nativeDetector.detect(video);
+        if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+          const raw = barcodes[0].rawValue.trim();
+          handleQrCodeDetected(raw);
+          return;
+        }
+      } else if (typeof jsQR !== 'undefined' && canvas && ctx) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height, {
+          inversionAttempts: 'dontInvert'
+        });
+        if (code && code.data) {
+          const raw = code.data.trim();
+          handleQrCodeDetected(raw);
+          return;
+        }
+      }
+    } catch (_) {}
+
+    scannerAnimFrameId = requestAnimationFrame(checkFrame);
+  }
+
+  scannerAnimFrameId = requestAnimationFrame(checkFrame);
+}
+
+function handleQrCodeDetected(code) {
+  closeQrScannerModal();
+  resolveEquipmentCode(code);
+}
+
+function openManualEquipmentCodeModal() {
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="fManCode">Code de l'équipement *</label>
+      <input type="text" id="fManCode" name="manual_code" required placeholder="Ex. PRS-01" class="mono uppercase" autofocus />
+      <span class="form-help">Indiquez le code alphanumérique de la machine.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Identifier un équipement',
+    formId: 'modalManualEquipmentForm',
+    submitAction: 'scanner-manual-submit',
+    submitLabel: 'Ouvrir la fiche',
+    fieldsHtml
+  });
+}
+
+function handleScannerManualSubmit(form) {
+  const code = (form.manual_code.value || '').trim();
+  if (!code) return;
+  closeModal();
+  resolveEquipmentCode(code);
+}
+
+/** Résout un code équipement (QR ou manuel) en ligne ou hors ligne. */
+async function resolveEquipmentCode(code) {
+  if (!code) return;
+
+  try {
+    let eq = null;
+
+    if (navigator.onLine) {
+      try {
+        const res = await api(`/api/equipments/by-code/${encodeURIComponent(code)}`);
+        if (Array.isArray(res)) {
+          // Cas admin multi-sites
+          if (res.length === 1) {
+            eq = res[0];
+          } else if (res.length > 1) {
+            openChooseEquipmentSiteModal(res);
+            return;
+          }
+        } else if (res && res.id) {
+          eq = res;
+        }
+      } catch (netErr) {
+        if (netErr.status !== 404) throw netErr;
+      }
+    }
+
+    // Si non trouvé en ligne ou si hors ligne : recherche dans l'instantané IndexedDB
+    if (!eq && typeof ApexOffline !== 'undefined') {
+      const offlineEquips = await ApexOffline.getSnapshotCollection('equipments');
+      eq = offlineEquips.find(e => String(e.code).toUpperCase() === code.toUpperCase());
+    }
+
+    if (eq && eq.id) {
+      await openEquipmentDetailModal(eq.id);
+    } else {
+      notify(`Équipement inconnu sur ce site : ${code}`, 'error');
+    }
+  } catch (err) {
+    notify(`Erreur lors de la recherche : ${err.message}`, 'error');
+  }
+}
+
+function openChooseEquipmentSiteModal(equipmentsList) {
+  const items = equipmentsList.map(eq => {
+    const siteObj = state.sites.find(s => s.id === eq.site_id);
+    const siteName = siteObj ? siteObj.name : (eq.site_id ? eq.site_id.slice(0, 8) : 'Site');
+    return `
+      <div class="card p-3 mb-2 cursor-pointer" data-action="open-detail-equipment" data-args="${jsArg(eq.id)}">
+        <div class="font-bold mono">${esc(eq.code)} — ${esc(eq.name)}</div>
+        <div class="hint">Site : ${esc(siteName)}</div>
+      </div>
+    `;
+  }).join('');
+
+  openModal('Choisir l\'équipement (code présent sur plusieurs sites)', `<div>${items}</div>`, '<button type="button" class="btn" data-action="close-modal">Annuler</button>');
+}
+
+// ============================================================================
+// 14N. RACCORDS SUPERVISION (ÉQUIPEMENTS & COMPTEURS — PHASE 10)
+// ============================================================================
+
+function openEditEquipmentExternalRefModal(args) {
+  const eqId = typeof args === 'object' && args !== null ? args.id : args;
+  const currentRef = typeof args === 'object' && args !== null ? (args.current || '') : '';
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="eqExternalRefInput">Référence Supervision (<span class="mono">external_ref</span>)</label>
+      <input type="text" id="eqExternalRefInput" name="external_ref" value="${esc(currentRef)}" placeholder="Ex. SUP-EQ-01 (ou laisser vide pour dissocier)" class="mono" autofocus />
+      <span class="form-help">Identifiant de la machine côté Apex Supervision. À défaut, le rapprochement s'effectue par le code équipement.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Référence Supervision de l\'équipement',
+    formId: 'modalEditEqExternalRefForm',
+    submitAction: 'edit-equipment-external-ref-submit',
+    submitArgs: eqId,
+    submitLabel: 'Enregistrer',
+    fieldsHtml
+  });
+}
+
+async function handleEditEquipmentExternalRefSubmit(form) {
+  const eqId = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!eqId) return;
+
+  const btn = document.getElementById('modalEditEqExternalRefFormSubmitBtn');
+  const rawVal = (form.external_ref.value || '').trim();
+  const external_ref = rawVal ? rawVal : null;
+
+  if (btn) btn.disabled = true;
+
+  try {
+    await api(`/api/equipments/${encodeURIComponent(eqId)}/external-ref`, {
+      method: 'PATCH',
+      body: { external_ref }
+    });
+    closeModal();
+    notify('Référence Supervision mise à jour avec succès.', 'success');
+    await openEquipmentDetailModal(eqId);
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+function openEditCounterExternalRefModal(args) {
+  const counterId = typeof args === 'object' && args !== null ? args.counterId : args;
+  const currentRef = typeof args === 'object' && args !== null ? (args.current || '') : '';
+  const equipmentId = typeof args === 'object' && args !== null ? args.equipmentId : state.currentEquipmentDetailId;
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="cntExternalRefInput">Référence Supervision (<span class="mono">external_ref</span>)</label>
+      <input type="text" id="cntExternalRefInput" name="external_ref" value="${esc(currentRef)}" placeholder="Ex. VAR_HOURS_01 (ou laisser vide pour dissocier)" class="mono" autofocus />
+      <span class="form-help">Repère de la variable côté Apex Supervision (unique par site). Indispensable pour l'alimentation automatique du compteur.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Référence Supervision du compteur',
+    formId: 'modalEditCntExternalRefForm',
+    submitAction: 'edit-counter-external-ref-submit',
+    submitArgs: { counterId, equipmentId },
+    submitLabel: 'Enregistrer',
+    fieldsHtml
+  });
+}
+
+async function handleEditCounterExternalRefSubmit(form) {
+  const args = form.dataset.args ? JSON.parse(form.dataset.args) : {};
+  const counterId = args.counterId;
+  const equipmentId = args.equipmentId;
+  if (!counterId) return;
+
+  const btn = document.getElementById('modalEditCntExternalRefFormSubmitBtn');
+  const rawVal = (form.external_ref.value || '').trim();
+  const external_ref = rawVal ? rawVal : null;
+
+  if (btn) btn.disabled = true;
+
+  try {
+    await api(`/api/counters/${encodeURIComponent(counterId)}/external-ref`, {
+      method: 'PATCH',
+      body: { external_ref }
+    });
+    closeModal();
+    notify('Référence de compteur mise à jour avec succès.', 'success');
+    if (equipmentId) {
+      await openEquipmentDetailModal(equipmentId);
+    }
+  } catch (err) {
+    notify(`Erreur : ${err.message}`, 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ============================================================================
 // 15. SURVEILLANCE SERVEUR ET HORLOGE
 // ============================================================================
 
@@ -15731,6 +17628,74 @@ function handleGlobalClick(e) {
       showLoginScreen();
       break;
 
+    // --- PHASES 8, 9 & 10 ---
+    case 'trigger-backup-now':
+      handleTriggerBackupNow();
+      break;
+    case 'load-more-backups':
+      loadMoreBackups();
+      break;
+    case 'go-to-backups-settings':
+      goToBackupsSettings();
+      break;
+    case 'close-global-banner':
+      hideGlobalBanner();
+      break;
+    case 'apply-app-update':
+      applyAppUpdate();
+      break;
+    case 'open-create-integration-key-modal':
+      openCreateIntegrationKeyModal();
+      break;
+    case 'revoke-integration-key':
+      handleRevokeIntegrationKey(args);
+      break;
+    case 'copy-api-key':
+      handleCopyApiKey(args);
+      break;
+    case 'load-more-integration-events':
+      loadMoreIntegrationEvents();
+      break;
+    case 'dismiss-new-key':
+      state.newlyCreatedKey = null;
+      renderSettingsIntegrationsView();
+      break;
+    case 'open-qr-scanner':
+      openQrScannerModal();
+      break;
+    case 'close-qr-scanner':
+      closeQrScannerModal();
+      break;
+    case 'open-manual-equipment-code':
+      openManualEquipmentCodeModal();
+      break;
+    case 'sync-now':
+      triggerSyncNow();
+      break;
+    case 'abandon-offline-op':
+      if (typeof ApexOffline !== 'undefined') {
+        ApexOffline.removeOperation(args).then(() => renderSyncPageContent());
+      }
+      break;
+    case 'retry-offline-op':
+      triggerSyncNow();
+      break;
+    case 'export-outbox-json':
+      handleExportOutboxJson();
+      break;
+    case 'clear-offline-data':
+      handleClearOfflineData();
+      break;
+    case 'open-quick-declare':
+      openCreateInterventionModal();
+      break;
+    case 'edit-equipment-external-ref':
+      openEditEquipmentExternalRefModal(args);
+      break;
+    case 'edit-counter-external-ref':
+      openEditCounterExternalRefModal(args);
+      break;
+
     default:
       break;
   }
@@ -15937,6 +17902,26 @@ function handleGlobalSubmit(e) {
       handleSettingsAuditSubmit(form);
       break;
 
+    // --- PHASES 8, 9 & 10 ---
+    case 'settings-backups-submit':
+      handleSettingsBackupsSubmit(form);
+      break;
+    case 'settings-integrations-submit':
+      handleSettingsIntegrationsSubmit(form);
+      break;
+    case 'create-integration-key-submit':
+      handleCreateIntegrationKeySubmit(form);
+      break;
+    case 'edit-equipment-external-ref-submit':
+      handleEditEquipmentExternalRefSubmit(form);
+      break;
+    case 'edit-counter-external-ref-submit':
+      handleEditCounterExternalRefSubmit(form);
+      break;
+    case 'scanner-manual-submit':
+      handleScannerManualSubmit(form);
+      break;
+
     default:
       break;
   }
@@ -16051,6 +18036,11 @@ function handleGlobalChange(e) {
     if (chkAction === 'filter-parts-low-stock') {
       state.partsLowStockFilter = chk.checked;
       loadPartsListView(true);
+      return;
+    }
+    if (chkAction === 'toggle-filter-supervision-stopped') {
+      state.filterSupervisionStopped = chk.checked;
+      renderEquipmentsListView();
       return;
     }
   }
@@ -16361,6 +18351,10 @@ async function init() {
 
   // Authentification et chargement initial
   await checkAuth();
+
+  // PWA, Service Worker et surveillance réseau
+  initServiceWorker();
+  setupNetworkListeners();
 }
 
 document.addEventListener('DOMContentLoaded', init);
