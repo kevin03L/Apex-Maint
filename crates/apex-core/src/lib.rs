@@ -7,6 +7,7 @@ pub mod db;
 pub mod domain;
 pub mod error;
 pub mod interventions;
+pub mod maintenance;
 pub mod referentiel;
 pub mod services;
 pub mod store;

@@ -44,9 +44,18 @@ function icon(id) {
   return `<svg class="i" aria-hidden="true"><use href="#${esc(id)}"/></svg>`;
 }
 
+/** Date et heure locales au format AAAA-MM-JJTHH:MM (toISOString donnerait l'heure UTC). */
+function localIso(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** Formate une date RFC 3339 / ISO en date lisible en français. */
 function formatDate(d) {
   if (!d) return '—';
+  // Date civile AAAA-MM-JJ (échéances) : affichée telle quelle, sans heure ni conversion de fuseau.
+  const civil = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d));
+  if (civil) return `${civil[3]}/${civil[2]}/${civil[1]}`;
   try {
     const dt = new Date(d);
     if (isNaN(dt.getTime())) return String(d);
@@ -264,6 +273,105 @@ function nextLocationKind(parentKind) {
     default:
       return null;
   }
+}
+
+// --- Helpers Phase 5 (Maintenance préventive & compteurs) ---
+
+/** Libellé lisible d'une fréquence de planning. */
+function formatPlanFrequency(freq) {
+  switch (freq) {
+    case 'daily':
+      return 'Journalière';
+    case 'weekly':
+      return 'Hebdomadaire';
+    case 'monthly':
+      return 'Mensuelle';
+    case 'quarterly':
+      return 'Trimestrielle';
+    case 'yearly':
+      return 'Annuelle';
+    case 'interval_days':
+      return 'Intervalle (jours)';
+    case 'counter':
+      return 'Compteur';
+    default:
+      return freq || '—';
+  }
+}
+
+/** Libellé complet de fréquence avec intervalle ou compteur. */
+function planFrequencyLabel(plan) {
+  if (!plan) return '—';
+  if (plan.frequency === 'interval_days') {
+    return `Tous les ${plan.interval_days} jours`;
+  }
+  if (plan.frequency === 'counter') {
+    const unit = plan.counter ? ` ${plan.counter.unit}` : '';
+    return `Tous les ${plan.counter_interval}${unit}`;
+  }
+  return formatPlanFrequency(plan.frequency);
+}
+
+/** Libellé lisible d'un état de planning. */
+function planStateLabel(st) {
+  switch (st) {
+    case 'overdue':
+      return 'En retard';
+    case 'due_soon':
+      return 'Bientôt';
+    case 'ok':
+      return 'À jour';
+    case 'suspended':
+      return 'Suspendu';
+    default:
+      return st || '—';
+  }
+}
+
+/** Badge stylé pour l'état d'un planning. */
+function planStateBadge(st) {
+  return `<span class="badge badge-plan-${esc(st)}">${esc(planStateLabel(st))}</span>`;
+}
+
+/** Libellé lisible du statut d'une occurrence. */
+function occurrenceStatusLabel(st) {
+  switch (st) {
+    case 'generated':
+      return 'Intervention ouverte';
+    case 'done':
+      return 'Réalisée';
+    case 'skipped':
+      return 'Reportée';
+    case 'missed':
+      return 'Manquée';
+    case 'projected':
+      return 'Projetée';
+    case 'overdue':
+      return 'En retard';
+    default:
+      return st || '—';
+  }
+}
+
+/** Badge stylé pour le statut d'une occurrence. */
+function occurrenceStatusBadge(st) {
+  return `<span class="badge badge-occ-${esc(st)}">${esc(occurrenceStatusLabel(st))}</span>`;
+}
+
+/** Formatage textuel de la prochaine échéance d'un planning. */
+function formatPlanDue(p) {
+  if (!p) return '—';
+  if (p.frequency === 'counter') {
+    if (p.next_due_counter === null || p.next_due_counter === undefined) return '—';
+    const unit = p.counter ? ` ${p.counter.unit}` : '';
+    const current = p.counter ? p.counter.current_value : 0;
+    const diff = p.next_due_counter - current;
+    if (diff <= 0) {
+      return `Seuil atteint (${p.next_due_counter}${unit})`;
+    }
+    return `dans ${diff}${unit} (seuil ${p.next_due_counter})`;
+  }
+  return p.next_due_date ? formatDate(p.next_due_date) : '—';
 }
 
 /**
@@ -514,8 +622,8 @@ function confirmDialog(title, message, confirmLabel = 'Confirmer', danger = fals
 // 5. MODULES, PERMISSIONS ET RÔLES
 // ============================================================================
 
-/** Phase actuelle du projet (Phase 3 : Module Interventions). */
-const CURRENT_PHASE = 3;
+/** Phase actuelle du projet (Phase 5 : Maintenance préventive). */
+const CURRENT_PHASE = 5;
 
 /** Liste de tous les modules de l'application avec leur permission de vue requise. */
 const MODULES = [
@@ -543,7 +651,7 @@ const MODULES = [
 
 const DEFAULT_ROUTE = 'tableau-de-bord';
 
-/** Domaines de permissions pour la matrice RBAC (34 permissions complètes de Permission::ALL). */
+/** Domaines de permissions pour la matrice RBAC (35 permissions complètes de Permission::ALL). */
 const PERMISSION_DOMAINS = [
   {
     name: 'Pilotage & Analyse',
@@ -562,6 +670,7 @@ const PERMISSION_DOMAINS = [
       { key: 'interventions.delete', label: 'Supprimer une intervention' },
       { key: 'maintenance.view', label: 'Consulter la maintenance préventive' },
       { key: 'maintenance.manage', label: 'Gérer la maintenance préventive' },
+      { key: 'counters.record', label: 'Saisir un relevé de compteur' },
     ],
   },
   {
@@ -645,6 +754,7 @@ const state = {
   equipmentsTree: [],
   equipmentsTreeLoading: false,
   equipmentsTreeExpanded: new Set(),
+  currentEquipmentDetailId: null,
 
   // Emplacements (Phase 2)
   locationsTree: [],
@@ -669,6 +779,26 @@ const state = {
   interventionsQuickTab: 'all', // 'all' | 'active' | 'mine' | 'arret' | 'critical'
   currentInterventionDetail: null,
   currentInterventionLoading: false,
+
+  // Maintenance préventive (Phase 5)
+  maintenanceTab: 'plans', // 'plans' | 'schedule'
+  maintenanceScheduleRange: 'month', // 'month' | '30' | '60' | '90'
+  maintenanceScheduleMonth: localIso().slice(0, 7), // AAAA-MM
+  maintenancePlans: [],
+  maintenancePlansNextCursor: null,
+  maintenancePlansLoading: false,
+  maintenancePlansSearchQuery: '',
+  maintenancePlansEquipmentFilter: '',
+  maintenancePlansFrequencyFilter: '',
+  maintenancePlansDueFilter: 'all', // 'all' | 'overdue' | 'soon'
+  maintenancePlansActiveFilter: '',
+  maintenanceScheduleEvents: [],
+  maintenanceScheduleLoading: false,
+  currentPlanDetail: null,
+  currentPlanLoading: false,
+  currentPlanOccurrences: [],
+  currentPlanOccurrencesNextCursor: null,
+  currentPlanOccurrencesLoading: false,
 
   // Vue Utilisateurs
   usersTab: 'users', // 'users' | 'permissions'
@@ -1190,6 +1320,14 @@ async function render() {
   } else if (route === 'fournisseurs') {
     view.innerHTML = suppliersPage();
     await initSuppliersPageView();
+  } else if (route === 'maintenance-preventive') {
+    if (id) {
+      view.innerHTML = maintenancePlanDetailPage(id);
+      await initMaintenancePlanDetailPageView(id);
+    } else {
+      view.innerHTML = maintenancePage();
+      await initMaintenancePageView();
+    }
   } else {
     view.innerHTML = plannedPage(mod);
   }
@@ -2915,16 +3053,132 @@ async function openEquipmentDetailModal(equipmentId) {
   try {
     const eq = await api(`/api/equipments/${encodeURIComponent(equipmentId)}`);
     if (!eq) throw new Error('Équipement introuvable.');
+    state.currentEquipmentDetailId = eq.id;
 
     let subItems = [];
+    let counters = [];
+    let eqPlans = [];
     try {
-      const subRes = await api(`/api/equipments?parent_id=${encodeURIComponent(equipmentId)}&limit=100`);
+      const [subRes, cntRes, planRes] = await Promise.all([
+        api(`/api/equipments?parent_id=${encodeURIComponent(equipmentId)}&limit=100`).catch(() => ({ items: [] })),
+        api(`/api/equipments/${encodeURIComponent(equipmentId)}/counters`).catch(() => ({ items: [] })),
+        api(`/api/maintenance/plans?equipment_id=${encodeURIComponent(equipmentId)}&limit=100`).catch(() => ({ items: [] })),
+      ]);
       subItems = subRes && Array.isArray(subRes.items) ? subRes.items : [];
+      counters = Array.isArray(cntRes) ? cntRes : (cntRes && Array.isArray(cntRes.items) ? cntRes.items : []);
+      eqPlans = planRes && Array.isArray(planRes.items) ? planRes.items : [];
     } catch (_) {}
 
     const canEdit = hasPermission('equipments.edit');
+    const canRecordCounter = hasPermission('counters.record');
+    const canViewMaintenance = hasPermission('maintenance.view');
+    const canManageMaintenance = hasPermission('maintenance.manage');
+
     const lineLabel = eq.production_line ? `${eq.production_line.code} — ${eq.production_line.name}` : 'Aucune ligne rattachée';
     const parentLabel = eq.parent ? `${eq.parent.code} — ${eq.parent.name}` : 'Équipement racine (aucun parent)';
+
+    const countersSectionHtml = `
+      <div class="detail-card detail-card-spaced">
+        <div class="detail-nav-bar">
+          <h3>${icon('i-clock')} Compteurs (${counters.length})</h3>
+          ${canEdit ? `
+            <button type="button" class="btn sm" data-action="open-create-counter" data-args="${jsArg(eq.id)}">
+              ${icon('i-plus')} <span>Ajouter un compteur</span>
+            </button>
+          ` : ''}
+        </div>
+        ${counters.length ? `
+          <div class="counters-grid">
+            ${counters.map(c => `
+              <div class="counter-card">
+                <div class="counter-card-header">
+                  <div class="counter-card-title">${esc(c.name)}</div>
+                  <span class="badge ${c.active ? 'badge-active-on' : 'badge-active-off'}">${c.active ? 'Actif' : 'Inactif'}</span>
+                </div>
+                <div class="counter-value-box">
+                  <span class="counter-large-val mono">${esc(c.current_value)}</span>
+                  <span class="counter-unit">${esc(c.unit)}</span>
+                </div>
+                <div class="counter-last-reading">
+                  ${c.last_reading_at ? `Dernier relevé : ${formatDate(c.last_reading_at)}` : 'Aucun relevé enregistré'}
+                </div>
+                <div class="hint">
+                  ${c.plans_count} planning${c.plans_count > 1 ? 's' : ''} associé${c.plans_count > 1 ? 's' : ''}
+                </div>
+                <div class="counter-card-actions">
+                  ${canRecordCounter ? `
+                    <button type="button" class="btn sm primary" data-action="open-record-reading" data-args="${jsArg({ counterId: c.id, equipmentId: eq.id })}" title="Saisir un relevé">
+                      ${icon('i-edit')} <span>Relever</span>
+                    </button>
+                    <button type="button" class="btn sm" data-action="open-reset-counter" data-args="${jsArg({ counterId: c.id, equipmentId: eq.id })}" title="Remettre à zéro ou remplacer le compteur">
+                      ${icon('i-refresh')} <span>RàZ</span>
+                    </button>
+                  ` : ''}
+                  <button type="button" class="btn sm" data-action="open-counter-history" data-args="${jsArg({ counterId: c.id, equipmentId: eq.id })}" title="Historique des relevés">
+                    ${icon('i-clock')} <span>Historique</span>
+                  </button>
+                  ${canEdit ? `
+                    <button type="button" class="btn sm" data-action="open-edit-counter" data-args="${jsArg({ counterId: c.id, equipmentId: eq.id })}" title="Modifier le compteur">
+                      ${icon('i-edit')}
+                    </button>
+                    <button type="button" class="btn sm danger" data-action="delete-counter" data-args="${jsArg({ counterId: c.id, equipmentId: eq.id })}" title="Supprimer le compteur">
+                      ${icon('i-trash')}
+                    </button>
+                  ` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <p class="hint">Aucun compteur configuré pour cet équipement.</p>
+        `}
+      </div>
+    `;
+
+    const plansSectionHtml = canViewMaintenance ? `
+      <div class="detail-card detail-card-spaced">
+        <div class="detail-nav-bar">
+          <h3>${icon('i-cal')} Plannings de maintenance préventive (${eqPlans.length})</h3>
+          ${canManageMaintenance ? `
+            <button type="button" class="btn sm" data-action="open-create-maintenance-plan" data-args="${jsArg({ equipment_id: eq.id })}">
+              ${icon('i-plus')} <span>Nouveau planning</span>
+            </button>
+          ` : ''}
+        </div>
+        ${eqPlans.length ? `
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Titre</th>
+                  <th>Fréquence</th>
+                  <th>Prochaine échéance</th>
+                  <th>État</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${eqPlans.map(p => `
+                  <tr>
+                    <td><b class="mono">${esc(p.code)}</b></td>
+                    <td><b>${esc(p.title)}</b></td>
+                    <td><span class="badge badge-freq">${esc(planFrequencyLabel(p))}</span></td>
+                    <td>${esc(formatPlanDue(p))}</td>
+                    <td>${planStateBadge(p.state)}</td>
+                    <td>
+                      <a href="#/maintenance-preventive/${esc(p.id)}" class="btn sm" data-action="close-modal" title="Ouvrir la fiche planning">
+                        ${icon('i-info')} <span>Consulter</span>
+                      </a>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="hint">Aucun planning de maintenance associé à cet équipement.</p>'}
+      </div>
+    ` : '';
 
     const bodyHtml = `
       <div class="detail-grid">
@@ -2951,6 +3205,8 @@ async function openEquipmentDetailModal(equipmentId) {
           </dl>
         </div>
       </div>
+      ${countersSectionHtml}
+      ${plansSectionHtml}
       <div class="detail-card detail-card-spaced">
         <h3>${icon('i-gear')} Sous-équipements (${subItems.length})</h3>
         ${subItems.length ? `
@@ -4536,6 +4792,22 @@ function renderInterventionDetailView(inter) {
         <h2>${icon('i-info')} Informations générales</h2>
         <dl class="detail-dl">
           <dt>Équipement lié</dt><dd>${equipHtml}</dd>
+          ${inter.maintenance_plan || inter.maintenance_occurrence ? `
+            <dt>Planning préventif</dt>
+            <dd>
+              ${inter.maintenance_plan ? `
+                <a href="#/maintenance-preventive/${esc(inter.maintenance_plan.id)}" class="link-action">
+                  <b>${esc(inter.maintenance_plan.code)}</b> — ${esc(inter.maintenance_plan.title)}
+                </a>
+              ` : 'Planning préventif lié'}
+              ${inter.maintenance_occurrence && inter.maintenance_occurrence.due_date ? `
+                <span class="hint"> (Échéance prévue : <b>${esc(inter.maintenance_occurrence.due_date)}</b>)</span>
+              ` : ''}
+              ${inter.maintenance_occurrence && inter.maintenance_occurrence.due_counter !== null && inter.maintenance_occurrence.due_counter !== undefined ? `
+                <span class="hint"> (Seuil compteur : <b>${esc(inter.maintenance_occurrence.due_counter)}</b>)</span>
+              ` : ''}
+            </dd>
+          ` : ''}
           <dt>Demandeur</dt><dd>${esc(inter.reported_by ? inter.reported_by.display_name : '—')}</dd>
           <dt>Signalé le</dt><dd>${formatDate(inter.reported_at)}</dd>
           <dt>Début effectif</dt><dd>${formatDate(inter.started_at)}</dd>
@@ -5263,6 +5535,1843 @@ async function deleteIntervention(id) {
 }
 
 // ============================================================================
+// 14b. MODULE MAINTENANCE PRÉVENTIVE ET COMPTEURS (PHASE 5)
+// ============================================================================
+
+/** Page principale du module Maintenance Préventive (Plannings / Vue planning). */
+function maintenancePage() {
+  const isPlans = state.maintenanceTab === 'plans';
+
+  const subNavHtml = `
+    <div class="sub-nav-tabs" role="tablist" aria-label="Sous-navigation maintenance préventive">
+      <button type="button" class="sub-nav-tab ${isPlans ? 'active' : ''}" data-action="switch-maintenance-tab" data-args="${jsArg('plans')}">
+        ${icon('i-cal')} <span>Plannings</span>
+      </button>
+      <button type="button" class="sub-nav-tab ${!isPlans ? 'active' : ''}" data-action="switch-maintenance-tab" data-args="${jsArg('schedule')}">
+        ${icon('i-clock')} <span>Vue planning</span>
+      </button>
+    </div>
+  `;
+
+  return `
+    <div class="page-head">
+      ${icon('i-cal')}
+      <h1>Maintenance préventive</h1>
+    </div>
+    ${subNavHtml}
+    <div id="maintenanceTabContainer">
+      <p class="hint">${icon('i-clock')} Chargement du module…</p>
+    </div>
+  `;
+}
+
+async function initMaintenancePageView() {
+  if (!state.equipments.length) {
+    try {
+      const siteParam = state.selectedSiteId ? `?site_id=${encodeURIComponent(state.selectedSiteId)}&limit=100` : '?limit=100';
+      const eRes = await api(`/api/equipments${siteParam}`);
+      state.equipments = eRes && Array.isArray(eRes.items) ? eRes.items : [];
+    } catch (_) {}
+  }
+
+  if (state.maintenanceTab === 'plans') {
+    renderMaintenancePlansView();
+    await loadMaintenancePlans(true);
+  } else {
+    renderMaintenanceScheduleView();
+    await loadMaintenanceSchedule();
+  }
+}
+
+/** Vue « Plannings » : filtre, tableau paginé et actions. */
+function renderMaintenancePlansView() {
+  const container = document.getElementById('maintenanceTabContainer');
+  if (!container) return;
+
+  const canManage = hasPermission('maintenance.manage');
+
+  const extraFilters = `
+    <select data-action="filter-maintenance-plans-frequency" aria-label="Filtrer par fréquence">
+      <option value="">Toutes les fréquences</option>
+      <option value="daily" ${state.maintenancePlansFrequencyFilter === 'daily' ? 'selected' : ''}>Journalière</option>
+      <option value="weekly" ${state.maintenancePlansFrequencyFilter === 'weekly' ? 'selected' : ''}>Hebdomadaire</option>
+      <option value="monthly" ${state.maintenancePlansFrequencyFilter === 'monthly' ? 'selected' : ''}>Mensuelle</option>
+      <option value="quarterly" ${state.maintenancePlansFrequencyFilter === 'quarterly' ? 'selected' : ''}>Trimestrielle</option>
+      <option value="yearly" ${state.maintenancePlansFrequencyFilter === 'yearly' ? 'selected' : ''}>Annuelle</option>
+      <option value="interval_days" ${state.maintenancePlansFrequencyFilter === 'interval_days' ? 'selected' : ''}>Intervalle (jours)</option>
+      <option value="counter" ${state.maintenancePlansFrequencyFilter === 'counter' ? 'selected' : ''}>Compteur</option>
+    </select>
+    <select data-action="filter-maintenance-plans-due" aria-label="Filtrer par échéance">
+      <option value="all" ${state.maintenancePlansDueFilter === 'all' ? 'selected' : ''}>Toutes les échéances</option>
+      <option value="overdue" ${state.maintenancePlansDueFilter === 'overdue' ? 'selected' : ''}>En retard</option>
+      <option value="soon" ${state.maintenancePlansDueFilter === 'soon' ? 'selected' : ''}>Sous 30 jours</option>
+    </select>
+    <select data-action="filter-maintenance-plans-equipment" aria-label="Filtrer par équipement">
+      <option value="">Tous les équipements</option>
+      ${state.equipments.map(e => `<option value="${esc(e.id)}" ${state.maintenancePlansEquipmentFilter === e.id ? 'selected' : ''}>${esc(e.code)} - ${esc(e.name)}</option>`).join('')}
+    </select>
+  `;
+
+  container.innerHTML = `
+    ${renderToolbar({
+      searchAction: 'filter-maintenance-plans-search',
+      searchPlaceholder: 'Rechercher un planning (code, titre)…',
+      searchValue: state.maintenancePlansSearchQuery,
+      extraFiltersHtml: extraFilters,
+      canCreate: canManage,
+      primaryAction: 'open-create-maintenance-plan',
+      primaryLabel: 'Nouveau planning',
+      primaryIcon: 'i-plus',
+    })}
+    <div id="maintenancePlansTableContainer">
+      <p class="hint">${icon('i-clock')} Chargement des plannings…</p>
+    </div>
+  `;
+}
+
+async function loadMaintenancePlans(reset = true) {
+  const container = document.getElementById('maintenancePlansTableContainer');
+  if (!container) return;
+
+  if (reset) {
+    state.maintenancePlans = [];
+    state.maintenancePlansNextCursor = null;
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des plannings…</p>`;
+  }
+
+  state.maintenancePlansLoading = true;
+
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', '25');
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    if (state.maintenancePlansSearchQuery) params.set('q', state.maintenancePlansSearchQuery.trim());
+    if (state.maintenancePlansEquipmentFilter) params.set('equipment_id', state.maintenancePlansEquipmentFilter);
+    if (state.maintenancePlansFrequencyFilter) params.set('frequency', state.maintenancePlansFrequencyFilter);
+    if (state.maintenancePlansDueFilter && state.maintenancePlansDueFilter !== 'all') {
+      params.set('due', state.maintenancePlansDueFilter);
+    }
+    if (state.maintenancePlansActiveFilter !== '') {
+      params.set('active', state.maintenancePlansActiveFilter);
+    }
+    if (!reset && state.maintenancePlansNextCursor) {
+      params.set('cursor', state.maintenancePlansNextCursor);
+    }
+
+    const res = await api(`/api/maintenance/plans?${params.toString()}`);
+    const items = res && Array.isArray(res.items) ? res.items : [];
+    state.maintenancePlansNextCursor = res ? res.next_cursor : null;
+
+    if (reset) {
+      state.maintenancePlans = items;
+    } else {
+      state.maintenancePlans = state.maintenancePlans.concat(items);
+    }
+
+    renderMaintenancePlansTable();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement des plannings : ${esc(err.message)}</p>`;
+  } finally {
+    state.maintenancePlansLoading = false;
+  }
+}
+
+function renderMaintenancePlansTable() {
+  const container = document.getElementById('maintenancePlansTableContainer');
+  if (!container) return;
+
+  const canManage = hasPermission('maintenance.manage');
+  const plans = state.maintenancePlans;
+
+  if (!plans.length) {
+    container.innerHTML = `<p class="hint">Aucun planning de maintenance trouvé.</p>`;
+    return;
+  }
+
+  const rowsHtml = plans.map(p => {
+    const hasOpenOcc = Boolean(p.open_occurrence);
+    const equipLabel = p.equipment ? `${p.equipment.code} — ${p.equipment.name}` : '—';
+
+    let openInterHtml = '—';
+    if (hasOpenOcc && p.open_occurrence.intervention_id) {
+      openInterHtml = `
+        <a href="#/interventions/${esc(p.open_occurrence.intervention_id)}" class="link-action mono" title="Voir l'intervention">
+          <b>${esc(p.open_occurrence.intervention_code || 'Voir fiche')}</b>
+        </a>
+      `;
+    }
+
+    const actions = [];
+    actions.push(`
+      <a href="#/maintenance-preventive/${esc(p.id)}" class="btn sm" title="Consulter la fiche du planning">
+        ${icon('i-info')} <span>Consulter</span>
+      </a>
+    `);
+
+    if (canManage) {
+      if (!hasOpenOcc) {
+        actions.push(`
+          <button type="button" class="btn sm primary" data-action="generate-plan-intervention" data-args="${jsArg(p.id)}" title="Générer l'intervention maintenant">
+            ${icon('i-wrench')} <span>Générer</span>
+          </button>
+          <button type="button" class="btn sm" data-action="open-skip-plan-modal" data-args="${jsArg(p.id)}" title="Reporter l'échéance avec motif">
+            ${icon('i-clock')} <span>Reporter</span>
+          </button>
+        `);
+      }
+      actions.push(`
+        <button type="button" class="btn sm" data-action="toggle-plan-active" data-args="${jsArg(p.id)}" title="${p.active ? 'Suspendre le planning' : 'Activer le planning'}">
+          ${icon(p.active ? 'i-ban' : 'i-check')}
+        </button>
+      `);
+    }
+
+    return `
+      <tr>
+        <td>
+          <a href="#/maintenance-preventive/${esc(p.id)}" class="link-action mono">
+            <b>${esc(p.code)}</b>
+          </a>
+        </td>
+        <td>
+          <a href="#/maintenance-preventive/${esc(p.id)}" class="link-action">
+            <b>${esc(p.title)}</b>
+          </a>
+        </td>
+        <td>
+          ${p.equipment ? `
+            <button type="button" class="link-action" data-action="open-detail-equipment" data-args="${jsArg(p.equipment.id)}">
+              ${esc(equipLabel)}
+            </button>
+          ` : '—'}
+        </td>
+        <td><span class="badge badge-freq">${esc(planFrequencyLabel(p))}</span></td>
+        <td><b>${esc(formatPlanDue(p))}</b></td>
+        <td>${planStateBadge(p.state)}</td>
+        <td>${openInterHtml}</td>
+        <td><div class="cell-actions">${actions.join('')}</div></td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Titre</th>
+            <th>Équipement</th>
+            <th>Fréquence</th>
+            <th>Prochaine échéance</th>
+            <th>État</th>
+            <th>Intervention ouverte</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+      </table>
+    </div>
+    ${renderLoadMore(state.maintenancePlansNextCursor, 'load-more-maintenance-plans', state.maintenancePlansLoading)}
+  `;
+}
+
+/** Vue « Planning » : calendrier mensuel et listes 30/60/90 jours. */
+function renderMaintenanceScheduleView() {
+  const container = document.getElementById('maintenanceTabContainer');
+  if (!container) return;
+
+  const range = state.maintenanceScheduleRange;
+  const isMonth = range === 'month';
+
+  const rangeButtonsHtml = `
+    <div class="filter-tabs" role="tablist" aria-label="Plage de vue planning">
+      <button type="button" class="filter-tab ${isMonth ? 'active' : ''}" data-action="switch-schedule-range" data-args="${jsArg('month')}">
+        ${icon('i-cal')} <span>Vue mensuelle</span>
+      </button>
+      <button type="button" class="filter-tab ${range === '30' ? 'active' : ''}" data-action="switch-schedule-range" data-args="${jsArg('30')}">
+        <span>30 jours</span>
+      </button>
+      <button type="button" class="filter-tab ${range === '60' ? 'active' : ''}" data-action="switch-schedule-range" data-args="${jsArg('60')}">
+        <span>60 jours</span>
+      </button>
+      <button type="button" class="filter-tab ${range === '90' ? 'active' : ''}" data-action="switch-schedule-range" data-args="${jsArg('90')}">
+        <span>90 jours</span>
+      </button>
+    </div>
+  `;
+
+  let navControlsHtml = '';
+  if (isMonth) {
+    const [yStr, mStr] = state.maintenanceScheduleMonth.split('-');
+    const dt = new Date(parseInt(yStr, 10), parseInt(mStr, 10) - 1, 1);
+    const monthName = dt.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+
+    navControlsHtml = `
+      <div class="schedule-nav-group">
+        <button type="button" class="btn sm" data-action="schedule-prev-month" title="Mois précédent">
+          ${icon('i-arrow-left')} <span>Précédent</span>
+        </button>
+        <span class="month-title-display">${esc(capitalizedMonth)}</span>
+        <button type="button" class="btn sm" data-action="schedule-next-month" title="Mois suivant">
+          <span>Suivant</span> ${icon('i-chevron-right')}
+        </button>
+        <button type="button" class="btn sm" data-action="schedule-today" title="Revenir au mois courant">
+          <span>Aujourd'hui</span>
+        </button>
+      </div>
+    `;
+  }
+
+  const equipFilterHtml = `
+    <div class="schedule-nav-group">
+      <select data-action="filter-schedule-equipment" aria-label="Filtrer par équipement">
+        <option value="">Tous les équipements</option>
+        ${state.equipments.map(e => `<option value="${esc(e.id)}" ${state.maintenancePlansEquipmentFilter === e.id ? 'selected' : ''}>${esc(e.code)} - ${esc(e.name)}</option>`).join('')}
+      </select>
+    </div>
+  `;
+
+  container.innerHTML = `
+    ${rangeButtonsHtml}
+    <div class="schedule-nav-bar">
+      ${navControlsHtml}
+      ${equipFilterHtml}
+    </div>
+    <div id="scheduleContentContainer">
+      <p class="hint">${icon('i-clock')} Chargement de la vue planning…</p>
+    </div>
+  `;
+}
+
+async function loadMaintenanceSchedule() {
+  const container = document.getElementById('scheduleContentContainer');
+  if (!container) return;
+
+  state.maintenanceScheduleLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des échéances…</p>`;
+
+  const range = state.maintenanceScheduleRange;
+  let fromStr = '';
+  let toStr = '';
+
+  if (range === 'month') {
+    const [yStr, mStr] = state.maintenanceScheduleMonth.split('-');
+    const y = parseInt(yStr, 10);
+    const m = parseInt(mStr, 10);
+    fromStr = `${yStr}-${mStr}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    toStr = `${yStr}-${mStr}-${String(lastDay).padStart(2, '0')}`;
+  } else {
+    const numDays = parseInt(range, 10) || 30;
+    const now = new Date();
+    fromStr = localIso(now).slice(0, 10);
+    const dTo = new Date();
+    dTo.setDate(dTo.getDate() + numDays);
+    toStr = localIso(dTo).slice(0, 10);
+  }
+
+  try {
+    const params = new URLSearchParams();
+    params.set('from', fromStr);
+    params.set('to', toStr);
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    if (state.maintenancePlansEquipmentFilter) params.set('equipment_id', state.maintenancePlansEquipmentFilter);
+
+    const data = await api(`/api/maintenance/schedule?${params.toString()}`);
+    state.maintenanceScheduleEvents = Array.isArray(data) ? data : [];
+
+    if (range === 'month') {
+      renderCalendarMonthlyView();
+    } else {
+      renderScheduleUpcomingListView();
+    }
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement de la vue planning : ${esc(err.message)}</p>`;
+  } finally {
+    state.maintenanceScheduleLoading = false;
+  }
+}
+
+/** Rendu du calendrier mensuel (grille responsive + agenda mobile). */
+function renderCalendarMonthlyView() {
+  const container = document.getElementById('scheduleContentContainer');
+  if (!container) return;
+
+  const [yStr, mStr] = state.maintenanceScheduleMonth.split('-');
+  const year = parseInt(yStr, 10);
+  const month = parseInt(mStr, 10); // 1-12
+
+  const todayStr = localIso().slice(0, 10);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const firstDayOfWeek = new Date(year, month - 1, 1).getDay(); // 0 = Dim, 1 = Lun
+  const offset = (firstDayOfWeek + 6) % 7; // 0 = Lun, 6 = Dim
+
+  const eventsByDate = {};
+  const counterEvents = [];
+
+  for (const evt of state.maintenanceScheduleEvents) {
+    if (evt.date) {
+      if (!eventsByDate[evt.date]) eventsByDate[evt.date] = [];
+      eventsByDate[evt.date].push(evt);
+    } else {
+      counterEvents.push(evt);
+    }
+  }
+
+  // Construction de la grille mensuelle (semaines)
+  const daysOfWeekLabels = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+  let cellsHtml = '';
+  let dayCount = 1;
+  const totalSlots = Math.ceil((offset + daysInMonth) / 7) * 7;
+
+  // Jours du mois précédent pour combler l'offset
+  const prevMonthLastDay = new Date(year, month - 1, 0).getDate();
+
+  for (let slot = 0; slot < totalSlots; slot++) {
+    if (slot % 7 === 0) cellsHtml += '<tr>';
+
+    if (slot < offset) {
+      const prevDay = prevMonthLastDay - (offset - slot - 1);
+      cellsHtml += `<td class="calendar-cell outside"><span class="calendar-day-num">${prevDay}</span></td>`;
+    } else if (dayCount <= daysInMonth) {
+      const curDateStr = `${year}-${String(month).padStart(2, '0')}-${String(dayCount).padStart(2, '0')}`;
+      const isToday = curDateStr === todayStr;
+      const dayEvts = eventsByDate[curDateStr] || [];
+
+      const evtsHtml = dayEvts.map(evt => {
+        const link = evt.intervention_id
+          ? `#/interventions/${esc(evt.intervention_id)}`
+          : `#/maintenance-preventive/${esc(evt.plan.id)}`;
+        return `
+          <a href="${link}" class="calendar-event-item calendar-event-${esc(evt.status)}" title="${esc(evt.plan.code)} — ${esc(evt.plan.title)} (${esc(occurrenceStatusLabel(evt.status))})">
+            <b>${esc(evt.plan.code)}</b> ${esc(evt.plan.title)}
+          </a>
+        `;
+      }).join('');
+
+      cellsHtml += `
+        <td class="calendar-cell ${isToday ? 'today' : ''}">
+          <div class="calendar-cell-top">
+            <span class="calendar-day-num">${dayCount}</span>
+          </div>
+          <div class="calendar-events-box">${evtsHtml}</div>
+        </td>
+      `;
+      dayCount++;
+    } else {
+      const nextDay = slot - (offset + daysInMonth) + 1;
+      cellsHtml += `<td class="calendar-cell outside"><span class="calendar-day-num">${nextDay}</span></td>`;
+    }
+
+    if (slot % 7 === 6) cellsHtml += '</tr>';
+  }
+
+  // Agenda pour affichage mobile (< 680px)
+  let agendaRowsHtml = '';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const curDateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const dayEvts = eventsByDate[curDateStr] || [];
+    const isToday = curDateStr === todayStr;
+
+    if (dayEvts.length || isToday) {
+      const dt = new Date(year, month - 1, d);
+      const dateLabel = dt.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+
+      const evtsListHtml = dayEvts.length ? dayEvts.map(evt => {
+        const link = evt.intervention_id
+          ? `#/interventions/${esc(evt.intervention_id)}`
+          : `#/maintenance-preventive/${esc(evt.plan.id)}`;
+        return `
+          <div class="agenda-event-row">
+            <div>
+              <a href="${link}" class="link-action mono"><b>${esc(evt.plan.code)}</b></a>
+              <span>${esc(evt.plan.title)}</span>
+              ${evt.equipment ? `<div class="hint">${esc(evt.equipment.code)} — ${esc(evt.equipment.name)}</div>` : ''}
+            </div>
+            ${occurrenceStatusBadge(evt.status)}
+          </div>
+        `;
+      }).join('') : '<p class="hint">Aucune échéance prévue ce jour.</p>';
+
+      agendaRowsHtml += `
+        <div class="agenda-day-card ${isToday ? 'today' : ''}">
+          <div class="agenda-day-header">
+            <span>${esc(dateLabel)}</span>
+            ${isToday ? '<span class="badge badge-state-ok">Aujourd\'hui</span>' : ''}
+          </div>
+          <div class="agenda-events-list">
+            ${evtsListHtml}
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  // Section des plannings de compteur
+  const counterSectionHtml = renderCounterPlansSummary(counterEvents);
+
+  container.innerHTML = `
+    <!-- Vue tableau écran large -->
+    <div class="calendar-wrap">
+      <table class="calendar-table">
+        <thead>
+          <tr>
+            ${daysOfWeekLabels.map(l => `<th>${l}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${cellsHtml}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Vue agenda adaptée aux écrans étroits et mobiles (375 px) -->
+    <div class="calendar-mobile-agenda">
+      ${agendaRowsHtml || '<p class="hint">Aucune échéance prévue pour ce mois.</p>'}
+    </div>
+
+    ${counterSectionHtml}
+  `;
+}
+
+/** Rendu de la vue liste des échéances 30 / 60 / 90 jours avec retards en tête. */
+function renderScheduleUpcomingListView() {
+  const container = document.getElementById('scheduleContentContainer');
+  if (!container) return;
+
+  const todayStr = localIso().slice(0, 10);
+  const events = state.maintenanceScheduleEvents;
+
+  const overdueEvents = [];
+  const upcomingEvents = [];
+  const counterEvents = [];
+
+  for (const evt of events) {
+    if (!evt.date) {
+      counterEvents.push(evt);
+    } else {
+      const isOverdue = evt.status === 'overdue' || (evt.date < todayStr && evt.status !== 'done' && evt.status !== 'skipped');
+      if (isOverdue) {
+        overdueEvents.push(evt);
+      } else {
+        upcomingEvents.push(evt);
+      }
+    }
+  }
+
+  // Tri chronologique des échéances à venir
+  upcomingEvents.sort((a, b) => (a.date > b.date ? 1 : -1));
+  overdueEvents.sort((a, b) => (a.date > b.date ? 1 : -1));
+
+  // Bloc des retards
+  let overdueHtml = '';
+  if (overdueEvents.length) {
+    overdueHtml = `
+      <section class="schedule-overdue-box">
+        <div class="schedule-overdue-title">
+          ${icon('i-alert')}
+          <span>Échéances en retard (${overdueEvents.length})</span>
+        </div>
+        <div class="schedule-items-list">
+          ${overdueEvents.map(evt => renderScheduleItemCard(evt, true)).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  // Liste des échéances à venir
+  let upcomingHtml = '';
+  if (upcomingEvents.length) {
+    upcomingHtml = `
+      <section class="card">
+        <h2>${icon('i-cal')} Prochaines échéances planifiées (${upcomingEvents.length})</h2>
+        <div class="schedule-items-list">
+          ${upcomingEvents.map(evt => renderScheduleItemCard(evt, false)).join('')}
+        </div>
+      </section>
+    `;
+  } else {
+    upcomingHtml = `
+      <section class="card">
+        <h2>${icon('i-cal')} Prochaines échéances planifiées</h2>
+        <p class="hint">Aucune échéance calendaire sur la période sélectionnée.</p>
+      </section>
+    `;
+  }
+
+  // Plannings de compteur
+  const counterSectionHtml = renderCounterPlansSummary(counterEvents);
+
+  container.innerHTML = `
+    <div class="schedule-list-container">
+      ${overdueHtml}
+      ${upcomingHtml}
+      ${counterSectionHtml}
+    </div>
+  `;
+}
+
+function renderScheduleItemCard(evt, isOverdue) {
+  const dt = new Date(`${evt.date}T00:00:00`);
+  const dayNum = dt.getDate();
+  const monthName = dt.toLocaleDateString('fr-FR', { month: 'short' });
+
+  const link = evt.intervention_id
+    ? `#/interventions/${esc(evt.intervention_id)}`
+    : `#/maintenance-preventive/${esc(evt.plan.id)}`;
+
+  return `
+    <div class="schedule-item-card ${isOverdue ? 'is-overdue' : ''}">
+      <div class="schedule-item-left">
+        <div class="schedule-date-badge">
+          <span class="day-num">${dayNum}</span>
+          <span class="month-name">${esc(monthName)}</span>
+        </div>
+        <div class="schedule-item-info">
+          <div class="schedule-item-title-row">
+            <a href="${link}" class="link-action mono"><b>${esc(evt.plan.code)}</b></a>
+            <a href="${link}" class="link-action"><b>${esc(evt.plan.title)}</b></a>
+          </div>
+          ${evt.equipment ? `
+            <div class="schedule-item-equip">
+              ${icon('i-gear')} <b>${esc(evt.equipment.code)}</b> — ${esc(evt.equipment.name)}
+            </div>
+          ` : ''}
+        </div>
+      </div>
+      <div class="schedule-item-actions">
+        ${occurrenceStatusBadge(evt.status)}
+        <a href="${link}" class="btn sm">
+          ${icon('i-info')} <span>${evt.intervention_id ? 'Intervention' : 'Planning'}</span>
+        </a>
+      </div>
+    </div>
+  `;
+}
+
+function renderCounterPlansSummary(counterEvents) {
+  if (!counterEvents || !counterEvents.length) return '';
+
+  return `
+    <section class="schedule-counters-box detail-card-spaced">
+      <div class="schedule-counters-title">
+        ${icon('i-clock')}
+        <span>Plannings asservis aux compteurs (${counterEvents.length})</span>
+      </div>
+      <div class="schedule-counters-grid">
+        ${counterEvents.map(evt => {
+          const rem = evt.remaining;
+          let stateClass = 'ok';
+          if (rem !== null && rem <= 0) stateClass = 'overdue';
+          else if (evt.status === 'due_soon') stateClass = 'soon';
+
+          return `
+            <div class="counter-plan-card">
+              <div class="counter-plan-header">
+                <div>
+                  <a href="#/maintenance-preventive/${esc(evt.plan.id)}" class="link-action mono"><b>${esc(evt.plan.code)}</b></a>
+                  <div class="bold">${esc(evt.plan.title)}</div>
+                </div>
+                ${planStateBadge(evt.status)}
+              </div>
+              ${evt.equipment ? `<div class="hint">${esc(evt.equipment.code)} — ${esc(evt.equipment.name)}</div>` : ''}
+              <div class="counter-plan-remaining ${stateClass}">
+                ${rem !== null ? (rem <= 0 ? 'Seuil d\'échéance atteint' : `Reste ${rem} ${esc(evt.unit || '')}`) : 'Compteur non initialisé'}
+              </div>
+              <div>
+                <a href="#/maintenance-preventive/${esc(evt.plan.id)}" class="btn sm">
+                  ${icon('i-info')} <span>Consulter la fiche</span>
+                </a>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </section>
+  `;
+}
+
+/** Fiche détaillée d'un planning de maintenance préventive. */
+function maintenancePlanDetailPage(id) {
+  return `
+    <div class="plan-detail">
+      <div class="detail-nav-bar">
+        <a href="#/maintenance-preventive" class="btn" title="Retour aux plannings">
+          ${icon('i-arrow-left')} <span>Retour aux plannings</span>
+        </a>
+      </div>
+      <div id="planDetailContainer">
+        <p class="hint">${icon('i-clock')} Chargement du planning…</p>
+      </div>
+    </div>
+  `;
+}
+
+async function initMaintenancePlanDetailPageView(id) {
+  await loadMaintenancePlanDetail(id);
+}
+
+async function loadMaintenancePlanDetail(id) {
+  const container = document.getElementById('planDetailContainer');
+  if (!container) return;
+
+  state.currentPlanLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement du planning…</p>`;
+
+  try {
+    const [plan, occsRes] = await Promise.all([
+      api(`/api/maintenance/plans/${encodeURIComponent(id)}`),
+      api(`/api/maintenance/plans/${encodeURIComponent(id)}/occurrences?limit=25`).catch(() => ({ items: [] })),
+    ]);
+
+    state.currentPlanDetail = plan;
+    state.currentPlanOccurrences = occsRes && Array.isArray(occsRes.items) ? occsRes.items : [];
+    state.currentPlanOccurrencesNextCursor = occsRes ? occsRes.next_cursor : null;
+
+    renderPlanDetailView(plan);
+  } catch (err) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement du planning : ${esc(err.message)}</p>
+        <p><a href="#/maintenance-preventive" class="btn">${icon('i-arrow-left')} <span>Retour à la liste</span></a></p>
+      </div>
+    `;
+  } finally {
+    state.currentPlanLoading = false;
+  }
+}
+
+function renderPlanDetailView(plan) {
+  const container = document.getElementById('planDetailContainer');
+  if (!container) return;
+
+  const canManage = hasPermission('maintenance.manage');
+  const hasOpenOcc = Boolean(plan.open_occurrence);
+
+  const quickActions = [];
+  if (canManage) {
+    if (!hasOpenOcc) {
+      quickActions.push(`
+        <button type="button" class="btn primary" data-action="generate-plan-intervention" data-args="${jsArg(plan.id)}">
+          ${icon('i-wrench')} <span>Générer l'intervention</span>
+        </button>
+        <button type="button" class="btn" data-action="open-skip-plan-modal" data-args="${jsArg(plan.id)}">
+          ${icon('i-clock')} <span>Reporter l'échéance</span>
+        </button>
+      `);
+    }
+    quickActions.push(`
+      <button type="button" class="btn" data-action="open-edit-maintenance-plan" data-args="${jsArg(plan.id)}">
+        ${icon('i-edit')} <span>Modifier</span>
+      </button>
+      <button type="button" class="btn" data-action="toggle-plan-active" data-args="${jsArg(plan.id)}">
+        ${icon(plan.active ? 'i-ban' : 'i-check')} <span>${plan.active ? 'Désactiver' : 'Activer'}</span>
+      </button>
+      <button type="button" class="btn danger" data-action="delete-maintenance-plan" data-args="${jsArg(plan.id)}">
+        ${icon('i-trash')} <span>Supprimer</span>
+      </button>
+    `);
+  }
+
+  let bannerOpenHtml = '';
+  if (hasOpenOcc) {
+    bannerOpenHtml = `
+      <div class="plan-banner-open">
+        ${icon('i-wrench')}
+        <div>
+          <b>Une intervention issue de ce planning est en cours :</b>
+          <a href="#/interventions/${esc(plan.open_occurrence.intervention_id)}" class="link-action">
+            <b>${esc(plan.open_occurrence.intervention_code || 'Voir l\'intervention')}</b>
+          </a>
+          ${plan.open_occurrence.due_date ? ` (Échéance : <b>${esc(plan.open_occurrence.due_date)}</b>)` : ''}
+          ${plan.open_occurrence.due_counter !== null && plan.open_occurrence.due_counter !== undefined ? ` (Seuil compteur : <b>${esc(plan.open_occurrence.due_counter)}</b>)` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  let recurrenceDetailsHtml = '';
+  if (plan.frequency === 'counter') {
+    const cnt = plan.counter;
+    const currentVal = cnt ? cnt.current_value : 0;
+    const unit = cnt ? cnt.unit : '';
+    const diff = (plan.next_due_counter || 0) - currentVal;
+    recurrenceDetailsHtml = `
+      <dt>Type de fréquence</dt><dd><span class="badge badge-freq">Compteur machine</span></dd>
+      <dt>Compteur associé</dt><dd>${cnt ? `<b>${esc(cnt.name)}</b> (valeur actuelle : ${esc(currentVal)} ${esc(unit)})` : '—'}</dd>
+      <dt>Intervalle compteur</dt><dd>Tous les <b>${esc(plan.counter_interval)} ${esc(unit)}</b></dd>
+      <dt>Prochain seuil</dt><dd><b class="mono">${esc(plan.next_due_counter)} ${esc(unit)}</b> (${diff <= 0 ? '<span class="state-ko">Seuil franchi</span>' : `reste ${diff} ${esc(unit)}`})</dd>
+      <dt>Avance de génération</dt><dd>${esc(plan.lead_counter)} ${esc(unit)}</dd>
+    `;
+  } else {
+    recurrenceDetailsHtml = `
+      <dt>Type de fréquence</dt><dd><span class="badge badge-freq">${esc(formatPlanFrequency(plan.frequency))}</span></dd>
+      ${plan.frequency === 'interval_days' ? `<dt>Intervalle en jours</dt><dd>Tous les <b>${esc(plan.interval_days)} jours</b></dd>` : ''}
+      <dt>Date d'ancrage initiale</dt><dd>${plan.anchor_date ? formatDate(plan.anchor_date) : '—'}</dd>
+      <dt>Prochaine date d'échéance</dt><dd><b class="mono">${plan.next_due_date ? formatDate(plan.next_due_date) : '—'}</b></dd>
+      <dt>Avance de génération</dt><dd>${esc(plan.lead_days)} jours avant échéance</dd>
+    `;
+  }
+
+  // Occurrences passées
+  const occs = state.currentPlanOccurrences;
+  let occRowsHtml = occs.map(occ => {
+    let interCell = '—';
+    if (!occ.intervention && occ.intervention_id) occ.intervention = { id: occ.intervention_id, code: occ.intervention_code };
+    if (occ.intervention) {
+      interCell = `
+        <a href="#/interventions/${esc(occ.intervention.id)}" class="link-action mono">
+          <b>${esc(occ.intervention.code)}</b>
+        </a>
+      `;
+    }
+    const dueDisplay = occ.due_date ? formatDate(occ.due_date) : (occ.due_counter !== null && occ.due_counter !== undefined ? `Seuil : ${occ.due_counter}` : '—');
+    return `
+      <tr>
+        <td><b>${dueDisplay}</b></td>
+        <td>${occurrenceStatusBadge(occ.status)}</td>
+        <td><span class="badge">${occ.generation === 'auto' ? 'Automatique' : 'Manuel'}</span></td>
+        <td>${interCell}</td>
+        <td>${occ.closed_at ? formatDate(occ.closed_at) : (occ.generated_at ? `Générée le ${formatDate(occ.generated_at)}` : '—')}</td>
+        <td>${occ.skip_reason ? `<em>« ${esc(occ.skip_reason)} »</em>` : '—'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!occs.length) {
+    occRowsHtml = `<tr><td colspan="6" class="empty-cell">Aucun historique d'occurrence enregistré pour le moment.</td></tr>`;
+  }
+
+  container.innerHTML = `
+    <!-- CARTE D'EN-TÊTE -->
+    <section class="detail-header-card">
+      <div class="detail-header-top">
+        <div class="detail-title-block">
+          <div class="detail-code-row">
+            <span class="detail-code-label mono">${esc(plan.code)}</span>
+            <span class="detail-title-label">${esc(plan.title)}</span>
+          </div>
+          <div class="detail-badges-row">
+            ${planStateBadge(plan.state)}
+            <span class="badge ${plan.active ? 'badge-active-on' : 'badge-active-off'}">${plan.active ? 'Actif' : 'Inactif'}</span>
+            ${interventionPriorityBadge(plan.priority)}
+          </div>
+        </div>
+      </div>
+      ${bannerOpenHtml}
+      ${quickActions.length ? `<div class="quick-actions-bar">${quickActions.join('')}</div>` : ''}
+    </section>
+
+    <!-- GRILLE D'INFORMATIONS -->
+    <div class="detail-grid">
+      <!-- PARAMÈTRES GÉNÉRAUX -->
+      <section class="card">
+        <h2>${icon('i-info')} Paramètres généraux</h2>
+        <dl class="detail-dl">
+          <dt>Équipement associé</dt>
+          <dd>
+            ${plan.equipment ? `
+              <button type="button" class="link-action" data-action="open-detail-equipment" data-args="${jsArg(plan.equipment.id)}">
+                <b>${esc(plan.equipment.code)} — ${esc(plan.equipment.name)}</b>
+              </button>
+            ` : '—'}
+          </dd>
+          <dt>Priorité</dt><dd>${interventionPriorityBadge(plan.priority)}</dd>
+          <dt>Technicien par défaut</dt><dd>${plan.default_technician ? `<b>${esc(plan.default_technician.display_name)}</b>` : '<span class="hint">Non assigné</span>'}</dd>
+          <dt>Durée estimée</dt><dd><b class="mono">${formatDurationMinutes(plan.estimated_minutes)}</b></dd>
+          <dt>Génération automatique</dt><dd>${plan.auto_generate ? '<span class="state-ok">Activée (moteur automatique)</span>' : '<span class="hint">Désactivée (génération manuelle)</span>'}</dd>
+          <dt>Description</dt><dd>${esc(plan.description || 'Aucune description.')}</dd>
+        </dl>
+      </section>
+
+      <!-- RÈGLE DE RÉCURRENCE ET ÉCHÉANCE -->
+      <section class="card">
+        <h2>${icon('i-cal')} Règle de récurrence & Prochaine échéance</h2>
+        <dl class="detail-dl">
+          ${recurrenceDetailsHtml}
+        </dl>
+      </section>
+    </div>
+
+    <!-- GAMME OPÉRATOIRE / INSTRUCTIONS -->
+    <section class="card">
+      <h2>${icon('i-doc')} Gamme opératoire & Consignes techniques</h2>
+      ${plan.instructions ? `
+        <div class="plan-instructions-box">${esc(plan.instructions)}</div>
+      ` : `
+        <p class="hint">Aucune consigne opératoire renseignée pour ce planning.</p>
+      `}
+    </section>
+
+    <!-- HISTORIQUE DES OCCURRENCES -->
+    <section class="card">
+      <div class="detail-nav-bar">
+        <h2>${icon('i-clock')} Historique des échéances traitées</h2>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Échéance</th>
+              <th>Statut</th>
+              <th>Génération</th>
+              <th>Intervention</th>
+              <th>Date de traitement</th>
+              <th>Motif de report</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${occRowsHtml}
+          </tbody>
+        </table>
+      </div>
+      ${renderLoadMore(state.currentPlanOccurrencesNextCursor, 'load-more-plan-occurrences', state.currentPlanOccurrencesLoading)}
+    </section>
+  `;
+}
+
+async function loadMorePlanOccurrences(planId) {
+  const targetId = (state.currentPlanDetail && state.currentPlanDetail.id) || (typeof planId === 'string' && !planId.startsWith('cursor_') ? planId : null);
+  if (!targetId || !state.currentPlanOccurrencesNextCursor || state.currentPlanOccurrencesLoading) return;
+  state.currentPlanOccurrencesLoading = true;
+
+  try {
+    const res = await api(`/api/maintenance/plans/${encodeURIComponent(targetId)}/occurrences?limit=25&cursor=${encodeURIComponent(state.currentPlanOccurrencesNextCursor)}`);
+    const newItems = res && Array.isArray(res.items) ? res.items : [];
+    state.currentPlanOccurrencesNextCursor = res ? res.next_cursor : null;
+    state.currentPlanOccurrences = state.currentPlanOccurrences.concat(newItems);
+    renderPlanDetailView(state.currentPlanDetail);
+  } catch (err) {
+    notify(err.message || 'Erreur chargement occurrences.', 'error');
+  } finally {
+    state.currentPlanOccurrencesLoading = false;
+  }
+}
+
+// --- Modales et formulaires pour les plannings ---
+
+async function openCreateMaintenancePlanModal(preselected = {}) {
+  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
+
+  let equips = state.equipments;
+  if (!equips.length) {
+    try {
+      const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
+      const eRes = await api(`/api/equipments${siteParam}`);
+      equips = eRes && Array.isArray(eRes.items) ? eRes.items : [];
+    } catch (_) {}
+  }
+
+  let techs = [];
+  try {
+    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}` : '';
+    const uRes = await api(`/api/users${siteParam}`);
+    const uList = Array.isArray(uRes) ? uRes : (uRes && Array.isArray(uRes.items) ? uRes.items : []);
+    techs = uList.filter(u => u.active && ['technicien', 'responsable', 'admin'].includes(u.role));
+  } catch (_) {}
+
+  const targetEquipId = preselected.equipment_id || '';
+
+  // Compteurs du premier équipement
+  let counters = [];
+  if (targetEquipId) {
+    try {
+      const cRes = await api(`/api/equipments/${encodeURIComponent(targetEquipId)}/counters`);
+      counters = (Array.isArray(cRes) ? cRes : (cRes && Array.isArray(cRes.items) ? cRes.items : [])).filter(c => c.active);
+    } catch (_) {}
+  }
+
+  const todayStr = localIso().slice(0, 10);
+
+  const fieldsHtml = `
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fPlanCode">Code du planning *</label>
+        <input type="text" id="fPlanCode" name="code" required placeholder="Ex. PLN-PRS-01" class="mono" />
+      </div>
+      <div class="form-group">
+        <label for="fPlanPriority">Priorité *</label>
+        <select id="fPlanPriority" name="priority" required>
+          <option value="low">Basse</option>
+          <option value="medium" selected>Moyenne</option>
+          <option value="high">Haute</option>
+          <option value="critical">Critique</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="fPlanTitle">Titre de l'opération *</label>
+      <input type="text" id="fPlanTitle" name="title" required placeholder="Ex. Graissage mensuel des paliers" />
+    </div>
+
+    <div class="form-group">
+      <label for="fPlanEquipment">Équipement rattaché *</label>
+      <select id="fPlanEquipment" name="equipment_id" required data-action="on-plan-form-equipment-change">
+        <option value="">-- Sélectionner un équipement --</option>
+        ${equips.map(e => `<option value="${esc(e.id)}" ${e.id === targetEquipId ? 'selected' : ''}>${esc(e.code)} — ${esc(e.name)}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="fPlanFrequency">Fréquence de récurrence *</label>
+      <select id="fPlanFrequency" name="frequency" required data-action="on-plan-form-frequency-change">
+        <option value="daily">Journalière</option>
+        <option value="weekly">Hebdomadaire</option>
+        <option value="monthly" selected>Mensuelle</option>
+        <option value="quarterly">Trimestrielle</option>
+        <option value="yearly">Annuelle</option>
+        <option value="interval_days">Intervalle en jours (calendrier fixe)</option>
+        <option value="counter">Asservie à un compteur machine</option>
+      </select>
+    </div>
+
+    <!-- Champs conditionnels Intervalle en jours -->
+    <div id="planIntervalDaysGroup" class="form-group" hidden>
+      <label for="fPlanIntervalDays">Intervalle en jours (1 à 3650) *</label>
+      <input type="number" id="fPlanIntervalDays" name="interval_days" min="1" max="3650" placeholder="Ex. 45" />
+    </div>
+
+    <!-- Champs conditionnels Compteur -->
+    <div id="planCounterGroup" class="form-grid" hidden>
+      <div class="form-group">
+        <label for="fPlanCounterSelect">Compteur de l'équipement *</label>
+        <select id="fPlanCounterSelect" name="counter_id">
+          <option value="">-- Choisir un compteur actif --</option>
+          ${counters.map(c => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(c.current_value)} ${esc(c.unit)})</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="fPlanCounterInterval">Pas de récurrence compteur *</label>
+          <input type="number" id="fPlanCounterInterval" name="counter_interval" min="1" placeholder="Ex. 500" />
+        </div>
+        <div class="form-group">
+          <label for="fPlanLeadCounter">Avance de génération (unités)</label>
+          <input type="number" id="fPlanLeadCounter" name="lead_counter" min="0" value="0" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Champs calendaires standard -->
+    <div id="planCalendarGroup" class="form-row">
+      <div class="form-group">
+        <label for="fPlanAnchorDate">Date d'ancrage (première échéance) *</label>
+        <input type="date" id="fPlanAnchorDate" name="anchor_date" value="${todayStr}" />
+      </div>
+      <div class="form-group">
+        <label for="fPlanLeadDays">Avance de génération (jours)</label>
+        <input type="number" id="fPlanLeadDays" name="lead_days" min="0" max="365" value="7" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fPlanTech">Technicien par défaut</label>
+        <select id="fPlanTech" name="default_technician_id">
+          <option value="">Aucun technicien pré-assigné</option>
+          ${techs.map(t => `<option value="${esc(t.id)}">${esc(t.display_name)} (${esc(formatRole(t.role))})</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="fPlanDuration">Durée estimée (minutes)</label>
+        <input type="number" id="fPlanDuration" name="estimated_minutes" min="1" placeholder="Ex. 60" />
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="auto_generate" value="1" checked />
+        <span>Génération automatique des interventions par la tâche de fond</span>
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label for="fPlanInstructions">Gamme opératoire (instructions techniques réutilisées dans l'intervention)</label>
+      <textarea id="fPlanInstructions" name="instructions" rows="4" placeholder="Étapes à suivre, consignes de sécurité, outillage requis…"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="fPlanDescription">Description générale</label>
+      <textarea id="fPlanDescription" name="description" rows="2" placeholder="Objectif de maintenance, périodicité…"></textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Nouveau planning de maintenance préventive',
+    formId: 'modalCreatePlanForm',
+    submitAction: 'create-maintenance-plan-submit',
+    submitLabel: 'Créer le planning',
+    fieldsHtml,
+  });
+}
+
+async function handleCreateMaintenancePlanSubmit(form) {
+  const errBox = document.getElementById('modalCreatePlanFormErrorBox');
+  const errText = document.getElementById('modalCreatePlanFormErrorBoxText');
+  const btn = document.getElementById('modalCreatePlanFormSubmitBtn');
+
+  const code = (form.code.value || '').trim();
+  const title = (form.title.value || '').trim();
+  const equipmentId = form.equipment_id.value;
+  const frequency = form.frequency.value;
+  const priority = form.priority.value;
+
+  if (!code || !title || !equipmentId || !frequency) {
+    errText.textContent = 'Veuillez renseigner tous les champs obligatoires (*).';
+    errBox.hidden = false;
+    return;
+  }
+
+  const payload = {
+    code,
+    title,
+    equipment_id: equipmentId,
+    frequency,
+    priority,
+    auto_generate: form.auto_generate ? form.auto_generate.checked : true,
+    description: (form.description.value || '').trim() || null,
+    instructions: (form.instructions.value || '').trim() || null,
+  };
+
+  const durVal = (form.estimated_minutes.value || '').trim();
+  if (durVal) payload.estimated_minutes = parseInt(durVal, 10);
+
+  const techVal = form.default_technician_id ? form.default_technician_id.value : '';
+  if (techVal) payload.default_technician_id = techVal;
+
+  if (frequency === 'interval_days') {
+    const iv = parseInt(form.interval_days.value, 10);
+    if (isNaN(iv) || iv < 1 || iv > 3650) {
+      errText.textContent = 'L\'intervalle en jours doit être compris entre 1 et 3650.';
+      errBox.hidden = false;
+      return;
+    }
+    payload.interval_days = iv;
+    payload.anchor_date = form.anchor_date.value || null;
+    payload.lead_days = parseInt(form.lead_days.value, 10) || 7;
+  } else if (frequency === 'counter') {
+    const cid = form.counter_id ? form.counter_id.value : '';
+    if (!cid) {
+      errText.textContent = 'Veuillez sélectionner un compteur actif de l\'équipement.';
+      errBox.hidden = false;
+      return;
+    }
+    const civ = parseInt(form.counter_interval.value, 10);
+    if (isNaN(civ) || civ <= 0) {
+      errText.textContent = 'Le pas de compteur doit être strictement positif.';
+      errBox.hidden = false;
+      return;
+    }
+    payload.counter_id = cid;
+    payload.counter_interval = civ;
+    payload.lead_counter = parseInt(form.lead_counter.value, 10) || 0;
+  } else {
+    payload.anchor_date = form.anchor_date.value || null;
+    payload.lead_days = parseInt(form.lead_days.value, 10) || 7;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    const newPlan = await api('/api/maintenance/plans', {
+      method: 'POST',
+      body: payload,
+    });
+    closeModal();
+    notify(`Planning « ${newPlan.code} » créé avec succès.`, 'success');
+    if (currentRoute() === 'maintenance-preventive') {
+      await loadMaintenancePlans(true);
+    } else if (payload.equipment_id && state.currentEquipmentDetailId === payload.equipment_id) {
+      openEquipmentDetailModal(payload.equipment_id);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la création du planning.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function openEditMaintenancePlanModal(planId) {
+  let plan = state.currentPlanDetail;
+  if (!plan || plan.id !== planId) {
+    try {
+      plan = await api(`/api/maintenance/plans/${encodeURIComponent(planId)}`);
+    } catch (err) {
+      notify(err.message || 'Planning introuvable.', 'error');
+      return;
+    }
+  }
+
+  const hasOpenOcc = Boolean(plan.open_occurrence);
+
+  let techs = [];
+  try {
+    const siteParam = plan.site_id ? `?site_id=${encodeURIComponent(plan.site_id)}` : '';
+    const uRes = await api(`/api/users${siteParam}`);
+    const uList = Array.isArray(uRes) ? uRes : (uRes && Array.isArray(uRes.items) ? uRes.items : []);
+    techs = uList.filter(u => u.active && ['technicien', 'responsable', 'admin'].includes(u.role));
+  } catch (_) {}
+
+  const fieldsHtml = `
+    ${hasOpenOcc ? `
+      <div class="machine-state-alert">
+        ${icon('i-alert')}
+        <span>Une intervention est en cours : la fréquence et l'ancrage ne peuvent pas être modifiés.</span>
+      </div>
+    ` : ''}
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fEditPlanCode">Code du planning *</label>
+        <input type="text" id="fEditPlanCode" name="code" required value="${esc(plan.code)}" class="mono" />
+      </div>
+      <div class="form-group">
+        <label for="fEditPlanPriority">Priorité *</label>
+        <select id="fEditPlanPriority" name="priority" required>
+          <option value="low" ${plan.priority === 'low' ? 'selected' : ''}>Basse</option>
+          <option value="medium" ${plan.priority === 'medium' ? 'selected' : ''}>Moyenne</option>
+          <option value="high" ${plan.priority === 'high' ? 'selected' : ''}>Haute</option>
+          <option value="critical" ${plan.priority === 'critical' ? 'selected' : ''}>Critique</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="fEditPlanTitle">Titre de l'opération *</label>
+      <input type="text" id="fEditPlanTitle" name="title" required value="${esc(plan.title)}" />
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fEditPlanTech">Technicien par défaut</label>
+        <select id="fEditPlanTech" name="default_technician_id">
+          <option value="">Aucun technicien pré-assigné</option>
+          ${techs.map(t => `<option value="${esc(t.id)}" ${t.id === plan.default_technician_id ? 'selected' : ''}>${esc(t.display_name)} (${esc(formatRole(t.role))})</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="fEditPlanDuration">Durée estimée (minutes)</label>
+        <input type="number" id="fEditPlanDuration" name="estimated_minutes" min="1" value="${plan.estimated_minutes || ''}" placeholder="Ex. 60" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fEditPlanLeadDays">Avance calendaire (jours)</label>
+        <input type="number" id="fEditPlanLeadDays" name="lead_days" min="0" max="365" value="${plan.lead_days !== undefined ? plan.lead_days : 7}" />
+      </div>
+      <div class="form-group">
+        <label for="fEditPlanLeadCounter">Avance compteur (unités)</label>
+        <input type="number" id="fEditPlanLeadCounter" name="lead_counter" min="0" value="${plan.lead_counter || 0}" />
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="auto_generate" value="1" ${plan.auto_generate ? 'checked' : ''} />
+        <span>Génération automatique des interventions par la tâche de fond</span>
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label for="fEditPlanInstructions">Gamme opératoire (instructions techniques)</label>
+      <textarea id="fEditPlanInstructions" name="instructions" rows="4">${esc(plan.instructions || '')}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="fEditPlanDescription">Description générale</label>
+      <textarea id="fEditPlanDescription" name="description" rows="2">${esc(plan.description || '')}</textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: `Modifier le planning « ${plan.code} »`,
+    formId: 'modalEditPlanForm',
+    submitAction: 'edit-maintenance-plan-submit',
+    submitArgs: plan.id,
+    submitLabel: 'Enregistrer les modifications',
+    fieldsHtml,
+  });
+}
+
+async function handleEditMaintenancePlanSubmit(form) {
+  const planId = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!planId) return;
+
+  const errBox = document.getElementById('modalEditPlanFormErrorBox');
+  const errText = document.getElementById('modalEditPlanFormErrorBoxText');
+  const btn = document.getElementById('modalEditPlanFormSubmitBtn');
+
+  const code = (form.code.value || '').trim();
+  const title = (form.title.value || '').trim();
+
+  if (!code || !title) {
+    errText.textContent = 'Le code et le titre ne peuvent pas être vides.';
+    errBox.hidden = false;
+    return;
+  }
+
+  const payload = {
+    code,
+    title,
+    priority: form.priority.value,
+    auto_generate: form.auto_generate ? form.auto_generate.checked : true,
+    description: (form.description.value || '').trim() || null,
+    instructions: (form.instructions.value || '').trim() || null,
+    lead_days: parseInt(form.lead_days.value, 10) || 0,
+    lead_counter: parseInt(form.lead_counter.value, 10) || 0,
+  };
+
+  const durVal = (form.estimated_minutes.value || '').trim();
+  payload.estimated_minutes = durVal ? parseInt(durVal, 10) : null;
+
+  const techVal = form.default_technician_id ? form.default_technician_id.value : '';
+  payload.default_technician_id = techVal || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    const updated = await api(`/api/maintenance/plans/${encodeURIComponent(planId)}`, {
+      method: 'PATCH',
+      body: payload,
+    });
+    closeModal();
+    notify('Planning mis à jour.', 'success');
+    if (state.currentPlanDetail && state.currentPlanDetail.id === planId) {
+      await loadMaintenancePlanDetail(planId);
+    } else {
+      await loadMaintenancePlans(true);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la modification du planning.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+function openSkipPlanModal(planId) {
+  const fieldsHtml = `
+    <p class="hint">
+      Le report d'échéance avance la prochaine date ou le prochain seuil de compteur selon la fréquence fixée, sans créer d'intervention.
+    </p>
+    <div class="form-group">
+      <label for="fSkipReason">Motif du report *</label>
+      <textarea id="fSkipReason" name="reason" rows="3" required placeholder="Justifiez le report de cette échéance de maintenance…"></textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Reporter l\'échéance du planning',
+    formId: 'modalSkipPlanForm',
+    submitAction: 'skip-plan-submit',
+    submitArgs: planId,
+    submitLabel: 'Confirmer le report',
+    fieldsHtml,
+  });
+}
+
+async function handleSkipPlanSubmit(form) {
+  const planId = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!planId) return;
+
+  const errBox = document.getElementById('modalSkipPlanFormErrorBox');
+  const errText = document.getElementById('modalSkipPlanFormErrorBoxText');
+  const btn = document.getElementById('modalSkipPlanFormSubmitBtn');
+
+  const reason = (form.reason.value || '').trim();
+  if (!reason) {
+    errText.textContent = 'Le motif de report est obligatoire.';
+    errBox.hidden = false;
+    return;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    const updated = await api(`/api/maintenance/plans/${encodeURIComponent(planId)}/skip`, {
+      method: 'POST',
+      body: { reason },
+    });
+    closeModal();
+    notify('Échéance reportée avec succès.', 'success');
+    if (state.currentPlanDetail && state.currentPlanDetail.id === planId) {
+      await loadMaintenancePlanDetail(planId);
+    } else {
+      await loadMaintenancePlans(true);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors du report de l\'échéance.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function generatePlanIntervention(planId) {
+  const ok = await confirmDialog(
+    'Générer l\'intervention préventive',
+    'Voulez-vous générer immédiatement l\'intervention préventive sur l\'équipement associé ?',
+    'Générer',
+    false
+  );
+  if (!ok) return;
+
+  try {
+    const res = await api(`/api/maintenance/plans/${encodeURIComponent(planId)}/generate`, {
+      method: 'POST',
+    });
+    notify(`Intervention « ${res.intervention.code} » générée.`, 'success');
+    if (state.currentPlanDetail && state.currentPlanDetail.id === planId) {
+      await loadMaintenancePlanDetail(planId);
+    } else {
+      await loadMaintenancePlans(true);
+    }
+  } catch (err) {
+    notify(err.message || 'Génération refusée.', 'error');
+  }
+}
+
+async function togglePlanActive(planId) {
+  let plan = state.maintenancePlans.find(p => p.id === planId);
+  if (!plan && state.currentPlanDetail && state.currentPlanDetail.id === planId) {
+    plan = state.currentPlanDetail;
+  }
+  const newActive = plan ? !plan.active : false;
+
+  try {
+    await api(`/api/maintenance/plans/${encodeURIComponent(planId)}`, {
+      method: 'PATCH',
+      body: { active: newActive },
+    });
+    notify(newActive ? 'Planning activé.' : 'Planning suspendu.', 'info');
+    if (state.currentPlanDetail && state.currentPlanDetail.id === planId) {
+      await loadMaintenancePlanDetail(planId);
+    } else {
+      await loadMaintenancePlans(false);
+    }
+  } catch (err) {
+    notify(err.message || 'Action impossible.', 'error');
+  }
+}
+
+async function deleteMaintenancePlan(planId) {
+  const ok = await confirmDialog(
+    'Supprimer le planning',
+    'Voulez-vous vraiment supprimer logiquement ce planning de maintenance préventive ?',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/maintenance/plans/${encodeURIComponent(planId)}`, {
+      method: 'DELETE',
+    });
+    notify('Planning supprimé.', 'success');
+    location.hash = '#/maintenance-preventive';
+  } catch (err) {
+    notify(err.message || 'Suppression refusée.', 'error');
+  }
+}
+
+// --- Gestion des compteurs d'équipements (Section fiche équipement) ---
+
+function openCreateCounterModal(equipmentId) {
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="fCounterName">Nom du compteur *</label>
+      <input type="text" id="fCounterName" name="name" required placeholder="Ex. Heures de fonctionnement, Cycles…" />
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fCounterUnit">Unité de mesure *</label>
+        <input type="text" id="fCounterUnit" name="unit" required placeholder="Ex. h, cycles, km…" />
+      </div>
+      <div class="form-group">
+        <label for="fCounterInitVal">Valeur initiale</label>
+        <input type="number" id="fCounterInitVal" name="initial_value" min="0" value="0" />
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Ajouter un compteur à l\'équipement',
+    formId: 'modalCreateCounterForm',
+    submitAction: 'create-counter-submit',
+    submitArgs: equipmentId,
+    submitLabel: 'Créer le compteur',
+    fieldsHtml,
+  });
+}
+
+async function handleCreateCounterSubmit(form) {
+  const equipmentId = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!equipmentId) return;
+
+  const errBox = document.getElementById('modalCreateCounterFormErrorBox');
+  const errText = document.getElementById('modalCreateCounterFormErrorBoxText');
+  const btn = document.getElementById('modalCreateCounterFormSubmitBtn');
+
+  const name = (form.name.value || '').trim();
+  const unit = (form.unit.value || '').trim();
+  const initialValue = parseInt(form.initial_value.value, 10) || 0;
+
+  if (!name || !unit) {
+    errText.textContent = 'Le nom et l\'unité sont obligatoires.';
+    errBox.hidden = false;
+    return;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/equipments/${encodeURIComponent(equipmentId)}/counters`, {
+      method: 'POST',
+      body: { name, unit, initial_value: initialValue },
+    });
+    closeModal();
+    notify('Compteur créé avec succès.', 'success');
+    openEquipmentDetailModal(equipmentId);
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la création du compteur.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function openEditCounterModal(arg) {
+  const counterId = typeof arg === 'object' && arg !== null ? arg.counterId : arg;
+  const equipmentId = typeof arg === 'object' && arg !== null ? arg.equipmentId : state.currentEquipmentDetailId;
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="fEditCounterName">Nom du compteur *</label>
+      <input type="text" id="fEditCounterName" name="name" required placeholder="Ex. Heures moteur" />
+    </div>
+    <div class="form-group">
+      <label for="fEditCounterUnit">Unité de mesure *</label>
+      <input type="text" id="fEditCounterUnit" name="unit" required placeholder="Ex. h" />
+    </div>
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="fEditCounterActive" name="active" value="1" checked />
+        <span>Compteur actif</span>
+      </label>
+      <span class="form-help">Désactiver un compteur suspend les plannings associés.</span>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Modifier le compteur',
+    formId: 'modalEditCounterForm',
+    submitAction: 'edit-counter-submit',
+    submitArgs: { counterId, equipmentId },
+    submitLabel: 'Enregistrer',
+    fieldsHtml,
+  });
+}
+
+async function handleEditCounterSubmit(form) {
+  const args = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  const counterId = typeof args === 'object' && args !== null ? args.counterId : args;
+  const equipmentId = typeof args === 'object' && args !== null ? args.equipmentId : state.currentEquipmentDetailId;
+  if (!counterId) return;
+
+  const errBox = document.getElementById('modalEditCounterFormErrorBox');
+  const errText = document.getElementById('modalEditCounterFormErrorBoxText');
+  const btn = document.getElementById('modalEditCounterFormSubmitBtn');
+
+  const name = (form.name.value || '').trim();
+  const unit = (form.unit.value || '').trim();
+  const active = form.active ? form.active.checked : true;
+
+  if (!name || !unit) {
+    errText.textContent = 'Le nom et l\'unité sont obligatoires.';
+    errBox.hidden = false;
+    return;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    const updated = await api(`/api/counters/${encodeURIComponent(counterId)}`, {
+      method: 'PATCH',
+      body: { name, unit, active },
+    });
+    closeModal();
+    notify('Compteur mis à jour.', 'success');
+    const targetEqId = updated.equipment_id || equipmentId;
+    if (targetEqId) {
+      openEquipmentDetailModal(targetEqId);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la modification du compteur.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function deleteCounter(arg) {
+  const counterId = typeof arg === 'object' && arg !== null ? arg.counterId : arg;
+  const equipmentId = typeof arg === 'object' && arg !== null ? arg.equipmentId : state.currentEquipmentDetailId;
+  if (!counterId) return;
+
+  const ok = await confirmDialog(
+    'Supprimer le compteur',
+    'Voulez-vous supprimer ce compteur ? Cette action est refusée s\'il est utilisé par des plannings de maintenance.',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/counters/${encodeURIComponent(counterId)}`, {
+      method: 'DELETE',
+    });
+    notify('Compteur supprimé.', 'success');
+    closeModal();
+    if (equipmentId) {
+      openEquipmentDetailModal(equipmentId);
+    }
+  } catch (err) {
+    notify(err.message || 'Suppression refusée.', 'error');
+  }
+}
+
+function openRecordReadingModal(arg) {
+  const counterId = typeof arg === 'object' && arg !== null ? arg.counterId : arg;
+  const equipmentId = typeof arg === 'object' && arg !== null ? arg.equipmentId : state.currentEquipmentDetailId;
+  const nowIso = localIso().slice(0, 16);
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="fReadingValue">Nouvelle valeur du compteur *</label>
+      <input type="number" id="fReadingValue" name="value" min="0" required placeholder="Valeur relevée" />
+      <span class="form-help">La valeur ne peut pas être inférieure à la valeur précédente sans remise à zéro.</span>
+    </div>
+    <div class="form-group">
+      <label for="fReadingDate">Date et heure du relevé</label>
+      <input type="datetime-local" id="fReadingDate" name="read_at" value="${nowIso}" />
+    </div>
+    <div class="form-group">
+      <label for="fReadingNote">Commentaire ou observation</label>
+      <input type="text" id="fReadingNote" name="note" placeholder="Relevé de fin de poste, compteur horaire…" />
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Saisir un relevé de compteur',
+    formId: 'modalRecordReadingForm',
+    submitAction: 'record-reading-submit',
+    submitArgs: { counterId, equipmentId },
+    submitLabel: 'Enregistrer le relevé',
+    fieldsHtml,
+  });
+}
+
+async function handleRecordReadingSubmit(form) {
+  const args = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  const counterId = typeof args === 'object' && args !== null ? args.counterId : args;
+  const equipmentId = typeof args === 'object' && args !== null ? args.equipmentId : state.currentEquipmentDetailId;
+  if (!counterId) return;
+
+  const errBox = document.getElementById('modalRecordReadingFormErrorBox');
+  const errText = document.getElementById('modalRecordReadingFormErrorBoxText');
+  const btn = document.getElementById('modalRecordReadingFormSubmitBtn');
+
+  const valStr = (form.value.value || '').trim();
+  const val = parseInt(valStr, 10);
+  if (isNaN(val) || val < 0) {
+    errText.textContent = 'La valeur doit être un entier positif ou nul.';
+    errBox.hidden = false;
+    return;
+  }
+
+  const readAt = form.read_at.value ? new Date(form.read_at.value).toISOString() : new Date().toISOString();
+  const note = (form.note.value || '').trim() || null;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/counters/${encodeURIComponent(counterId)}/readings`, {
+      method: 'POST',
+      body: { value: val, read_at: readAt, is_reset: false, note },
+    });
+    closeModal();
+    notify('Relevé enregistré avec succès.', 'success');
+    if (equipmentId) {
+      openEquipmentDetailModal(equipmentId);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de l\'enregistrement du relevé.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+function openResetCounterModal(arg) {
+  const counterId = typeof arg === 'object' && arg !== null ? arg.counterId : arg;
+  const equipmentId = typeof arg === 'object' && arg !== null ? arg.equipmentId : state.currentEquipmentDetailId;
+
+  const fieldsHtml = `
+    <div class="machine-state-alert">
+      ${icon('i-alert')}
+      <span>
+        La remise à zéro ramène le compteur à la nouvelle valeur saisie (ex: remplacement machine ou horamètre).
+        La distance restante jusqu'à la prochaine échéance des plannings liés est intégralement conservée.
+      </span>
+    </div>
+    <div class="form-group">
+      <label for="fResetValue">Nouvelle valeur de départ *</label>
+      <input type="number" id="fResetValue" name="value" min="0" value="0" required />
+    </div>
+    <div class="form-group">
+      <label for="fResetNote">Motif de la remise à zéro *</label>
+      <input type="text" id="fResetNote" name="note" required placeholder="Remplacement du compteur physique, réfection totale…" />
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Remise à zéro du compteur',
+    formId: 'modalResetCounterForm',
+    submitAction: 'reset-counter-submit',
+    submitArgs: { counterId, equipmentId },
+    submitLabel: 'Confirmer la remise à zéro',
+    fieldsHtml,
+  });
+}
+
+async function handleResetCounterSubmit(form) {
+  const args = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  const counterId = typeof args === 'object' && args !== null ? args.counterId : args;
+  const equipmentId = typeof args === 'object' && args !== null ? args.equipmentId : state.currentEquipmentDetailId;
+  if (!counterId) return;
+
+  const errBox = document.getElementById('modalResetCounterFormErrorBox');
+  const errText = document.getElementById('modalResetCounterFormErrorBoxText');
+  const btn = document.getElementById('modalResetCounterFormSubmitBtn');
+
+  const val = parseInt(form.value.value, 10);
+  const note = (form.note.value || '').trim();
+
+  if (isNaN(val) || val < 0) {
+    errText.textContent = 'La valeur doit être un entier positif ou nul.';
+    errBox.hidden = false;
+    return;
+  }
+  if (!note) {
+    errText.textContent = 'Le motif de la remise à zéro est obligatoire.';
+    errBox.hidden = false;
+    return;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/counters/${encodeURIComponent(counterId)}/readings`, {
+      method: 'POST',
+      body: { value: val, is_reset: true, note },
+    });
+    closeModal();
+    notify('Compteur réinitialisé et plannings réalignés.', 'success');
+    if (equipmentId) {
+      openEquipmentDetailModal(equipmentId);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la remise à zéro.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function openCounterHistoryModal(arg) {
+  const counterId = typeof arg === 'object' && arg !== null ? arg.counterId : arg;
+  const equipmentId = typeof arg === 'object' && arg !== null ? arg.equipmentId : state.currentEquipmentDetailId;
+
+  openModal('Historique des relevés', `<p class="hint">${icon('i-clock')} Chargement de l'historique…</p>`);
+
+  try {
+    const res = await api(`/api/counters/${encodeURIComponent(counterId)}/readings?limit=50`);
+    const items = res && Array.isArray(res.items) ? res.items : [];
+
+    let rowsHtml = items.map(r => `
+      <tr>
+        <td><b>${formatDate(r.read_at)}</b></td>
+        <td class="mono"><b>${esc(r.value)}</b></td>
+        <td>${r.is_reset ? '<span class="badge badge-state-warn">Remise à zéro</span>' : '<span class="badge">Relevé normal</span>'}</td>
+        <td>${esc(r.recorded_by ? r.recorded_by.display_name : '—')}</td>
+        <td>${esc(r.note || '—')}</td>
+      </tr>
+    `).join('');
+
+    if (!items.length) {
+      rowsHtml = `<tr><td colspan="5" class="empty-cell">Aucun relevé enregistré pour ce compteur.</td></tr>`;
+    }
+
+    const bodyHtml = `
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date du relevé</th>
+              <th>Valeur</th>
+              <th>Type</th>
+              <th>Enregistré par</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const closeBtn = equipmentId ?
+      `<button type="button" class="btn primary" data-action="open-detail-equipment" data-args="${jsArg(equipmentId)}">Retour à l'équipement</button>` :
+      `<button type="button" class="btn" data-action="close-modal">Fermer</button>`;
+    openModal('Historique des relevés', bodyHtml, closeBtn);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function updateCounterSelectForEquipment(equipmentId) {
+  const select = document.getElementById('fPlanCounterSelect');
+  if (!select) return;
+
+  if (!equipmentId) {
+    select.innerHTML = '<option value="">-- Choisir un équipement d\'abord --</option>';
+    return;
+  }
+
+  select.innerHTML = '<option value="">Chargement des compteurs…</option>';
+  try {
+    const cRes = await api(`/api/equipments/${encodeURIComponent(equipmentId)}/counters`);
+    const counters = (Array.isArray(cRes) ? cRes : (cRes && Array.isArray(cRes.items) ? cRes.items : [])).filter(c => c.active);
+    if (!counters.length) {
+      select.innerHTML = '<option value="">Aucun compteur actif sur cet équipement</option>';
+    } else {
+      select.innerHTML = '<option value="">-- Choisir un compteur actif --</option>' +
+        counters.map(c => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(c.current_value)} ${esc(c.unit)})</option>`).join('');
+    }
+  } catch (_) {
+    select.innerHTML = '<option value="">Erreur chargement compteurs</option>';
+  }
+}
+
+// ============================================================================
 // 15. SURVEILLANCE SERVEUR ET HORLOGE
 // ============================================================================
 
@@ -5534,6 +7643,82 @@ function handleGlobalClick(e) {
       loadInterventionsList(false);
       break;
 
+    // Phase 5 — Maintenance préventive et compteurs
+    case 'switch-maintenance-tab':
+      state.maintenanceTab = args || 'plans';
+      render();
+      break;
+    case 'switch-schedule-range':
+      state.maintenanceScheduleRange = String(args || 'month');
+      renderMaintenanceScheduleView();
+      loadMaintenanceSchedule();
+      break;
+    case 'schedule-prev-month': {
+      const cur = state.maintenanceScheduleMonth || localIso().slice(0, 7);
+      const [y, m] = cur.split('-').map(Number);
+      const prev = new Date(Date.UTC(y, m - 2, 1));
+      state.maintenanceScheduleMonth = prev.toISOString().slice(0, 7);
+      renderMaintenanceScheduleView();
+      loadMaintenanceSchedule();
+      break;
+    }
+    case 'schedule-next-month': {
+      const cur = state.maintenanceScheduleMonth || localIso().slice(0, 7);
+      const [y, m] = cur.split('-').map(Number);
+      const next = new Date(Date.UTC(y, m, 1));
+      state.maintenanceScheduleMonth = next.toISOString().slice(0, 7);
+      renderMaintenanceScheduleView();
+      loadMaintenanceSchedule();
+      break;
+    }
+    case 'schedule-today':
+      state.maintenanceScheduleMonth = localIso().slice(0, 7);
+      renderMaintenanceScheduleView();
+      loadMaintenanceSchedule();
+      break;
+    case 'open-create-maintenance-plan':
+      openCreateMaintenancePlanModal(args || {});
+      break;
+    case 'open-edit-maintenance-plan':
+      openEditMaintenancePlanModal(args);
+      break;
+    case 'open-skip-plan-modal':
+      openSkipPlanModal(args);
+      break;
+    case 'generate-plan-intervention':
+      generatePlanIntervention(args);
+      break;
+    case 'toggle-plan-active':
+      togglePlanActive(args);
+      break;
+    case 'delete-maintenance-plan':
+      deleteMaintenancePlan(args);
+      break;
+    case 'load-more-maintenance-plans':
+      loadMaintenancePlans(false);
+      break;
+    case 'load-more-plan-occurrences':
+      loadMorePlanOccurrences(args);
+      break;
+    case 'open-create-counter':
+      openCreateCounterModal(args);
+      break;
+    case 'open-edit-counter':
+      openEditCounterModal(args);
+      break;
+    case 'delete-counter':
+      deleteCounter(args);
+      break;
+    case 'open-record-reading':
+      openRecordReadingModal(args);
+      break;
+    case 'open-reset-counter':
+      openResetCounterModal(args);
+      break;
+    case 'open-counter-history':
+      openCounterHistoryModal(args);
+      break;
+
     default:
       break;
   }
@@ -5621,6 +7806,29 @@ function handleGlobalSubmit(e) {
       handleAssignTechnicianSubmit(form);
       break;
 
+    // Phase 5
+    case 'create-maintenance-plan-submit':
+      handleCreateMaintenancePlanSubmit(form);
+      break;
+    case 'edit-maintenance-plan-submit':
+      handleEditMaintenancePlanSubmit(form);
+      break;
+    case 'skip-plan-submit':
+      handleSkipPlanSubmit(form);
+      break;
+    case 'create-counter-submit':
+      handleCreateCounterSubmit(form);
+      break;
+    case 'edit-counter-submit':
+      handleEditCounterSubmit(form);
+      break;
+    case 'record-reading-submit':
+      handleRecordReadingSubmit(form);
+      break;
+    case 'reset-counter-submit':
+      handleResetCounterSubmit(form);
+      break;
+
     default:
       break;
   }
@@ -5646,6 +7854,9 @@ function handleGlobalInput(e) {
   } else if (action === 'filter-interventions-search') {
     state.interventionsSearchQuery = input.value;
     debounce('interventions-search', () => loadInterventionsList(true), 300);
+  } else if (action === 'filter-maintenance-plans-search') {
+    state.maintenancePlansSearchQuery = input.value;
+    debounce('maintenance-plans-search', () => loadMaintenancePlans(true), 300);
   }
 }
 
@@ -5670,6 +7881,8 @@ function handleGlobalChange(e) {
       loadSuppliers(true);
     } else if (r === 'interventions') {
       loadInterventionsList(true);
+    } else if (r === 'maintenance-preventive') {
+      initMaintenancePageView();
     }
     return;
   }
@@ -5702,6 +7915,63 @@ function handleGlobalChange(e) {
   } else if (action === 'filter-interventions-equipment') {
     state.interventionsEquipmentFilter = sel.value;
     loadInterventionsList(true);
+  } else if (action === 'filter-maintenance-plans-frequency') {
+    state.maintenancePlansFrequencyFilter = sel.value;
+    loadMaintenancePlans(true);
+  } else if (action === 'filter-maintenance-plans-due') {
+    state.maintenancePlansDueFilter = sel.value;
+    loadMaintenancePlans(true);
+  } else if (action === 'filter-maintenance-plans-equipment') {
+    state.maintenancePlansEquipmentFilter = sel.value;
+    loadMaintenancePlans(true);
+  } else if (action === 'filter-schedule-equipment') {
+    state.maintenancePlansEquipmentFilter = sel.value;
+    loadMaintenanceSchedule();
+  } else if (action === 'on-plan-form-frequency-change') {
+    const freq = sel.value;
+    const intervalGroup = document.getElementById('planIntervalDaysGroup');
+    const intervalInput = document.getElementById('fPlanIntervalDays');
+    const counterGroup = document.getElementById('planCounterGroup');
+    const counterSelect = document.getElementById('fPlanCounterSelect');
+    const counterInterval = document.getElementById('fPlanCounterInterval');
+    const calendarGroup = document.getElementById('planCalendarGroup');
+    const anchorInput = document.getElementById('fPlanAnchorDate');
+
+    if (intervalGroup) intervalGroup.hidden = freq !== 'interval_days';
+    if (intervalInput) {
+      if (freq === 'interval_days') {
+        intervalInput.setAttribute('required', 'required');
+      } else {
+        intervalInput.removeAttribute('required');
+      }
+    }
+
+    if (counterGroup) counterGroup.hidden = freq !== 'counter';
+    if (counterSelect) {
+      if (freq === 'counter') {
+        counterSelect.setAttribute('required', 'required');
+      } else {
+        counterSelect.removeAttribute('required');
+      }
+    }
+    if (counterInterval) {
+      if (freq === 'counter') {
+        counterInterval.setAttribute('required', 'required');
+      } else {
+        counterInterval.removeAttribute('required');
+      }
+    }
+
+    if (calendarGroup) calendarGroup.hidden = freq === 'counter';
+    if (anchorInput) {
+      if (freq !== 'counter') {
+        anchorInput.setAttribute('required', 'required');
+      } else {
+        anchorInput.removeAttribute('required');
+      }
+    }
+  } else if (action === 'on-plan-form-equipment-change') {
+    updateCounterSelectForEquipment(sel.value);
   } else if (action === 'on-intervention-type-change') {
     const isHorsEquip = sel.value === 'hors_equipement';
     const isAposteriori = sel.value === 'a_posteriori';

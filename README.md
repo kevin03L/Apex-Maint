@@ -2,7 +2,7 @@
 
 GMAO (gestion de la maintenance assistée par ordinateur) multi-sites écrite en Rust : un moteur métier avec une IHM web pour les équipes de maintenance et de production. Deuxième produit de la gamme **Apex**, aux côtés d'[Apex Supervision](https://github.com/kevin03L/Apex-Supervision), dont il reprend l'architecture et les conventions.
 
-> **Statut : développement, phase 3 (`0.1.0-alpha.1`).** Authentification, référentiel technique et backend complet des interventions de maintenance (cycle de vie, techniciens, suivi des temps, annulation et recalcul d'équipement) sont disponibles. La feuille de route complète est dans [docs/PLAN.md](docs/PLAN.md).
+> **Statut : développement, phases 3 et 5 (`0.1.0-alpha.1`).** Authentification, référentiel technique, interventions et maintenance préventive (compteurs, plannings fixes, occurrences, génération auto et vue planning) sont disponibles côté backend. La feuille de route complète est dans [docs/PLAN.md](docs/PLAN.md).
 
 ## Fonctionnalités prévues
 

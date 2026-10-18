@@ -1231,6 +1231,9 @@ pub async fn complete_intervention(
             .await?;
     }
 
+    // Hook phase 5 : mise à jour de l'occurrence de maintenance liée
+    crate::maintenance::on_intervention_completed(&mut tx, id, &completed_at, ip).await?;
+
     let updated = fetch_single_intervention_with_conn(&mut tx, id).await?;
 
     store::audit(
@@ -1306,6 +1309,9 @@ pub async fn cancel_intervention(
     if let Some(eq_id) = &current.equipment_id {
         recalculate_equipment_status(&mut tx, eq_id, None).await?;
     }
+
+    // Hook phase 5 : mise à jour de l'occurrence de maintenance liée
+    crate::maintenance::on_intervention_cancelled(&mut tx, id, &reason, ip).await?;
 
     let updated = fetch_single_intervention_with_conn(&mut tx, id).await?;
 
@@ -1457,6 +1463,9 @@ pub async fn delete_intervention(
     if let Some(eq_id) = &current.equipment_id {
         recalculate_equipment_status(&mut tx, eq_id, None).await?;
     }
+
+    // Hook phase 5 : remise en échéance non traitée de l'occurrence liée
+    crate::maintenance::on_intervention_deleted(&mut tx, id, ip).await?;
 
     store::audit(
         &mut tx,
@@ -1928,7 +1937,7 @@ async fn scoped_intervention_raw(
 }
 
 /// Récupère une intervention unique complète avec ses techniciens via une connexion ouverte.
-async fn fetch_single_intervention_with_conn(
+pub(crate) async fn fetch_single_intervention_with_conn(
     conn: &mut SqliteConnection,
     id: &str,
 ) -> Result<Intervention, MaintError> {
@@ -2157,7 +2166,7 @@ fn assemble_intervention(
 }
 
 /// Génère ou valide la référence unique d'intervention (format `INT-AAAA-XXXX`).
-async fn resolve_or_generate_code(
+pub(crate) async fn resolve_or_generate_code(
     conn: &mut SqliteConnection,
     site_id: &str,
     provided_code: Option<&str>,

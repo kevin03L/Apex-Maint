@@ -244,7 +244,7 @@ Les phases 0 et 1 reprennent largement le code de Supervision (`apex-config`, `a
 | **2. Référentiel** | Lignes de production, équipements (arborescence, statut), emplacements, fournisseurs | CRUD complets, suppression logique, audit actif (backend fait) |
 | **3. Interventions** | CRUD, transitions de statut, sous-interventions, état machine, liste filtrable, page de détail | parcours technicien complet (backend fait) |
 | **4. Pièces & stock** | Catalogue, stock par emplacement, mouvements transactionnels, pièces consommées sur intervention, alertes de stock bas | aucun stock négatif, même en concurrence (test dédié) |
-| **5. Maintenance préventive** | Plannings, occurrences, calcul d'échéance, vue planning ou calendrier, génération d'interventions préventives | les échéances se mettent à jour à chaque réalisation |
+| **5. Maintenance préventive** | Plannings, occurrences, calcul d'échéance, vue planning ou calendrier, génération d'interventions préventives | les échéances se mettent à jour à chaque réalisation (backend fait) |
 | **6. Documents & QR** | Upload en streaming, contrôle MIME et taille, téléchargement contrôlé, QR code par équipement | fichiers servis seulement aux utilisateurs autorisés |
 | **7. Pilotage** | Tableau de bord, reporting, export CSV, journal d'audit, paramètres | parité fonctionnelle avec l'ancienne application |
 | **8. Exploitation** | Service Windows et systemd, `apex-maint-admin` (adapté de Supervision), installateur Inno Setup, paquet DEB, `backup`/`restore` (sauvegarde SQLite à chaud + fichiers), purge, `import-legacy` | première version alpha installable, migration des données |
