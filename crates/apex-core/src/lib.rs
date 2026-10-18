@@ -6,6 +6,7 @@
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod referentiel;
 pub mod services;
 pub mod store;
 

@@ -3,7 +3,7 @@ use crate::{
     db,
     services::Auth,
     store::{self, CreateUser},
-    Actor, MaintError, Permission, Role,
+    Actor, Cursor, MaintError, Permission, Role,
 };
 use serde_json::{json, Value};
 
@@ -303,4 +303,355 @@ async fn expiration_inactivite_et_mise_a_jour_limitee() {
         auth.session(&token).await,
         Err(MaintError::Unauthorized(_))
     ));
+}
+
+#[tokio::test]
+async fn referentiel_equipements_cycle_et_profondeur() {
+    use crate::referentiel::{self, CreateEquipment, UpdateEquipment};
+
+    let (pool, _auth, admin) = setup().await;
+    let site_id = store::save_site(&pool, &admin.actor, None, Some("Site Test Ref"), false)
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 1. Création de 8 niveaux d'équipements successifs (E1 -> E2 -> ... -> E8)
+    let mut prev_id: Option<String> = None;
+    let mut eq_ids = Vec::new();
+    for i in 1..=8 {
+        let code = format!("EQ-0{i}");
+        let eq = referentiel::create_equipment(
+            &pool,
+            &admin.actor,
+            CreateEquipment {
+                site_id: Some(site_id.clone()),
+                code: code.clone(),
+                name: format!("Équipement {i}"),
+                status: Some("operational".into()),
+                production_line_id: None,
+                parent_id: prev_id.clone(),
+                manufacturer: None,
+                model: None,
+                serial_number: None,
+                commissioned_on: None,
+                description: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        prev_id = Some(eq.id.clone());
+        eq_ids.push(eq.id);
+    }
+
+    // 2. Tenter d'ajouter un 9ème niveau (doit être refusé avec BadRequest 400)
+    let err = referentiel::create_equipment(
+        &pool,
+        &admin.actor,
+        CreateEquipment {
+            site_id: Some(site_id.clone()),
+            code: "EQ-09".into(),
+            name: "Équipement 9 (trop profond)".into(),
+            status: Some("operational".into()),
+            production_line_id: None,
+            parent_id: prev_id.clone(),
+            manufacturer: None,
+            model: None,
+            serial_number: None,
+            commissioned_on: None,
+            description: None,
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, MaintError::BadRequest(_)), "{err:?}");
+
+    // 3. Détection de cycle : déplacer E1 sous E3 (doit être refusé avec BadRequest 400)
+    let err_cycle = referentiel::update_equipment(
+        &pool,
+        &admin.actor,
+        &eq_ids[0],
+        UpdateEquipment {
+            parent_id: crate::referentiel::PatchField::Value(eq_ids[2].clone()),
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err_cycle, MaintError::BadRequest(_)),
+        "{err_cycle:?}"
+    );
+
+    // 4. Refus de suppression avec enfants (E1 a E2 comme enfant -> 409 Conflict)
+    let err_del = referentiel::delete_equipment(&pool, &admin.actor, &eq_ids[0], None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err_del, MaintError::Conflict(_)), "{err_del:?}");
+
+    // 5. Suppression de la feuille E8 (pas d'enfants -> OK)
+    assert!(
+        referentiel::delete_equipment(&pool, &admin.actor, &eq_ids[7], None)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn referentiel_emplacements_hierarchie_et_conflits() {
+    use crate::referentiel::{self, CreateLocation};
+
+    let (pool, _auth, admin) = setup().await;
+    let site_id = store::save_site(&pool, &admin.actor, None, Some("Site Emplacements"), false)
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Magasin avec parent interdit (400)
+    let err_mag_parent = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "MAG-BAD".into(),
+            name: "Magasin invalide".into(),
+            kind: "magasin".into(),
+            parent_id: Some("faux-id".into()),
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err_mag_parent, MaintError::BadRequest(_)));
+
+    // Création d'un magasin valide
+    let mag = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "MAG-01".into(),
+            name: "Magasin Principal".into(),
+            kind: "magasin".into(),
+            parent_id: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Allée sans parent interdit (400)
+    let err_allee_noparent = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "ALL-BAD".into(),
+            name: "Allée sans parent".into(),
+            kind: "allee".into(),
+            parent_id: None,
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err_allee_noparent, MaintError::BadRequest(_)));
+
+    // Allée valide rattachée au magasin
+    let allee = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "ALL-01".into(),
+            name: "Allée 1".into(),
+            kind: "allee".into(),
+            parent_id: Some(mag.id.clone()),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Rack valide rattaché à l'allée
+    let rack = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "RCK-01".into(),
+            name: "Rack A".into(),
+            kind: "rack".into(),
+            parent_id: Some(allee.id.clone()),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Bac valide rattaché au rack
+    let bac = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "BAC-01".into(),
+            name: "Bac 01".into(),
+            kind: "bac".into(),
+            parent_id: Some(rack.id.clone()),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Bac rattaché directement à un magasin interdit (400)
+    let err_bac_mag = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "BAC-MAG".into(),
+            name: "Bac sous magasin".into(),
+            kind: "bac".into(),
+            parent_id: Some(mag.id.clone()),
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err_bac_mag, MaintError::BadRequest(_)));
+
+    // Doublon de code sur le même site interdit (409)
+    let err_doublon = referentiel::create_location(
+        &pool,
+        &admin.actor,
+        CreateLocation {
+            site_id: Some(site_id.clone()),
+            code: "BAC-01".into(),
+            name: "Bac doublon".into(),
+            kind: "bac".into(),
+            parent_id: Some(rack.id.clone()),
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err_doublon, MaintError::Conflict(_)));
+
+    // Refus de suppression du rack car il contient le bac (409)
+    let err_del_rack = referentiel::delete_location(&pool, &admin.actor, &rack.id, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err_del_rack, MaintError::Conflict(_)));
+
+    // Suppression du bac puis du rack (OK)
+    referentiel::delete_location(&pool, &admin.actor, &bac.id, None)
+        .await
+        .unwrap();
+    referentiel::delete_location(&pool, &admin.actor, &rack.id, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn referentiel_pagination_et_audit() {
+    use crate::referentiel::{self, CreateSupplier, SupplierFilter};
+
+    let (pool, _auth, admin) = setup().await;
+    let site_id = store::save_site(&pool, &admin.actor, None, Some("Site Fournisseurs"), false)
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Création de 5 fournisseurs A, B, C, D, E
+    for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo"] {
+        referentiel::create_supplier(
+            &pool,
+            &admin.actor,
+            CreateSupplier {
+                site_id: Some(site_id.clone()),
+                name: name.into(),
+                contact_name: Some(format!("Contact {name}")),
+                email: Some(format!("{name}@example.com")),
+                phone: None,
+                address: None,
+                website: None,
+                notes: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    // Pagination par pages de 2 éléments
+    let page1 = referentiel::list_suppliers(
+        &pool,
+        &admin.actor,
+        SupplierFilter {
+            site_id: Some(site_id.clone()),
+            limit: 2,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page1.items.len(), 2);
+    assert_eq!(page1.items[0].name, "Alpha");
+    assert_eq!(page1.items[1].name, "Bravo");
+    assert!(page1.next_cursor.is_some());
+
+    let c1 = Cursor::decode(page1.next_cursor.as_ref().unwrap()).unwrap();
+    let page2 = referentiel::list_suppliers(
+        &pool,
+        &admin.actor,
+        SupplierFilter {
+            site_id: Some(site_id.clone()),
+            cursor: Some(c1),
+            limit: 2,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page2.items.len(), 2);
+    assert_eq!(page2.items[0].name, "Charlie");
+    assert_eq!(page2.items[1].name, "Delta");
+    assert!(page2.next_cursor.is_some());
+
+    let c2 = Cursor::decode(page2.next_cursor.as_ref().unwrap()).unwrap();
+    let page3 = referentiel::list_suppliers(
+        &pool,
+        &admin.actor,
+        SupplierFilter {
+            site_id: Some(site_id.clone()),
+            cursor: Some(c2),
+            limit: 2,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page3.items.len(), 1);
+    assert_eq!(page3.items[0].name, "Echo");
+    assert!(page3.next_cursor.is_none());
+
+    // Vérification de l'audit log
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE entity = 'supplier' AND site_id = ?",
+    )
+    .bind(&site_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 5);
 }

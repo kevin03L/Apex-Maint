@@ -14,8 +14,11 @@ pub struct Cursor {
     /// Identifiant de l'élément (ex. UUIDv7).
     pub id: String,
     /// Valeur de tri optionnelle (ex. horodatage RFC 3339 pour tri temporel).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// Valeur de tri textuelle (ex. code ou nom pour tri alphabétique).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_value: Option<String>,
 }
 
 impl Cursor {
@@ -24,6 +27,7 @@ impl Cursor {
         Self {
             id: id.into(),
             timestamp: None,
+            sort_value: None,
         }
     }
 
@@ -32,6 +36,16 @@ impl Cursor {
         Self {
             id: id.into(),
             timestamp: Some(timestamp.into()),
+            sort_value: None,
+        }
+    }
+
+    /// Crée un curseur composite avec identifiant et valeur de tri textuelle.
+    pub fn with_sort_value(id: impl Into<String>, sort_value: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            timestamp: None,
+            sort_value: Some(sort_value.into()),
         }
     }
 
@@ -157,6 +171,14 @@ mod tests {
             "018d9f52-1234-7890-abcd-ef0123456789",
             "2026-10-18T12:00:00.000Z",
         );
+        let encoded = cursor.encode();
+        let decoded = Cursor::decode(&encoded).expect("décodage réussi");
+        assert_eq!(decoded, cursor);
+    }
+
+    #[test]
+    fn cursor_encode_decode_with_sort_value() {
+        let cursor = Cursor::with_sort_value("018d9f52-1234-7890-abcd-ef0123456789", "LIGNE-01");
         let encoded = cursor.encode();
         let decoded = Cursor::decode(&encoded).expect("décodage réussi");
         assert_eq!(decoded, cursor);

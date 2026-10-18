@@ -241,7 +241,7 @@ Les phases 0 et 1 reprennent largement le code de Supervision (`apex-config`, `a
 |---|---|---|
 | **0. Socle** | Workspace, `AGENTS.md`, `apex-config` et `apex-build` repris de Supervision, CLI (`run`, `config check/show/init/migrate`, `version`), instance unique, codes de sortie, journaux, base SQLite + migrations initiales, `GET /api/health`, IHM statique minimale (gabarit et thème de Supervision), CI Windows + Ubuntu | `apex-maint config init --portable` puis `apex-maint run` affiche l'IHM ; CI verte |
 | **1. Auth & sites** | `users`, `sites`, sessions (cookie `HttpOnly`), verrouillage, matrice de permissions, compte `admin` initial, page de connexion, menu filtré selon les permissions, profil et changement de mot de passe | tests boîte noire : connexion, verrouillage concurrent, révocation, isolation entre sites |
-| **2. Référentiel** | Lignes de production, équipements (arborescence, statut), emplacements, fournisseurs | CRUD complets, suppression logique, audit actif |
+| **2. Référentiel** | Lignes de production, équipements (arborescence, statut), emplacements, fournisseurs | CRUD complets, suppression logique, audit actif (backend fait) |
 | **3. Interventions** | CRUD, transitions de statut, sous-interventions, état machine, liste filtrable, page de détail | parcours technicien complet |
 | **4. Pièces & stock** | Catalogue, stock par emplacement, mouvements transactionnels, pièces consommées sur intervention, alertes de stock bas | aucun stock négatif, même en concurrence (test dédié) |
 | **5. Maintenance préventive** | Plannings, occurrences, calcul d'échéance, vue planning ou calendrier, génération d'interventions préventives | les échéances se mettent à jour à chaque réalisation |

@@ -86,7 +86,7 @@ pub(crate) async fn scoped_user(
     .ok_or_else(|| MaintError::NotFound("Utilisateur".into()))
 }
 
-pub(crate) struct Audit<'a> {
+pub struct Audit<'a> {
     pub action: &'a str,
     pub entity: &'a str,
     pub entity_id: Option<&'a str>,
@@ -96,7 +96,7 @@ pub(crate) struct Audit<'a> {
     pub ip: Option<&'a str>,
 }
 
-pub(crate) async fn audit(
+pub async fn audit(
     conn: &mut SqliteConnection,
     actor: &Actor,
     event: Audit<'_>,
