@@ -3872,6 +3872,445 @@ footer.status {
   }
 }
 
+/* ============================================================================
+   PHASES 8, 9 & 10 : EXPLOITATION, TERRAIN (HORS-LIGNE & PWA), SUPERVISION
+   ============================================================================ */
+
+/* 1. BANDEAUX GLOBAUX (Alertes sauvegarde, Hors-ligne, Mise à jour SW) */
+.global-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding: .75em 1.2em;
+  font-size: .92em;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  transition: all .2s ease;
+  z-index: 90;
+}
+
+.global-banner[hidden] {
+  display: none !important;
+}
+
+.global-banner .banner-content {
+  display: flex;
+  align-items: center;
+  gap: .7em;
+  flex: 1;
+}
+
+.global-banner .banner-actions {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+}
+
+.global-banner.banner-warning {
+  background: rgba(245, 158, 11, .15);
+  border-color: rgba(245, 158, 11, .35);
+  color: var(--text);
+}
+
+.global-banner.banner-danger {
+  background: rgba(239, 68, 68, .15);
+  border-color: rgba(239, 68, 68, .35);
+  color: var(--text);
+}
+
+.global-banner.banner-offline {
+  background: rgba(249, 115, 22, .15);
+  border-color: rgba(249, 115, 22, .35);
+  color: var(--text);
+}
+
+.global-banner.banner-info {
+  background: rgba(59, 130, 246, .15);
+  border-color: rgba(59, 130, 246, .35);
+  color: var(--text);
+}
+
+/* 2. VUE TERRAIN (Mobile & PWA) */
+.terrain-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5em;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: .5em 0;
+}
+
+.terrain-header-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1em;
+  padding: 1.2em 1.5em;
+  border-radius: var(--r);
+  background: var(--glass);
+  border: 1px solid var(--line);
+}
+
+.terrain-network-status {
+  display: inline-flex;
+  align-items: center;
+  gap: .6em;
+  padding: .4em .8em;
+  border-radius: 9999px;
+  font-size: .88em;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.terrain-network-status.online {
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: var(--ok-text);
+}
+
+.terrain-network-status.offline {
+  background: rgba(249, 115, 22, .15);
+  border-color: rgba(249, 115, 22, .35);
+  color: #ea580c;
+}
+
+.terrain-actions-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.2em;
+}
+
+.terrain-btn-big {
+  display: flex;
+  align-items: center;
+  gap: 1.2em;
+  min-height: 72px;
+  padding: 1.2em 1.5em;
+  border-radius: var(--r);
+  background: var(--glass);
+  border: 1.5px solid var(--line);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 1.1em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s ease;
+  text-align: left;
+}
+
+.terrain-btn-big:hover {
+  background: var(--selected);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .08);
+}
+
+.terrain-btn-big .icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, .12);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.terrain-btn-big .icon-wrap svg {
+  width: 28px;
+  height: 28px;
+}
+
+.terrain-btn-big .text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: .2em;
+  flex: 1;
+}
+
+.terrain-btn-big .btn-title {
+  font-size: 1.08em;
+  color: var(--text);
+}
+
+.terrain-btn-big .btn-desc {
+  font-size: .84em;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.terrain-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: .8em;
+  font-weight: 700;
+}
+
+/* 3. LECTEUR QR CODE & CAMÉRA */
+.scanner-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.2em;
+  width: 100%;
+}
+
+.scanner-video-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--r);
+  overflow: hidden;
+  background: #000;
+  border: 2px solid var(--line);
+}
+
+.scanner-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scanner-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border: 40px solid rgba(0, 0, 0, .55);
+  box-sizing: border-box;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scanner-target {
+  width: 80%;
+  height: 80%;
+  border: 2px dashed rgba(255, 255, 255, .8);
+  border-radius: 8px;
+}
+
+.scanner-manual-box {
+  width: 100%;
+  max-width: 440px;
+  padding: 1em 1.2em;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+/* 4. PAGE SYNCHRONISATION & CONFLITS */
+.sync-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+  margin-top: 1em;
+}
+
+.sync-item-card {
+  display: flex;
+  flex-direction: column;
+  gap: .6em;
+  padding: 1em 1.2em;
+  border-radius: var(--r);
+  background: var(--glass);
+  border: 1px solid var(--line);
+}
+
+.sync-item-card.is-conflict {
+  border-color: rgba(239, 68, 68, .5);
+  background: rgba(239, 68, 68, .05);
+}
+
+.sync-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5em;
+}
+
+.sync-item-body {
+  font-size: .92em;
+  color: var(--muted);
+}
+
+.sync-conflict-box {
+  padding: .8em 1em;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, .1);
+  border: 1px solid rgba(239, 68, 68, .25);
+  font-size: .88em;
+  color: var(--text);
+  margin-top: .4em;
+}
+
+/* 5. ÉTATS SUPERVISION (FICHE ÉQUIPEMENT & TABLEAUX) */
+.supervision-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .8em;
+  padding: .85em 1.2em;
+  border-radius: var(--r);
+  border: 1.5px solid var(--line);
+  margin-bottom: 1.2em;
+  font-weight: 500;
+  font-size: .94em;
+}
+
+.supervision-status-banner .banner-left {
+  display: flex;
+  align-items: center;
+  gap: .7em;
+  flex: 1;
+}
+
+.supervision-status-banner .banner-tag {
+  font-size: .78em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: .2em .6em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .08);
+}
+
+/* États Supervision : running (vert), stopped (rouge), degraded (orange), alarm (rouge alerte), unknown (gris) */
+.supervision-state-running {
+  background: rgba(16, 185, 129, .12);
+  border-color: rgba(16, 185, 129, .35);
+  color: #059669;
+}
+
+.supervision-state-stopped {
+  background: rgba(239, 68, 68, .12);
+  border-color: rgba(239, 68, 68, .35);
+  color: #dc2626;
+}
+
+.supervision-state-degraded {
+  background: rgba(245, 158, 11, .12);
+  border-color: rgba(245, 158, 11, .35);
+  color: #d97706;
+}
+
+.supervision-state-alarm {
+  background: rgba(220, 38, 38, .18);
+  border-color: rgba(220, 38, 38, .5);
+  color: #b91c1c;
+}
+
+.supervision-state-unknown,
+.supervision-state-stale {
+  background: rgba(148, 163, 184, .14);
+  border-color: rgba(148, 163, 184, .35);
+  color: var(--muted);
+}
+
+/* Pastilles Supervision dans les tableaux */
+.badge-supervision-running {
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: var(--ok-text);
+}
+
+.badge-supervision-stopped {
+  background: var(--ko-bg);
+  border-color: var(--ko-line);
+  color: var(--ko-text);
+}
+
+.badge-supervision-degraded {
+  background: rgba(245, 158, 11, .15);
+  border-color: rgba(245, 158, 11, .4);
+  color: #b45309;
+}
+
+.badge-supervision-alarm {
+  background: rgba(239, 68, 68, .2);
+  border-color: rgba(239, 68, 68, .5);
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.badge-supervision-unknown {
+  background: rgba(148, 163, 184, .15);
+  border-color: rgba(148, 163, 184, .35);
+  color: var(--muted);
+}
+
+/* 6. CLÉS D'INTÉGRATION & AFFICHAGE UNIQUE */
+.api-key-reveal-card {
+  padding: 1.2em 1.5em;
+  background: rgba(59, 130, 246, .08);
+  border: 2px solid var(--accent);
+  border-radius: var(--r);
+  margin-bottom: 1.5em;
+}
+
+.api-key-display {
+  display: flex;
+  align-items: center;
+  gap: .8em;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .6em 1em;
+  margin: .8em 0;
+}
+
+.api-key-code {
+  font-family: var(--font-mono, monospace);
+  font-size: 1.05em;
+  font-weight: 700;
+  color: var(--accent);
+  word-break: break-all;
+  flex: 1;
+}
+
+/* 7. WIDGET SUPERVISION DU TABLEAU DE BORD */
+.widget-supervision-list {
+  display: flex;
+  flex-direction: column;
+  gap: .6em;
+}
+
+.widget-supervision-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8em;
+  padding: .6em .8em;
+  border-radius: 6px;
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  text-decoration: none;
+  color: var(--text);
+  font-size: .9em;
+  transition: background .15s ease;
+}
+
+.widget-supervision-item:hover {
+  background: var(--selected);
+}
+
+
 
 
 

@@ -401,6 +401,8 @@ pub struct EquipmentCounter {
     pub last_reading_at: Option<String>,
     pub active: bool,
     pub plans_count: i64,
+    /// Repère de la mesure côté Apex Supervision (phase 10).
+    pub external_ref: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -416,6 +418,7 @@ struct RawCounterRow {
     last_reading_at: Option<String>,
     active: i64,
     plans_count: i64,
+    external_ref: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -432,6 +435,7 @@ impl From<RawCounterRow> for EquipmentCounter {
             last_reading_at: r.last_reading_at,
             active: r.active == 1,
             plans_count: r.plans_count,
+            external_ref: r.external_ref,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -767,7 +771,7 @@ pub async fn list_equipment_counters(
             c.id, c.site_id, c.equipment_id, c.name, c.unit, c.current_value,
             c.last_reading_at, c.active,
             (SELECT count(*) FROM maintenance_plans p WHERE p.counter_id = c.id AND p.deleted_at IS NULL) AS plans_count,
-            c.created_at, c.updated_at
+            c.external_ref, c.created_at, c.updated_at
         FROM equipment_counters c
         WHERE c.equipment_id = ? AND c.deleted_at IS NULL
         ORDER BY c.name COLLATE NOCASE ASC
@@ -861,6 +865,7 @@ pub async fn create_equipment_counter(
         last_reading_at: None,
         active: active == 1,
         plans_count: 0,
+        external_ref: None,
         created_at: now,
         updated_at: store::now(),
     };
@@ -902,7 +907,7 @@ pub async fn update_counter(
             c.id, c.site_id, c.equipment_id, c.name, c.unit, c.current_value,
             c.last_reading_at, c.active,
             (SELECT count(*) FROM maintenance_plans p WHERE p.counter_id = c.id AND p.deleted_at IS NULL) AS plans_count,
-            c.created_at, c.updated_at
+            c.external_ref, c.created_at, c.updated_at
         FROM equipment_counters c
         WHERE c.id = ? AND c.deleted_at IS NULL
         "#,
@@ -977,6 +982,7 @@ pub async fn update_counter(
         last_reading_at: current.last_reading_at,
         active: new_active == 1,
         plans_count: current.plans_count,
+        external_ref: current.external_ref.clone(),
         created_at: current.created_at,
         updated_at: now,
     };
