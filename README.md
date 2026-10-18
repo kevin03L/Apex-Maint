@@ -52,3 +52,7 @@ Ce projet est distribué sous licence **GPL-3.0-or-later** (GNU General Public L
 Copyright © 2026 kevin03L.
 
 Consultez le texte intégral dans le fichier [LICENSE](LICENSE) à la racine du dépôt.
+
+## Avancement du backend d'exploitation
+
+Phase 8 : exploitation (sauvegardes, restauration, service Windows/systemd, utilitaire) ; Phase 9 : TLS et file hors-ligne. Phase 10 : liaison Supervision terminée (migration 0011, clés de service, ingestion compteurs et statuts, purges, [API-PHASE-10](docs/API-PHASE-10.md)).

@@ -55,6 +55,11 @@ pub const WIDGETS: &[(&str, &str, &[Permission])] = &[
     ("labor_time", "Temps passé", &[Permission::ReportingView]),
     ("stock_value", "Valeur du stock", &[Permission::StockView]),
     ("stock_alerts", "Alertes de stock", &[Permission::StockView]),
+    (
+        "supervision_status",
+        "Arrêts et alarmes selon Supervision",
+        &[Permission::EquipmentsView],
+    ),
 ];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

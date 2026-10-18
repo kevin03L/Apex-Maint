@@ -460,6 +460,11 @@ mod tests {
             let test_pool = pool.clone();
             let state = AppState {
                 widget_cache: Default::default(),
+                integration_rates: Default::default(),
+                tls_mode: "off".into(),
+                trusted_proxies: Vec::new(),
+                hsts_max_age: 86400,
+                terrain_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 files: apex_core::documents::storage::FileStore::new(dir.path().into(), [5; 32]),
                 pool,
                 auth,

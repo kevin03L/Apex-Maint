@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 apex-config.workspace = true
 apex-core.workspace = true
+object_store.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
@@ -29,9 +30,22 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 rand.workspace = true
 sha2.workspace = true
+uuid.workspace = true
 tempfile.workspace = true
 http-body-util.workspace = true
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rcgen = "0.13"
+rustls = "0.23.46"
+rustls-pemfile = "2.2.0"
+time = "0.3.55"
+flate2 = "1.1.9"
 futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
 
 [build-dependencies]
 apex-build.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+
+[target."cfg(windows)".dependencies]
+windows-service = "0.7"

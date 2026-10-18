@@ -1,0 +1,14 @@
+// Apex Maint : les membres du groupe apex-maint peuvent démarrer, arrêter et redémarrer
+// le service apex-maint sans mot de passe administrateur (utilitaire desktop, systemctl).
+// L'activation au démarrage (enable / disable) reste soumise à authentification.
+// Nécessite polkit 0.106 ou plus récent (règles JavaScript) : Debian 12, Ubuntu 24.04.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "apex-maint.service" &&
+        subject.isInGroup("apex-maint")) {
+        var verb = action.lookup("verb");
+        if (verb == "start" || verb == "stop" || verb == "restart") {
+            return polkit.Result.YES;
+        }
+    }
+});

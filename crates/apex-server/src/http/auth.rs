@@ -43,8 +43,8 @@ impl IntoResponse for ApiError {
     }
 }
 type Result<T> = std::result::Result<T, ApiError>;
-type Body<T> = std::result::Result<Json<T>, JsonRejection>;
-fn body<T>(input: Body<T>) -> Result<T> {
+pub(super) type Body<T> = std::result::Result<Json<T>, JsonRejection>;
+pub(super) fn body<T>(input: Body<T>) -> Result<T> {
     input.map(|Json(v)| v).map_err(|e| {
         ApiError(if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             MaintError::PayloadTooLarge("Corps JSON trop volumineux (64 Kio maximum)".into())
@@ -86,10 +86,14 @@ fn cookie_token(headers: &HeaderMap) -> Option<&str> {
             (key == "apex_maint_session").then_some(value)
         })
 }
-fn cookie(state: &AppState, token: &str, expired: bool) -> HeaderValue {
+fn cookie(state: &AppState, token: &str, expired: bool, https: bool) -> HeaderValue {
     HeaderValue::from_str(&format!(
         "apex_maint_session={token}; HttpOnly; SameSite=Strict; Path=/{}{}",
-        if state.secure_cookie { "; Secure" } else { "" },
+        if state.secure_cookie || https {
+            "; Secure"
+        } else {
+            ""
+        },
         if expired {
             "; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
         } else {
@@ -103,6 +107,9 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
     let path = req.uri().path().to_string();
     // Selon la couche de routage Axum, le préfixe imbriqué peut déjà être retiré.
     let path = path.strip_prefix("/api").unwrap_or(&path);
+    if path.starts_with("/integrations/supervision/") {
+        return super::integration::guard(&state, req, next).await;
+    }
     if path.starts_with("/system/") {
         return next.run(req).await;
     }
@@ -139,11 +146,13 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
     }
     // Refus par défaut : toute route de l'API exige une session, sauf ces routes publiques.
     // Phase 7 : identité de l'écran de connexion et récupération du compte (§2.8).
+    // Phase 9 : certificat de l'autorité locale, à installer avant toute connexion.
     // Ce passage reste après le contrôle d'Origin, également pour les deux POST publics.
     if matches!(
         path,
         "/health"
             | "/auth/login"
+            | "/tls/ca.pem"
             | "/public/branding"
             | "/auth/password-reset/request"
             | "/auth/password-reset/confirm"
@@ -179,6 +188,7 @@ async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Extension(super::RequestHttps(https)): Extension<super::RequestHttps>,
     input: Body<Login>,
 ) -> Result<Response> {
     let input = body(input)?;
@@ -191,7 +201,7 @@ async fn login(
         .login(&input.username, input.password, Some(&ip), agent)
         .await?;
     Ok((
-        [(header::SET_COOKIE, cookie(&state, &token, false))],
+        [(header::SET_COOKIE, cookie(&state, &token, false, https))],
         Json(json!({"user":user})),
     )
         .into_response())
@@ -199,11 +209,12 @@ async fn login(
 async fn logout(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
+    Extension(super::RequestHttps(https)): Extension<super::RequestHttps>,
 ) -> Result<Response> {
     state.auth.logout(&session).await?;
     Ok((
         StatusCode::NO_CONTENT,
-        [(header::SET_COOKIE, cookie(&state, "", true))],
+        [(header::SET_COOKIE, cookie(&state, "", true, https))],
     )
         .into_response())
 }

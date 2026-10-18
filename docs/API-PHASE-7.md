@@ -59,6 +59,7 @@ L'enveloppe est identique pour tous les widgets ; `data` prend exactement les fo
 | `my_interventions` | `{"items":[{"id":"uuid","code":"INT-001","title":"Réparation","status":"open","priority":"high"}]}` |
 | `machines_down` | `{"items":[{"id":"uuid","code":"PRS-01","name":"Presse","status":"out_of_service"}]}` |
 | `maintenance_overdue` | `{"items":[{"id":"uuid","code":"PREV-01","title":"Contrôle","next_due_date":"2026-01-01","next_due_counter":null,"overdue":true}]}` |
+| `supervision_status` (phase 10, `equipments.view`) | `{"items":[ExternalStatus]}`, équipements à l'arrêt ou en alarme selon Supervision ; forme `ExternalStatus` dans `API-PHASE-10.md` |
 
 Les permissions sont celles du catalogue (§2.1 de la spécification), vérifiées à chaque accès,
 y compris avant lecture du cache mémoire de 60 secondes. La clé du cache inclut acteur, site,

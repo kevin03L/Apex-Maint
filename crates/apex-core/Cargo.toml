@@ -27,6 +27,8 @@ infer.workspace = true
 qrcode.workspace = true
 zip.workspace = true
 bytes.workspace = true
+base64 = "0.23.1"
+subtle = "2.6.1"
 lettre = { version = "0.11.23", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 rust_xlsxwriter = "0.100.0"
 genpdf = "0.2.0"

@@ -85,6 +85,9 @@ pub struct ServerConfig {
     pub bind: String,
     /// Port HTTP de l'IHM web et de l'API (défaut 3100).
     pub port: u16,
+    pub trusted_proxies: Vec<IpAddr>,
+    pub hsts_max_age: u32,
+    pub tls: TlsConfig,
 }
 
 impl Default for ServerConfig {
@@ -92,6 +95,30 @@ impl Default for ServerConfig {
         Self {
             bind: "127.0.0.1".to_string(),
             port: 3100,
+            trusted_proxies: Vec::new(),
+            hsts_max_age: 86400,
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TlsConfig {
+    pub mode: String,
+    pub cert_file: String,
+    pub key_file: String,
+    pub self_signed_names: Vec<String>,
+    pub http_redirect_port: Option<u16>,
+}
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            mode: "off".into(),
+            cert_file: String::new(),
+            key_file: String::new(),
+            self_signed_names: Vec::new(),
+            http_redirect_port: None,
         }
     }
 }
@@ -241,6 +268,29 @@ impl AppConfig {
     /// Valide la configuration. Les erreurs sont bloquantes, les avertissements informatifs.
     pub fn validate(&self) -> Vec<Issue> {
         let mut issues = Vec::new();
+        let tls = &self.server.tls;
+        if !["off", "files", "self_signed"].contains(&tls.mode.as_str()) {
+            issues.push(Issue::error(
+                "server.tls.mode",
+                "mode attendu : off, files ou self_signed",
+            ));
+        }
+        if tls.mode == "files" && (tls.cert_file.is_empty() || tls.key_file.is_empty()) {
+            issues.push(Issue::error(
+                "server.tls",
+                "cert_file et key_file sont obligatoires en mode files",
+            ));
+        }
+        if tls
+            .http_redirect_port
+            .is_some_and(|p| p == 0 || p == self.server.port)
+            || (tls.mode == "off" && tls.http_redirect_port.is_some())
+        {
+            issues.push(Issue::error(
+                "server.tls.http_redirect_port",
+                "port distinct et TLS actif requis",
+            ));
+        }
 
         if self.config_version != CONFIG_VERSION {
             issues.push(Issue::error(

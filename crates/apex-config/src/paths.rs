@@ -8,7 +8,7 @@
 //! | Données        | `%ProgramData%\Apex Maint\data\`                | `/var/lib/apex-maint/`              | `<base>/data/`    |
 //! | Journaux       | `%ProgramData%\Apex Maint\logs\`                | `/var/log/apex-maint/`              | `<base>/logs/`    |
 //! | Exécution      | `%ProgramData%\Apex Maint\run\`                 | `/run/apex-maint/`                  | `<base>/run/`     |
-//! | IHM web        | `<dossier du programme>\web\`                   | `/usr/share/apex-maint/web/`        | `static/` trouvé  |
+//! | IHM web        | `<dossier du programme>\web\`                   | `/usr/share/apex-maint/static/`        | `static/` trouvé  |
 
 use std::path::{Path, PathBuf};
 
@@ -68,7 +68,7 @@ impl Layout {
                 data_dir: PathBuf::from("/var/lib/apex-maint"),
                 log_dir: PathBuf::from("/var/log/apex-maint"),
                 run_dir: PathBuf::from("/run/apex-maint"),
-                default_web_dir: Some(PathBuf::from("/usr/share/apex-maint/web")),
+                default_web_dir: Some(PathBuf::from("/usr/share/apex-maint/static")),
             }
         }
     }

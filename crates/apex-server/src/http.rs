@@ -15,11 +15,16 @@ use tower_http::services::ServeDir;
 
 mod auth;
 mod documents;
+mod exploitation;
+mod integration;
 mod interventions;
 mod maintenance;
 mod pilotage;
 mod referentiel;
 mod stock;
+mod terrain;
+#[cfg(test)]
+mod terrain_tests;
 
 /// En-têtes ajoutés par un proxy inverse (nginx, Caddy, Apache, IIS/ARR...).
 const PROXY_HEADERS: &[&str] = &[
@@ -48,6 +53,10 @@ pub struct RuntimeInfo {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub integration_rates: integration::RateLimits,
+    pub tls_mode: String,
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+    pub hsts_max_age: u32,
     pub widget_cache: pilotage::WidgetCache,
     pub files: apex_core::documents::storage::FileStore,
     pub pool: sqlx::SqlitePool,
@@ -57,6 +66,7 @@ pub struct AppState {
     pub control_token: String,
     pub shutdown_notify: Arc<tokio::sync::Notify>,
     pub started_at: DateTime<Utc>,
+    pub terrain_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Détermine si la requête provient d'un pair direct sur la boucle locale sans proxy inverse.
@@ -100,6 +110,9 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
         .merge(stock::routes())
         .merge(maintenance::routes())
         .merge(documents::routes())
+        .merge(exploitation::routes())
+        .merge(terrain::routes())
+        .merge(integration::routes())
         .merge(pilotage::routes())
         .route("/health", get(api_health))
         .route("/system/status", get(api_system_status))
@@ -110,6 +123,10 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
             state.clone(),
             documents::upload_limit,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            terrain::synchronize,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard));
 
     let static_service =
@@ -118,7 +135,10 @@ pub fn router(state: AppState, web_dir: &FsPath) -> Router {
     Router::new()
         .nest("/api", api_router)
         .fallback_service(static_service)
-        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_headers_middleware,
+        ))
         .with_state(state)
 }
 
@@ -135,7 +155,37 @@ async fn minimal_fallback_handler() -> (
 }
 
 /// En-têtes de sécurité : CSP, nosniff, DENY, no-referrer, et Cache-Control: no-store sur l'API.
-async fn security_headers_middleware(req: Request, next: Next) -> Response {
+async fn security_headers_middleware(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let mut https = state.tls_mode != "off";
+    if let Some(ConnectInfo(peer)) = req.extensions().get::<ConnectInfo<SocketAddr>>().copied() {
+        if state
+            .trusted_proxies
+            .iter()
+            .any(|ip| ip.to_canonical() == peer.ip().to_canonical())
+        {
+            https = req
+                .headers()
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                == Some("https")
+                || https;
+            if let Some(ip) = req
+                .headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .and_then(|v| v.trim().parse::<std::net::IpAddr>().ok())
+            {
+                req.extensions_mut()
+                    .insert(ConnectInfo(SocketAddr::new(ip, peer.port())));
+            }
+        }
+    }
+    req.extensions_mut().insert(RequestHttps(https));
     let is_api = req.uri().path().starts_with("/api/") || req.uri().path() == "/api";
     let mut res = next.run(req).await;
     if is_api
@@ -165,6 +215,12 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
         *res.body_mut() = replacement.into_body();
     }
     let h = res.headers_mut();
+    if https {
+        h.insert(
+            "strict-transport-security",
+            HeaderValue::from_str(&format!("max-age={}", state.hsts_max_age)).expect("durée HSTS"),
+        );
+    }
     h.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
@@ -182,11 +238,14 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
         }
         h.insert(
             "content-security-policy",
-            HeaderValue::from_static("default-src 'self'"),
+            HeaderValue::from_static("default-src 'self'; worker-src 'self'; manifest-src 'self'"),
         );
     }
     res
 }
+
+#[derive(Clone, Copy)]
+pub struct RequestHttps(pub bool);
 
 /// Santé du moteur (`GET /api/health`).
 async fn api_health(

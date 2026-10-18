@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Erreur métier d'Apex Maint, portant le code HTTP approprié.
 #[derive(Debug, Error)]
 pub enum MaintError {
+    #[error("Précondition non satisfaite : {0}")]
+    PreconditionFailed(String),
+    #[error("Clé d'idempotence invalide : {0}")]
+    Unprocessable(String),
     #[error("{0}")]
     UnsupportedMediaType(String),
     #[error("{0}")]
@@ -42,6 +46,8 @@ impl MaintError {
     /// Code d'état HTTP correspondant à l'erreur.
     pub fn http_status(&self) -> u16 {
         match self {
+            Self::PreconditionFailed(_) => 412,
+            Self::Unprocessable(_) => 422,
             Self::UnsupportedMediaType(_) => 415,
             Self::Gone(_) => 410,
             Self::PayloadTooLarge(_) => 413,

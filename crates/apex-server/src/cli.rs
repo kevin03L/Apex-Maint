@@ -20,6 +20,18 @@ UTILISATION :
         Réécrit la configuration au format courant (valeurs conservées, sauvegarde préalable).
 
   apex-maint version      Affiche la version.
+  apex-maint service install|uninstall|start|stop|restart|status|enable|disable
+        Administration du service (Windows : install accepte --account <compte>).
+  apex-maint backup [--output <dossier>] [--include-files folder_only|all|none]
+                    [--with-secret-key] [--password-file <fichier>]
+        Sauvegarde cohérente à chaud.
+  apex-maint restore <archive> [--password-file <fichier>] [--force]
+        Restaure une archive, moteur arrêté ; confirmation et sauvegarde préalable par défaut.
+  apex-maint purge [--dry-run] [--older-than <années>]
+        Purge les données supprimées anciennes (2 ans minimum).
+  apex-maint files verify [--storage <id>] [--sample <n>]
+  apex-maint files migrate --from <id> --to <id> [--dry-run]
+        Vérifie ou migre les fichiers joints, sans supprimer les sources.
   apex-maint help         Affiche cette aide.
 
 CODES DE SORTIE :
@@ -42,6 +54,8 @@ pub struct InitOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    Exploitation(Vec<String>),
+    Service(String, Option<String>),
     Run,
     ConfigCheck,
     ConfigShow,
@@ -58,6 +72,51 @@ pub struct Cli {
 }
 
 pub fn parse(args: &[String]) -> Result<Cli, String> {
+    if args
+        .first()
+        .is_some_and(|s| ["backup", "restore", "purge", "files", "service"].contains(&s.as_str()))
+    {
+        let mut words = Vec::new();
+        let mut config = None;
+        let mut it = args.iter();
+        while let Some(word) = it.next() {
+            if word == "--config" || word == "-c" {
+                config = Some(PathBuf::from(
+                    it.next().ok_or("L'option --config attend un fichier")?,
+                ));
+            } else {
+                words.push(word.clone());
+            }
+        }
+        let command = if words[0] == "service" {
+            let account = if words.len() == 4 && words[1] == "install" && words[2] == "--account" {
+                Some(words[3].clone())
+            } else {
+                None
+            };
+            if (words.len() != 2 && account.is_none())
+                || ![
+                    "install",
+                    "uninstall",
+                    "start",
+                    "stop",
+                    "restart",
+                    "status",
+                    "enable",
+                    "disable",
+                    "permissions",
+                    "run",
+                ]
+                .contains(&words[1].as_str())
+            {
+                return Err("Action de service invalide".into());
+            }
+            Command::Service(words[1].clone(), account)
+        } else {
+            Command::Exploitation(words)
+        };
+        return Ok(Cli { command, config });
+    }
     let mut config: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::new();
     let mut init = InitOptions::default();
