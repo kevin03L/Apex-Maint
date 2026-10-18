@@ -135,6 +135,102 @@ function statusBadge(status) {
   }
 }
 
+/** Formate une durée en minutes en chaîne lisible (ex: "1 h 30 min"). */
+function formatDurationMinutes(minutes) {
+  if (minutes === null || minutes === undefined || minutes === '') return '—';
+  const num = parseInt(minutes, 10);
+  if (isNaN(num)) return '—';
+  if (num === 0) return '0 min';
+  if (num < 60) return `${num} min`;
+  const h = Math.floor(num / 60);
+  const m = num % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** Libellé convivial pour un statut d'intervention. */
+function formatInterventionStatus(status) {
+  switch (status) {
+    case 'open':
+      return 'Ouverte';
+    case 'in_progress':
+      return 'En cours';
+    case 'completed':
+      return 'Clôturée';
+    case 'cancelled':
+      return 'Annulée';
+    default:
+      return status || '—';
+  }
+}
+
+/** Badge stylé pour un statut d'intervention. */
+function interventionStatusBadge(status) {
+  return `<span class="badge badge-status-${esc(status)}">${esc(formatInterventionStatus(status))}</span>`;
+}
+
+/** Libellé convivial pour une priorité d'intervention. */
+function formatInterventionPriority(priority) {
+  switch (priority) {
+    case 'low':
+      return 'Basse';
+    case 'medium':
+      return 'Moyenne';
+    case 'high':
+      return 'Haute';
+    case 'critical':
+      return 'Critique';
+    default:
+      return priority || '—';
+  }
+}
+
+/** Badge stylé pour une priorité d'intervention. */
+function interventionPriorityBadge(priority) {
+  return `<span class="badge badge-priority-${esc(priority)}">${esc(formatInterventionPriority(priority))}</span>`;
+}
+
+/** Libellé convivial pour un état machine. */
+function formatMachineState(state) {
+  switch (state) {
+    case 'ARRET':
+      return 'Arrêt machine';
+    case 'DEGRADE':
+      return 'Dégradé';
+    case 'FONCTIONNEL':
+      return 'Fonctionnel';
+    default:
+      return state || '—';
+  }
+}
+
+/** Badge stylé pour un état machine. */
+function machineStateBadge(machineState) {
+  const norm = (machineState || 'FONCTIONNEL').toUpperCase();
+  const cls = norm === 'ARRET' ? 'badge-machine-arret' : (norm === 'DEGRADE' ? 'badge-machine-degrade' : 'badge-machine-fonctionnel');
+  return `<span class="badge ${cls}">${esc(formatMachineState(norm))}</span>`;
+}
+
+/** Libellé convivial pour un type d'intervention. */
+function formatInterventionType(type) {
+  switch (type) {
+    case 'corrective':
+      return 'Corrective';
+    case 'preventive':
+      return 'Préventive';
+    case 'a_posteriori':
+      return 'A posteriori';
+    case 'hors_equipement':
+      return 'Hors équipement';
+    default:
+      return type || '—';
+  }
+}
+
+/** Badge stylé pour un type d'intervention. */
+function interventionTypeBadge(type) {
+  return `<span class="badge badge-type">${esc(formatInterventionType(type))}</span>`;
+}
+
 /** Libellé lisible pour un type d'emplacement. */
 function locationKindLabel(kind) {
   switch (kind) {
@@ -418,8 +514,8 @@ function confirmDialog(title, message, confirmLabel = 'Confirmer', danger = fals
 // 5. MODULES, PERMISSIONS ET RÔLES
 // ============================================================================
 
-/** Phase actuelle du projet (Phase 2 : Référentiel multi-sites). */
-const CURRENT_PHASE = 2;
+/** Phase actuelle du projet (Phase 3 : Module Interventions). */
+const CURRENT_PHASE = 3;
 
 /** Liste de tous les modules de l'application avec leur permission de vue requise. */
 const MODULES = [
@@ -561,6 +657,19 @@ const state = {
   suppliersLoading: false,
   suppliersSearchQuery: '',
 
+  // Interventions (Phase 3)
+  interventions: [],
+  interventionsNextCursor: null,
+  interventionsLoading: false,
+  interventionsSearchQuery: '',
+  interventionsStatusFilter: '',
+  interventionsTypeFilter: '',
+  interventionsPriorityFilter: '',
+  interventionsEquipmentFilter: '',
+  interventionsQuickTab: 'all', // 'all' | 'active' | 'mine' | 'arret' | 'critical'
+  currentInterventionDetail: null,
+  currentInterventionLoading: false,
+
   // Vue Utilisateurs
   usersTab: 'users', // 'users' | 'permissions'
   usersSearchQuery: '',
@@ -583,6 +692,11 @@ function hasPermission(permKey) {
 /** L'utilisateur courant est-il administrateur ? */
 function isAdmin() {
   return state.currentUser && state.currentUser.role === 'admin';
+}
+
+/** L'utilisateur courant est-il responsable de maintenance ? */
+function isResponsable() {
+  return state.currentUser && state.currentUser.role === 'responsable';
 }
 
 /** L'utilisateur courant a-t-il le droit de gérer les utilisateurs ? */
@@ -989,20 +1103,31 @@ function setMobileNav(open) {
 // 10. ROUTEUR ET PAGES DE L'APPLICATION
 // ============================================================================
 
-/** Identifiant de la route courante d'après le fragment d'URL. */
-function currentRoute() {
+/** Informations de la route courante d'après le fragment d'URL. */
+function currentRouteInfo() {
   const raw = (location.hash || '').replace(/^#\/?/, '').trim();
   const path = raw.split(/[?#]/)[0].replace(/\/+$/, '');
-  if (path === 'profil') return 'profil';
-  const mod = MODULES.find(m => m.id === path);
-  return mod ? mod.id : DEFAULT_ROUTE;
+  if (path === 'profil') return { route: 'profil', id: null };
+  const parts = path.split('/');
+  const root = parts[0];
+  const id = parts.length > 1 ? parts.slice(1).join('/') : null;
+  const mod = MODULES.find(m => m.id === root);
+  return {
+    route: mod ? mod.id : DEFAULT_ROUTE,
+    id: id || null,
+  };
+}
+
+/** Identifiant de la route courante d'après le fragment d'URL. */
+function currentRoute() {
+  return currentRouteInfo().route;
 }
 
 /** Rendu de la vue correspondant à la route active. */
 async function render() {
   if (!state.currentUser) return;
 
-  const route = currentRoute();
+  const { route, id } = currentRouteInfo();
   closeUserDropdown();
 
   // Mise à jour de l'état actif dans le menu
@@ -1039,6 +1164,14 @@ async function render() {
 
   if (route === 'tableau-de-bord') {
     view.innerHTML = dashboardPage();
+  } else if (route === 'interventions') {
+    if (id) {
+      view.innerHTML = interventionDetailPage(id);
+      await initInterventionDetailPageView(id);
+    } else {
+      view.innerHTML = interventionsPage();
+      await initInterventionsPageView();
+    }
   } else if (route === 'utilisateurs') {
     view.innerHTML = usersPage();
     await initUsersPageView();
@@ -3866,6 +3999,1270 @@ async function deleteSupplier(supplierId) {
 }
 
 // ============================================================================
+// 14E. MODULE INTERVENTIONS (PHASE 3)
+// ============================================================================
+
+function interventionsPage() {
+  const canCreate = hasPermission('interventions.create');
+
+  const quickTabsHtml = `
+    <div class="filter-tabs" role="tablist" aria-label="Filtres rapides d'interventions">
+      <button type="button" class="filter-tab ${state.interventionsQuickTab === 'all' ? 'active' : ''}" data-action="tab-interventions" data-args="${jsArg('all')}">
+        Toutes
+      </button>
+      <button type="button" class="filter-tab ${state.interventionsQuickTab === 'active' ? 'active' : ''}" data-action="tab-interventions" data-args="${jsArg('active')}">
+        ${icon('i-wrench')} <span>En cours / Ouvertes</span>
+      </button>
+      <button type="button" class="filter-tab ${state.interventionsQuickTab === 'mine' ? 'active' : ''}" data-action="tab-interventions" data-args="${jsArg('mine')}">
+        ${icon('i-user')} <span>Mes interventions</span>
+      </button>
+      <button type="button" class="filter-tab filter-tab-arret ${state.interventionsQuickTab === 'arret' ? 'active' : ''}" data-action="tab-interventions" data-args="${jsArg('arret')}">
+        ${icon('i-alert')} <span>Arrêt machine</span>
+      </button>
+      <button type="button" class="filter-tab filter-tab-crit ${state.interventionsQuickTab === 'critical' ? 'active' : ''}" data-action="tab-interventions" data-args="${jsArg('critical')}">
+        ${icon('i-alert')} <span>Critiques</span>
+      </button>
+    </div>
+  `;
+
+  const extraFilters = `
+    <select data-action="filter-interventions-type" aria-label="Filtrer par type">
+      <option value="">Tous les types</option>
+      <option value="corrective" ${state.interventionsTypeFilter === 'corrective' ? 'selected' : ''}>Corrective</option>
+      <option value="preventive" ${state.interventionsTypeFilter === 'preventive' ? 'selected' : ''}>Préventive</option>
+      <option value="a_posteriori" ${state.interventionsTypeFilter === 'a_posteriori' ? 'selected' : ''}>A posteriori</option>
+      <option value="hors_equipement" ${state.interventionsTypeFilter === 'hors_equipement' ? 'selected' : ''}>Hors équipement</option>
+    </select>
+    <select data-action="filter-interventions-status" aria-label="Filtrer par statut">
+      <option value="">Tous les statuts</option>
+      <option value="open" ${state.interventionsStatusFilter === 'open' ? 'selected' : ''}>Ouverte</option>
+      <option value="in_progress" ${state.interventionsStatusFilter === 'in_progress' ? 'selected' : ''}>En cours</option>
+      <option value="completed" ${state.interventionsStatusFilter === 'completed' ? 'selected' : ''}>Clôturée</option>
+      <option value="cancelled" ${state.interventionsStatusFilter === 'cancelled' ? 'selected' : ''}>Annulée</option>
+    </select>
+    <select data-action="filter-interventions-priority" aria-label="Filtrer par priorité">
+      <option value="">Toutes les priorités</option>
+      <option value="low" ${state.interventionsPriorityFilter === 'low' ? 'selected' : ''}>Basse</option>
+      <option value="medium" ${state.interventionsPriorityFilter === 'medium' ? 'selected' : ''}>Moyenne</option>
+      <option value="high" ${state.interventionsPriorityFilter === 'high' ? 'selected' : ''}>Haute</option>
+      <option value="critical" ${state.interventionsPriorityFilter === 'critical' ? 'selected' : ''}>Critique</option>
+    </select>
+    <select id="interventionsEquipFilterSelect" data-action="filter-interventions-equipment" aria-label="Filtrer par équipement">
+      <option value="">Tous les équipements</option>
+      ${state.equipments.map(e => `<option value="${esc(e.id)}" ${state.interventionsEquipmentFilter === e.id ? 'selected' : ''}>${esc(e.code)} - ${esc(e.name)}</option>`).join('')}
+    </select>
+  `;
+
+  return `
+    <div class="page-head">
+      ${icon('i-wrench')}
+      <h1>Interventions de maintenance</h1>
+    </div>
+    ${quickTabsHtml}
+    ${renderToolbar({
+      searchAction: 'filter-interventions-search',
+      searchPlaceholder: 'Rechercher par code, titre, description…',
+      searchValue: state.interventionsSearchQuery,
+      extraFiltersHtml: extraFilters,
+      canCreate,
+      primaryAction: 'open-create-intervention',
+      primaryLabel: 'Nouvelle intervention',
+      primaryIcon: 'i-plus',
+    })}
+    <div id="interventionsContainer">
+      <p class="hint">${icon('i-clock')} Chargement des interventions…</p>
+    </div>
+  `;
+}
+
+async function initInterventionsPageView() {
+  if (!state.equipments.length) {
+    try {
+      const siteParam = state.selectedSiteId ? `?site_id=${encodeURIComponent(state.selectedSiteId)}&limit=100` : '?limit=100';
+      const eqRes = await api(`/api/equipments${siteParam}`);
+      if (eqRes && Array.isArray(eqRes.items)) {
+        state.equipments = eqRes.items;
+        const sel = document.getElementById('interventionsEquipFilterSelect');
+        if (sel) {
+          sel.innerHTML = `<option value="">Tous les équipements</option>` +
+            state.equipments.map(e => `<option value="${esc(e.id)}" ${state.interventionsEquipmentFilter === e.id ? 'selected' : ''}>${esc(e.code)} - ${esc(e.name)}</option>`).join('');
+        }
+      }
+    } catch (_) {}
+  }
+  await loadInterventionsList(true);
+}
+
+async function loadInterventionsList(reset = true) {
+  const container = document.getElementById('interventionsContainer');
+  if (!container && reset) return;
+
+  if (reset) {
+    state.interventions = [];
+    state.interventionsNextCursor = null;
+  }
+
+  state.interventionsLoading = true;
+  if (!reset) renderInterventionsListView();
+
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', '50');
+    if (state.interventionsSearchQuery) params.set('q', state.interventionsSearchQuery.trim());
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    if (state.interventionsTypeFilter) params.set('type', state.interventionsTypeFilter);
+    if (state.interventionsEquipmentFilter) params.set('equipment_id', state.interventionsEquipmentFilter);
+
+    if (state.interventionsQuickTab === 'active') {
+      params.set('status', 'active');
+    } else if (state.interventionsStatusFilter) {
+      params.set('status', state.interventionsStatusFilter);
+    }
+
+    if (state.interventionsQuickTab === 'critical') {
+      params.set('priority', 'critical');
+    } else if (state.interventionsPriorityFilter) {
+      params.set('priority', state.interventionsPriorityFilter);
+    }
+
+    if (state.interventionsQuickTab === 'arret') {
+      params.set('machine_state', 'ARRET');
+    }
+
+    if (state.interventionsQuickTab === 'mine' && state.currentUser) {
+      params.set('assigned_to', state.currentUser.id);
+    }
+
+    if (!reset && state.interventionsNextCursor) {
+      params.set('cursor', state.interventionsNextCursor);
+    }
+
+    const res = await api(`/api/interventions?${params.toString()}`);
+    const items = res && Array.isArray(res.items) ? res.items : [];
+    const nextCursor = res ? res.next_cursor : null;
+
+    if (reset) {
+      state.interventions = items;
+    } else {
+      state.interventions = state.interventions.concat(items);
+    }
+    state.interventionsNextCursor = nextCursor;
+  } catch (err) {
+    if (container) {
+      container.innerHTML = `<p class="hint state-ko">Erreur lors du chargement des interventions : ${esc(err.message)}</p>`;
+    }
+    state.interventionsLoading = false;
+    return;
+  }
+
+  state.interventionsLoading = false;
+  renderInterventionsListView();
+}
+
+function renderInterventionsListView() {
+  const container = document.getElementById('interventionsContainer');
+  if (!container) return;
+
+  const items = state.interventions;
+  const canEdit = hasPermission('interventions.edit');
+
+  if (!items.length && !state.interventionsLoading) {
+    container.innerHTML = `
+      <div class="table-container">
+        <table class="data-table">
+          <tbody>
+            <tr><td class="empty-cell">Aucune intervention correspondant aux critères.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+    return;
+  }
+
+  const rows = items.map(i => {
+    let equipHtml = '<span class="hint">Hors équipement</span>';
+    if (i.equipment) {
+      equipHtml = `
+        <div>
+          <button type="button" class="link-action" data-action="open-detail-equipment" data-args="${jsArg(i.equipment.id)}" title="Voir l'équipement">
+            <b>${esc(i.equipment.code)}</b>
+          </button>
+          <span class="hint">— ${esc(i.equipment.name)}</span>
+          ${i.equipment.status ? statusBadge(i.equipment.status) : ''}
+        </div>
+      `;
+    }
+
+    let techsHtml = '<span class="hint">—</span>';
+    if (Array.isArray(i.technicians) && i.technicians.length > 0) {
+      techsHtml = i.technicians.map(t => {
+        const leadStar = t.is_lead ? ` <span class="badge-lead" title="Intervenant principal">Lead</span>` : '';
+        return `<div><span class="mono">${esc(t.display_name)}</span>${leadStar}</div>`;
+      }).join('');
+    }
+
+    const actions = [
+      `<a href="#/interventions/${esc(i.id)}" class="btn sm" title="Ouvrir la fiche d'intervention">
+        ${icon('i-info')} <span>Détail</span>
+      </a>`
+    ];
+
+    if (canEdit && i.status === 'open') {
+      actions.push(`
+        <button type="button" class="btn sm primary" title="Prendre en charge cette intervention" data-action="take-intervention" data-args="${jsArg(i.id)}">
+          ${icon('i-wrench')} <span>Prendre en charge</span>
+        </button>
+      `);
+    }
+
+    const subBadge = i.sub_interventions_count > 0
+      ? `<span class="badge" title="${esc(i.sub_interventions_count)} sous-intervention(s) rattachée(s)">${esc(i.sub_interventions_count)} sous-tâche(s)</span>`
+      : '';
+
+    return `
+      <tr>
+        <td>
+          <a href="#/interventions/${esc(i.id)}" class="link-action mono" title="Consulter la fiche">
+            <b>${esc(i.code)}</b>
+          </a>
+        </td>
+        <td>${formatDate(i.reported_at || i.created_at)}</td>
+        <td>
+          <a href="#/interventions/${esc(i.id)}" class="link-action" title="Consulter la fiche">
+            <b>${esc(i.title)}</b>
+          </a>
+          <div class="hint-spaced">${equipHtml}</div>
+          ${subBadge}
+        </td>
+        <td>${interventionTypeBadge(i.type)}</td>
+        <td>${interventionPriorityBadge(i.priority)}</td>
+        <td>${machineStateBadge(i.machine_state)}</td>
+        <td>${techsHtml}</td>
+        <td class="mono">${formatDurationMinutes(i.duration_minutes)}</td>
+        <td>${interventionStatusBadge(i.status)}</td>
+        <td><div class="cell-actions">${actions.join('')}</div></td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Référence</th>
+            <th>Date signalement</th>
+            <th>Titre & Équipement</th>
+            <th>Type</th>
+            <th>Priorité</th>
+            <th>État machine</th>
+            <th>Intervenants</th>
+            <th>Durée</th>
+            <th>Statut</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+    ${renderLoadMore(state.interventionsNextCursor, 'load-more-interventions', state.interventionsLoading)}
+  `;
+}
+
+// --- FICHE DÉTAIL D'INTERVENTION ---
+
+function interventionDetailPage(id) {
+  return `
+    <div class="intervention-detail">
+      <div class="detail-nav-bar">
+        <a href="#/interventions" class="btn" title="Retour à la liste des interventions">
+          ${icon('i-arrow-left')} <span>Retour aux interventions</span>
+        </a>
+      </div>
+      <div id="interventionDetailContainer">
+        <p class="hint">${icon('i-clock')} Chargement des détails de l'intervention…</p>
+      </div>
+    </div>
+  `;
+}
+
+async function initInterventionDetailPageView(id) {
+  await loadInterventionDetail(id);
+}
+
+async function loadInterventionDetail(id) {
+  const container = document.getElementById('interventionDetailContainer');
+  if (!container) return;
+
+  state.currentInterventionLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des détails de l'intervention…</p>`;
+
+  try {
+    const inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+    state.currentInterventionDetail = inter;
+    renderInterventionDetailView(inter);
+  } catch (err) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement de l'intervention : ${esc(err.message)}</p>
+        <p><a href="#/interventions" class="btn">${icon('i-arrow-left')} <span>Retour à la liste</span></a></p>
+      </div>
+    `;
+  } finally {
+    state.currentInterventionLoading = false;
+  }
+}
+
+function renderInterventionDetailView(inter) {
+  const container = document.getElementById('interventionDetailContainer');
+  if (!container) return;
+
+  const canEdit = hasPermission('interventions.edit');
+  const canDelete = hasPermission('interventions.delete');
+  const currentUserId = state.currentUser ? state.currentUser.id : null;
+  const isAssigned = Array.isArray(inter.technicians) && inter.technicians.some(t => t.user_id === currentUserId);
+  const isOpen = inter.status === 'open';
+  const isInProgress = inter.status === 'in_progress';
+  const isCompleted = inter.status === 'completed';
+  const isCancelled = inter.status === 'cancelled';
+  const isMachineArret = inter.machine_state === 'ARRET' && (isOpen || isInProgress);
+
+  let statusBannerHtml = '';
+  if (isCompleted) {
+    statusBannerHtml = `
+      <div class="banner-status banner-completed">
+        ${icon('i-check')}
+        <div>
+          <b>Intervention clôturée le ${formatDate(inter.completed_at)}.</b>
+          <div>Durée totale passée : <b>${formatDurationMinutes(inter.duration_minutes)}</b>.</div>
+        </div>
+      </div>
+    `;
+  } else if (isCancelled) {
+    statusBannerHtml = `
+      <div class="banner-status banner-cancelled">
+        ${icon('i-ban')}
+        <div>
+          <b>Intervention annulée le ${formatDate(inter.cancelled_at)}${inter.cancelled_by ? ` par ${esc(inter.cancelled_by.display_name)}` : ''}.</b>
+          <div>Motif de l'annulation : <em>« ${esc(inter.cancel_reason || 'Aucun motif renseigné')} »</em></div>
+        </div>
+      </div>
+    `;
+  } else if (isMachineArret) {
+    statusBannerHtml = `
+      <div class="banner-status banner-arret">
+        ${icon('i-alert')}
+        <div>
+          <b>Arrêt machine déclaré :</b> L'équipement associé est consigné hors service jusqu'à la fin complète des travaux.
+        </div>
+      </div>
+    `;
+  }
+
+  const quickActions = [];
+
+  if (canEdit && isOpen) {
+    quickActions.push(`
+      <button type="button" class="btn primary" data-action="take-intervention" data-args="${jsArg(inter.id)}">
+        ${icon('i-wrench')} <span>Prendre en charge</span>
+      </button>
+    `);
+  }
+
+  if (canEdit && isInProgress) {
+    quickActions.push(`
+      <button type="button" class="btn primary" data-action="open-complete-intervention" data-args="${jsArg(inter.id)}">
+        ${icon('i-check')} <span>Clôturer l'intervention</span>
+      </button>
+    `);
+
+    if (!isAssigned) {
+      quickActions.push(`
+        <button type="button" class="btn" data-action="assign-myself" data-args="${jsArg(inter.id)}">
+          ${icon('i-user')} <span>M'assigner</span>
+        </button>
+      `);
+    }
+  }
+
+  if (canEdit && (isOpen || isInProgress)) {
+    quickActions.push(`
+      <button type="button" class="btn" data-action="open-cancel-intervention" data-args="${jsArg(inter.id)}">
+        ${icon('i-ban')} <span>Annuler l'intervention</span>
+      </button>
+    `);
+    quickActions.push(`
+      <button type="button" class="btn" data-action="open-edit-intervention" data-args="${jsArg(inter.id)}">
+        ${icon('i-edit')} <span>Modifier</span>
+      </button>
+    `);
+  }
+
+  if (canDelete) {
+    quickActions.push(`
+      <button type="button" class="btn danger" data-action="delete-intervention" data-args="${jsArg(inter.id)}">
+        ${icon('i-trash')} <span>Supprimer</span>
+      </button>
+    `);
+  }
+
+  let equipHtml = '<span class="hint">Intervention hors équipement</span>';
+  if (inter.equipment) {
+    equipHtml = `
+      <div>
+        <button type="button" class="link-action" data-action="open-detail-equipment" data-args="${jsArg(inter.equipment.id)}">
+          <b>${esc(inter.equipment.code)} — ${esc(inter.equipment.name)}</b>
+        </button>
+        <span class="detail-card-spaced">${statusBadge(inter.equipment.status)}</span>
+      </div>
+    `;
+  }
+
+  let parentBannerHtml = '';
+  if (inter.parent) {
+    parentBannerHtml = `
+      <div class="hint-spaced">
+        ${icon('i-info')} <b>Sous-tâche rattachée à :</b>
+        <a href="#/interventions/${esc(inter.parent.id)}" class="link-action">
+          <b>${esc(inter.parent.code)}</b> — ${esc(inter.parent.title)}
+        </a>
+      </div>
+    `;
+  }
+
+  const techList = Array.isArray(inter.technicians) ? inter.technicians : [];
+  const canManageTechs = canEdit && (isOpen || isInProgress);
+
+  let techRows = techList.map(t => {
+    const isMe = t.user_id === currentUserId;
+    const canEditThisTime = canManageTechs && (isAdmin() || isResponsable() || isMe);
+
+    const timeActions = [];
+    if (canEditThisTime) {
+      timeActions.push(`
+        <button type="button" class="btn sm" data-action="open-technician-time" data-args="${jsArg({ interventionId: inter.id, userId: t.user_id, currentMinutes: t.duration_minutes, userName: t.display_name })}" title="Saisir ou modifier le temps passé">
+          ${icon('i-clock')} <span>${t.duration_minutes !== null ? 'Modifier le temps' : (isMe ? 'Saisir mon temps' : 'Saisir le temps')}</span>
+        </button>
+      `);
+    }
+
+    if (canManageTechs) {
+      timeActions.push(`
+        <button type="button" class="btn sm danger" data-action="remove-technician" data-args="${jsArg({ interventionId: inter.id, userId: t.user_id })}" title="Retirer cet intervenant">
+          ${icon('i-trash')}
+        </button>
+      `);
+    }
+
+    return `
+      <tr>
+        <td>
+          <b>${esc(t.display_name)}</b>
+          <div class="hint mono">${esc(t.username)} (${esc(formatRole(t.role))})</div>
+        </td>
+        <td>
+          ${t.is_lead ? '<span class="badge-lead">Intervenant référent (Lead)</span>' : '<span class="badge">Intervenant</span>'}
+        </td>
+        <td>${formatDate(t.assigned_at)}</td>
+        <td class="mono">
+          <b>${formatDurationMinutes(t.duration_minutes)}</b>
+        </td>
+        <td><div class="cell-actions">${timeActions.join('')}</div></td>
+      </tr>
+    `;
+  }).join('');
+
+  if (!techList.length) {
+    techRows = `<tr><td colspan="5" class="empty-cell">Aucun intervenant assigné pour le moment.</td></tr>`;
+  }
+
+  const subList = Array.isArray(inter.sub_interventions) ? inter.sub_interventions : [];
+  let subRows = subList.map(sub => `
+    <tr>
+      <td>
+        <a href="#/interventions/${esc(sub.id)}" class="link-action mono">
+          <b>${esc(sub.code)}</b>
+        </a>
+      </td>
+      <td>
+        <a href="#/interventions/${esc(sub.id)}" class="link-action">
+          <b>${esc(sub.title)}</b>
+        </a>
+      </td>
+      <td>${interventionTypeBadge(sub.type)}</td>
+      <td>${interventionPriorityBadge(sub.priority)}</td>
+      <td>${machineStateBadge(sub.machine_state)}</td>
+      <td>${interventionStatusBadge(sub.status)}</td>
+      <td>
+        <a href="#/interventions/${esc(sub.id)}" class="btn sm">
+          ${icon('i-info')} <span>Consulter</span>
+        </a>
+      </td>
+    </tr>
+  `).join('');
+
+  if (!subList.length) {
+    subRows = `<tr><td colspan="7" class="empty-cell">Aucune sous-intervention rattachée.</td></tr>`;
+  }
+
+  container.innerHTML = `
+    <!-- CARTE D'EN-TÊTE -->
+    <section class="detail-header-card">
+      <div class="detail-header-top">
+        <div class="detail-title-block">
+          ${parentBannerHtml}
+          <div class="detail-code-row">
+            <span class="detail-code-label mono">${esc(inter.code)}</span>
+            <span class="detail-title-label">${esc(inter.title)}</span>
+          </div>
+          <div class="detail-badges-row">
+            ${interventionStatusBadge(inter.status)}
+            ${interventionPriorityBadge(inter.priority)}
+            ${machineStateBadge(inter.machine_state)}
+            ${interventionTypeBadge(inter.type)}
+          </div>
+        </div>
+      </div>
+      ${statusBannerHtml}
+      ${quickActions.length ? `<div class="quick-actions-bar">${quickActions.join('')}</div>` : ''}
+    </section>
+
+    <!-- GRILLE DE DÉTAIL -->
+    <div class="detail-grid">
+      <!-- INFORMATIONS GÉNÉRALES -->
+      <section class="card">
+        <h2>${icon('i-info')} Informations générales</h2>
+        <dl class="detail-dl">
+          <dt>Équipement lié</dt><dd>${equipHtml}</dd>
+          <dt>Demandeur</dt><dd>${esc(inter.reported_by ? inter.reported_by.display_name : '—')}</dd>
+          <dt>Signalé le</dt><dd>${formatDate(inter.reported_at)}</dd>
+          <dt>Début effectif</dt><dd>${formatDate(inter.started_at)}</dd>
+          <dt>Clôture effective</dt><dd>${formatDate(inter.completed_at)}</dd>
+          <dt>Durée totale</dt><dd><b class="mono">${formatDurationMinutes(inter.duration_minutes)}</b> (somme des temps intervenants)</dd>
+          <dt>Description</dt><dd>${esc(inter.description || 'Aucune description complémentaire.')}</dd>
+        </dl>
+      </section>
+
+      <!-- COMPTE-RENDU TECHNIQUE -->
+      <section class="card">
+        <h2>${icon('i-doc')} Compte-rendu d'intervention</h2>
+        ${inter.solution_report ? `
+          <div class="solution-report-box">${esc(inter.solution_report)}</div>
+        ` : `
+          <p class="hint">Le compte-rendu technique sera rédigé lors de la clôture des travaux.</p>
+        `}
+      </section>
+    </div>
+
+    <!-- TECHNICIENS ET TEMPS PASSÉ -->
+    <section class="card">
+      <div class="detail-nav-bar">
+        <h2>${icon('i-users')} Intervenants et temps passé</h2>
+        ${canManageTechs ? `
+          <button type="button" class="btn sm" data-action="open-assign-technician" data-args="${jsArg(inter.id)}">
+            ${icon('i-plus')} <span>Assigner un intervenant</span>
+          </button>
+        ` : ''}
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Intervenant</th>
+              <th>Rôle</th>
+              <th>Assigné le</th>
+              <th>Temps passé</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${techRows}
+          </tbody>
+        </table>
+      </div>
+      <div class="tech-total-box">
+        <span>Durée totale cumulée passée sur l'intervention :</span>
+        <span class="tech-total-value mono">${formatDurationMinutes(inter.duration_minutes)}</span>
+      </div>
+    </section>
+
+    <!-- SOUS-INTERVENTIONS -->
+    ${!inter.parent_id ? `
+      <section class="card">
+        <div class="detail-nav-bar">
+          <h2>${icon('i-wrench')} Sous-interventions (${esc(subList.length)})</h2>
+          ${(canEdit && !isCompleted && !isCancelled) ? `
+            <button type="button" class="btn sm" data-action="open-create-sub-intervention" data-args="${jsArg(inter.id)}">
+              ${icon('i-plus')} <span>Créer une sous-tâche</span>
+            </button>
+          ` : ''}
+        </div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Référence</th>
+                <th>Titre</th>
+                <th>Type</th>
+                <th>Priorité</th>
+                <th>État machine</th>
+                <th>Statut</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${subRows}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    ` : ''}
+  `;
+}
+
+// --- MODALES DU MODULE INTERVENTIONS ---
+
+async function openCreateInterventionModal(prefill = {}) {
+  // Charge la liste des techniciens et équipements si nécessaire
+  let siteUsers = [];
+  try {
+    const siteParam = state.selectedSiteId ? `?site_id=${encodeURIComponent(state.selectedSiteId)}` : '';
+    const uRes = await api(`/api/users${siteParam}`);
+    const uList = Array.isArray(uRes) ? uRes : (uRes && Array.isArray(uRes.items) ? uRes.items : []);
+    siteUsers = uList.filter(u => u.active && ['technicien', 'responsable', 'admin'].includes(u.role));
+  } catch (_) {}
+
+  if (!state.equipments.length) {
+    try {
+      const siteParam = state.selectedSiteId ? `?site_id=${encodeURIComponent(state.selectedSiteId)}&limit=100` : '?limit=100';
+      const eqRes = await api(`/api/equipments${siteParam}`);
+      if (eqRes && Array.isArray(eqRes.items)) state.equipments = eqRes.items;
+    } catch (_) {}
+  }
+
+  const defaultType = prefill.type || 'corrective';
+  const defaultMachineState = prefill.machine_state || 'FONCTIONNEL';
+
+  const fieldsHtml = `
+    ${renderSiteFormField()}
+    <div class="form-row">
+      <div class="form-group">
+        <label for="intType">Type d'intervention *</label>
+        <select id="intType" name="type" required data-action="on-intervention-type-change">
+          <option value="corrective" ${defaultType === 'corrective' ? 'selected' : ''}>Corrective (dépannage)</option>
+          <option value="preventive" ${defaultType === 'preventive' ? 'selected' : ''}>Préventive (planifiée)</option>
+          <option value="a_posteriori" ${defaultType === 'a_posteriori' ? 'selected' : ''}>A posteriori (travaux déjà réalisés)</option>
+          <option value="hors_equipement" ${defaultType === 'hors_equipement' ? 'selected' : ''}>Hors équipement (infrastructure, bâtiment)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="intPriority">Priorité *</label>
+        <select id="intPriority" name="priority" required>
+          <option value="low">Basse</option>
+          <option value="medium" selected>Moyenne</option>
+          <option value="high">Haute</option>
+          <option value="critical">Critique (urgente)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group" id="intEquipGroup" ${defaultType === 'hors_equipement' ? 'hidden' : ''}>
+      <label for="intEquipmentId">Équipement concerné *</label>
+      <select id="intEquipmentId" name="equipment_id" ${defaultType === 'hors_equipement' ? '' : 'required'}>
+        <option value="">Sélectionner un équipement…</option>
+        ${state.equipments.map(e => `<option value="${esc(e.id)}" ${prefill.equipment_id === e.id ? 'selected' : ''}>${esc(e.code)} — ${esc(e.name)}</option>`).join('')}
+      </select>
+      <small class="hint">Obligatoire pour les interventions correctives, préventives et a posteriori.</small>
+    </div>
+
+    <div class="form-group">
+      <label for="intMachineState">Impact sur l'état de la machine *</label>
+      <select id="intMachineState" name="machine_state" required data-action="on-intervention-machine-state-change">
+        <option value="FONCTIONNEL" ${defaultMachineState === 'FONCTIONNEL' ? 'selected' : ''}>FONCTIONNEL (machine en service normal)</option>
+        <option value="DEGRADE" ${defaultMachineState === 'DEGRADE' ? 'selected' : ''}>DEGRADE (fonctionnement partiel / provisoire)</option>
+        <option value="ARRET" ${defaultMachineState === 'ARRET' ? 'selected' : ''}>ARRET (machine arrêtée / hors service)</option>
+      </select>
+      <div id="intMachineStateAlert" class="machine-state-alert" ${defaultMachineState === 'ARRET' ? '' : 'hidden'}>
+        ${icon('i-alert')}
+        <span><b>Mise en garde :</b> La sélection « ARRET » basculera automatiquement l'équipement en statut <em>Hors service</em>.</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="intTitle">Titre de l'intervention *</label>
+      <input type="text" id="intTitle" name="title" required placeholder="Ex. Remplacement roulement convoyeur" value="${esc(prefill.title || '')}" />
+    </div>
+
+    <div class="form-group">
+      <label for="intDesc">Description du constat ou de la demande</label>
+      <textarea id="intDesc" name="description" rows="3" placeholder="Description des symptômes, circonstances de la panne…">${esc(prefill.description || '')}</textarea>
+    </div>
+
+    ${siteUsers.length ? `
+      <div class="form-group">
+        <label>Technicien(s) à assigner</label>
+        <div class="checkbox-group">
+          ${siteUsers.map(u => `
+            <label class="checkbox-label">
+              <input type="checkbox" name="technician_ids" value="${esc(u.id)}" ${prefill.technician_ids && prefill.technician_ids.includes(u.id) ? 'checked' : ''} />
+              <span>${esc(u.display_name)} (${esc(formatRole(u.role))})</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    <div id="intAposterioriFields" ${defaultType === 'a_posteriori' ? '' : 'hidden'}>
+      <div class="form-group">
+        <label for="intSolutionReport">Compte-rendu technique des travaux réalisés *</label>
+        <textarea id="intSolutionReport" name="solution_report" rows="3" placeholder="Diagnostic, action corrective réalisée, cause racine…"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="intDurationMinutes">Durée totale passée (minutes) *</label>
+        <input type="number" id="intDurationMinutes" name="duration_minutes" min="1" placeholder="Ex. 60" />
+      </div>
+    </div>
+  `;
+
+  openFormModal({
+    title: prefill.parentId ? 'Créer une sous-intervention' : 'Déclarer une intervention',
+    formId: 'modalInterventionForm',
+    submitAction: 'create-intervention-submit',
+    submitArgs: prefill.parentId || null,
+    submitLabel: 'Créer l\'intervention',
+    fieldsHtml,
+  });
+}
+
+async function handleCreateInterventionSubmit(form) {
+  const parentId = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  const btn = document.getElementById('modalInterventionFormSubmitBtn');
+  const errBox = document.getElementById('modalInterventionFormErrorBox');
+  const errText = document.getElementById('modalInterventionFormErrorBoxText');
+
+  const type = form.type.value;
+  const title = (form.title.value || '').trim();
+  const description = (form.description.value || '').trim() || null;
+  const priority = form.priority.value;
+  const machine_state = form.machine_state.value;
+  const equipment_id = (type === 'hors_equipement') ? null : (form.equipment_id.value || null);
+
+  const techCheckboxes = form.querySelectorAll('input[name="technician_ids"]:checked');
+  const technician_ids = Array.from(techCheckboxes).map(cb => cb.value);
+
+  const payload = {
+    title,
+    description,
+    type,
+    priority,
+    machine_state,
+    equipment_id,
+    technician_ids,
+  };
+
+  if (isAdmin() && form.site_id) {
+    payload.site_id = form.site_id.value;
+  }
+
+  if (type === 'a_posteriori') {
+    payload.solution_report = (form.solution_report.value || '').trim();
+    if (form.duration_minutes.value) {
+      payload.duration_minutes = parseInt(form.duration_minutes.value, 10);
+    }
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    let created;
+    if (parentId) {
+      created = await api(`/api/interventions/${encodeURIComponent(parentId)}/sub-interventions`, {
+        method: 'POST',
+        body: payload,
+      });
+    } else {
+      created = await api('/api/interventions', {
+        method: 'POST',
+        body: payload,
+      });
+    }
+
+    closeModal();
+    notify('Intervention enregistrée avec succès.', 'success');
+
+    if (created && created.id) {
+      location.hash = `#/interventions/${created.id}`;
+    } else {
+      await loadInterventionsList(true);
+    }
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la création.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function openEditInterventionModal(id) {
+  let inter = state.currentInterventionDetail;
+  if (!inter || inter.id !== id) {
+    try {
+      inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+    } catch (err) {
+      notify(err.message, 'error');
+      return;
+    }
+  }
+
+  const fieldsHtml = `
+    <div class="form-row">
+      <div class="form-group">
+        <label for="editIntPriority">Priorité *</label>
+        <select id="editIntPriority" name="priority" required>
+          <option value="low" ${inter.priority === 'low' ? 'selected' : ''}>Basse</option>
+          <option value="medium" ${inter.priority === 'medium' ? 'selected' : ''}>Moyenne</option>
+          <option value="high" ${inter.priority === 'high' ? 'selected' : ''}>Haute</option>
+          <option value="critical" ${inter.priority === 'critical' ? 'selected' : ''}>Critique</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="editIntMachineState">État machine *</label>
+        <select id="editIntMachineState" name="machine_state" required data-action="on-intervention-machine-state-change">
+          <option value="FONCTIONNEL" ${inter.machine_state === 'FONCTIONNEL' ? 'selected' : ''}>FONCTIONNEL</option>
+          <option value="DEGRADE" ${inter.machine_state === 'DEGRADE' ? 'selected' : ''}>DEGRADE</option>
+          <option value="ARRET" ${inter.machine_state === 'ARRET' ? 'selected' : ''}>ARRET (machine arrêtée)</option>
+        </select>
+        <div id="editIntMachineStateAlert" class="machine-state-alert" ${inter.machine_state === 'ARRET' ? '' : 'hidden'}>
+          ${icon('i-alert')}
+          <span><b>Attention :</b> L'équipement passera immédiatement en Hors service.</span>
+        </div>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="editIntTitle">Titre de l'intervention *</label>
+      <input type="text" id="editIntTitle" name="title" value="${esc(inter.title)}" required />
+    </div>
+    <div class="form-group">
+      <label for="editIntDesc">Description</label>
+      <textarea id="editIntDesc" name="description" rows="3">${esc(inter.description || '')}</textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: `Modifier l'intervention « ${inter.code} »`,
+    formId: 'modalEditInterventionForm',
+    submitAction: 'edit-intervention-submit',
+    submitArgs: inter.id,
+    submitLabel: 'Enregistrer les modifications',
+    fieldsHtml,
+  });
+}
+
+async function handleEditInterventionSubmit(form) {
+  const id = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!id) return;
+
+  const btn = document.getElementById('modalEditInterventionFormSubmitBtn');
+  const errBox = document.getElementById('modalEditInterventionFormErrorBox');
+  const errText = document.getElementById('modalEditInterventionFormErrorBoxText');
+
+  const title = (form.title.value || '').trim();
+  const description = (form.description.value || '').trim() || null;
+  const priority = form.priority.value;
+  const machine_state = form.machine_state.value;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: { title, description, priority, machine_state },
+    });
+    closeModal();
+    notify('Intervention mise à jour.', 'success');
+    await loadInterventionDetail(id);
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la modification.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function takeIntervention(id) {
+  try {
+    const res = await api(`/api/interventions/${encodeURIComponent(id)}/take`, {
+      method: 'POST',
+      body: {},
+    });
+    notify('Intervention prise en charge avec succès.', 'success');
+    if (state.currentInterventionDetail && state.currentInterventionDetail.id === id) {
+      await loadInterventionDetail(id);
+    } else {
+      await loadInterventionsList(false);
+    }
+  } catch (err) {
+    notify(err.message || 'Prise en charge refusée.', 'error');
+  }
+}
+
+async function openCompleteInterventionModal(id) {
+  let inter = state.currentInterventionDetail;
+  if (!inter || inter.id !== id) {
+    try {
+      inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+    } catch (err) {
+      notify(err.message, 'error');
+      return;
+    }
+  }
+
+  // La clôture exige au moins un temps saisi
+  const assignedTechs = Array.isArray(inter.technicians) ? inter.technicians : [];
+  const hasReportedTime = assignedTechs.some(t => typeof t.duration_minutes === 'number' && t.duration_minutes >= 0);
+  const currentUserId = state.currentUser ? state.currentUser.id : null;
+
+  const timeWarningHtml = hasReportedTime ? `
+    <div class="hint-spaced">
+      ${icon('i-check')} <b>Temps cumulé comptabilisé :</b> <span class="mono">${formatDurationMinutes(inter.duration_minutes)}</span>.
+    </div>
+  ` : `
+    <div class="machine-state-alert">
+      ${icon('i-alert')}
+      <span><b>Temps requis :</b> La clôture exige qu'au moins un temps soit saisi. Indiquez votre temps ci-dessous :</span>
+    </div>
+    <div class="form-group detail-card-spaced">
+      <label for="closeMyTime">Votre temps passé (en minutes) *</label>
+      <input type="number" id="closeMyTime" name="my_duration_minutes" min="1" required placeholder="Ex. 45" />
+    </div>
+  `;
+
+  const fieldsHtml = `
+    ${timeWarningHtml}
+    <div class="form-group">
+      <label for="closeReport">Compte-rendu technique de solution *</label>
+      <textarea id="closeReport" name="solution_report" rows="4" required placeholder="Description détaillée du diagnostic, des réparations effectuées et de l'état final…"></textarea>
+    </div>
+
+    ${inter.equipment_id ? `
+      <div class="form-group">
+        <label for="closeFinalEquipStatus">Restitution de l'équipement (facultatif)</label>
+        <select id="closeFinalEquipStatus" name="final_equipment_status">
+          <option value="">Recalcul automatique de criticité résiduelle (recommandé)</option>
+          <option value="operational">En service normal (opérationnel)</option>
+          <option value="degraded">Fonctionnement dégradé (réparation provisoire)</option>
+          <option value="out_of_service">Maintenir hors service</option>
+        </select>
+        <small class="hint">Si non précisé, le serveur recalcule le statut selon les éventuelles autres interventions actives sur cet équipement.</small>
+      </div>
+    ` : ''}
+  `;
+
+  openFormModal({
+    title: `Clôturer l'intervention « ${inter.code} »`,
+    formId: 'modalCompleteForm',
+    submitAction: 'complete-intervention-submit',
+    submitArgs: inter.id,
+    submitLabel: 'Valider la clôture',
+    fieldsHtml,
+  });
+}
+
+async function handleCompleteInterventionSubmit(form) {
+  const id = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!id) return;
+
+  const btn = document.getElementById('modalCompleteFormSubmitBtn');
+  const errBox = document.getElementById('modalCompleteFormErrorBox');
+  const errText = document.getElementById('modalCompleteFormErrorBoxText');
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    // Si un temps pour l'utilisateur courant a été saisi dans le formulaire
+    if (form.my_duration_minutes && form.my_duration_minutes.value) {
+      const minutes = parseInt(form.my_duration_minutes.value, 10);
+      if (isNaN(minutes) || minutes < 0) {
+        throw new Error('La durée passée doit être un entier positif.');
+      }
+      // S'assurer qu'il est assigné et enregistrer le temps
+      await api(`/api/interventions/${encodeURIComponent(id)}/technicians/${encodeURIComponent(state.currentUser.id)}/time`, {
+        method: 'PUT',
+        body: { duration_minutes: minutes },
+      });
+    }
+
+    const solution_report = (form.solution_report.value || '').trim();
+    const final_equipment_status = form.final_equipment_status ? form.final_equipment_status.value || null : null;
+
+    const payload = { solution_report };
+    if (final_equipment_status) payload.final_equipment_status = final_equipment_status;
+
+    await api(`/api/interventions/${encodeURIComponent(id)}/complete`, {
+      method: 'POST',
+      body: payload,
+    });
+
+    closeModal();
+    notify('Intervention clôturée avec succès.', 'success');
+    await loadInterventionDetail(id);
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de la clôture.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function openCancelInterventionModal(id) {
+  let inter = state.currentInterventionDetail;
+  if (!inter || inter.id !== id) {
+    try {
+      inter = await api(`/api/interventions/${encodeURIComponent(id)}`);
+    } catch (err) {
+      notify(err.message, 'error');
+      return;
+    }
+  }
+
+  const fieldsHtml = `
+    <div class="machine-state-alert">
+      ${icon('i-alert')}
+      <span><b>Action irréversible :</b> l'annulation est définitive et libère l'équipement si aucune autre intervention n'est active.</span>
+    </div>
+    <div class="form-group detail-card-spaced">
+      <label for="cancelReason">Motif obligatoire de l'annulation *</label>
+      <textarea id="cancelReason" name="reason" rows="3" required placeholder="Précisez la raison de l'annulation (ex. fausse alerte, intervention différée, doublon…)"></textarea>
+    </div>
+  `;
+
+  openFormModal({
+    title: `Annuler l'intervention « ${inter.code} »`,
+    formId: 'modalCancelForm',
+    submitAction: 'cancel-intervention-submit',
+    submitArgs: inter.id,
+    submitLabel: 'Confirmer l\'annulation',
+    fieldsHtml,
+  });
+}
+
+async function handleCancelInterventionSubmit(form) {
+  const id = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!id) return;
+
+  const btn = document.getElementById('modalCancelFormSubmitBtn');
+  const errBox = document.getElementById('modalCancelFormErrorBox');
+  const errText = document.getElementById('modalCancelFormErrorBoxText');
+
+  const reason = (form.reason.value || '').trim();
+  if (!reason) {
+    errText.textContent = 'Le motif d\'annulation est obligatoire.';
+    errBox.hidden = false;
+    return;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      body: { reason },
+    });
+    closeModal();
+    notify('Intervention annulée.', 'success');
+    await loadInterventionDetail(id);
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de l\'annulation.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+function openTechnicianTimeModal(args) {
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="techDurationInput">Temps passé en minutes *</label>
+      <input type="number" id="techDurationInput" name="duration_minutes" min="0" required value="${args.currentMinutes !== null && args.currentMinutes !== undefined ? esc(args.currentMinutes) : ''}" placeholder="Ex. 60" />
+      <small class="hint">Indiquez la durée en minutes (ex. 90 = 1 h 30 min).</small>
+    </div>
+  `;
+
+  openFormModal({
+    title: `Saisir le temps passé — ${esc(args.userName)}`,
+    formId: 'modalTechTimeForm',
+    submitAction: 'technician-time-submit',
+    submitArgs: args,
+    submitLabel: 'Enregistrer le temps',
+    fieldsHtml,
+  });
+}
+
+async function handleTechnicianTimeSubmit(form) {
+  const args = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!args) return;
+
+  const btn = document.getElementById('modalTechTimeFormSubmitBtn');
+  const errBox = document.getElementById('modalTechTimeFormErrorBox');
+  const errText = document.getElementById('modalTechTimeFormErrorBoxText');
+
+  const minutesVal = (form.duration_minutes.value || '').trim();
+  const minutes = minutesVal === '' ? null : parseInt(minutesVal, 10);
+  if (minutes !== null && (isNaN(minutes) || minutes < 0)) {
+    errText.textContent = 'La durée doit être un entier positif ou nul.';
+    errBox.hidden = false;
+    return;
+  }
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(args.interventionId)}/technicians/${encodeURIComponent(args.userId)}/time`, {
+      method: 'PUT',
+      body: { duration_minutes: minutes },
+    });
+    closeModal();
+    notify('Temps passé enregistré.', 'success');
+    await loadInterventionDetail(args.interventionId);
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de l\'enregistrement du temps.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function openAssignTechnicianModal(interventionId) {
+  let siteUsers = [];
+  try {
+    const siteParam = state.selectedSiteId ? `?site_id=${encodeURIComponent(state.selectedSiteId)}` : '';
+    const uRes = await api(`/api/users${siteParam}`);
+    const uList = Array.isArray(uRes) ? uRes : (uRes && Array.isArray(uRes.items) ? uRes.items : []);
+    siteUsers = uList.filter(u => u.active && ['technicien', 'responsable', 'admin'].includes(u.role));
+  } catch (_) {}
+
+  const fieldsHtml = `
+    <div class="form-group">
+      <label for="assignUserId">Intervenant à assigner *</label>
+      <select id="assignUserId" name="user_id" required>
+        <option value="">Sélectionner un intervenant…</option>
+        ${siteUsers.map(u => `<option value="${esc(u.id)}">${esc(u.display_name)} (${esc(formatRole(u.role))})</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="is_lead" value="1" />
+        <span>Définir comme intervenant principal (Lead)</span>
+      </label>
+    </div>
+  `;
+
+  openFormModal({
+    title: 'Assigner un intervenant',
+    formId: 'modalAssignTechForm',
+    submitAction: 'assign-technician-submit',
+    submitArgs: interventionId,
+    submitLabel: 'Assigner',
+    fieldsHtml,
+  });
+}
+
+async function handleAssignTechnicianSubmit(form) {
+  const interventionId = form.dataset.args ? JSON.parse(form.dataset.args) : null;
+  if (!interventionId) return;
+
+  const btn = document.getElementById('modalAssignTechFormSubmitBtn');
+  const errBox = document.getElementById('modalAssignTechFormErrorBox');
+  const errText = document.getElementById('modalAssignTechFormErrorBoxText');
+
+  const user_id = form.user_id.value;
+  const is_lead = form.is_lead.checked;
+
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(interventionId)}/technicians`, {
+      method: 'POST',
+      body: { user_id, is_lead },
+    });
+    closeModal();
+    notify('Intervenant assigné.', 'success');
+    await loadInterventionDetail(interventionId);
+  } catch (err) {
+    errText.textContent = err.message || 'Erreur lors de l\'assignation.';
+    errBox.hidden = false;
+    btn.disabled = false;
+  }
+}
+
+async function removeTechnician(args) {
+  const ok = await confirmDialog(
+    'Retirer l\'intervenant',
+    'Voulez-vous vraiment retirer cet intervenant de l\'intervention ?',
+    'Retirer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(args.interventionId)}/technicians/${encodeURIComponent(args.userId)}`, {
+      method: 'DELETE',
+    });
+    notify('Intervenant retiré.', 'success');
+    await loadInterventionDetail(args.interventionId);
+  } catch (err) {
+    notify(err.message || 'Erreur lors du retrait de l\'intervenant.', 'error');
+  }
+}
+
+async function assignMyself(interventionId) {
+  if (!state.currentUser) return;
+  try {
+    await api(`/api/interventions/${encodeURIComponent(interventionId)}/technicians`, {
+      method: 'POST',
+      body: { user_id: state.currentUser.id, is_lead: false },
+    });
+    notify('Vous êtes désormais assigné à cette intervention.', 'success');
+    await loadInterventionDetail(interventionId);
+  } catch (err) {
+    notify(err.message || 'Impossible de vous assigner.', 'error');
+  }
+}
+
+async function openCreateSubInterventionModal(parentId) {
+  const parent = state.currentInterventionDetail;
+  openCreateInterventionModal({
+    parentId,
+    equipment_id: parent ? parent.equipment_id : null,
+    type: parent ? parent.type : 'corrective',
+    priority: parent ? parent.priority : 'medium',
+  });
+}
+
+async function deleteIntervention(id) {
+  const ok = await confirmDialog(
+    'Supprimer l\'intervention',
+    'Voulez-vous vraiment supprimer logiquement cette intervention ? Cette action est réservée aux erreurs de saisie.',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/interventions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    notify('Intervention supprimée.', 'success');
+    location.hash = '#/interventions';
+  } catch (err) {
+    notify(err.message || 'Suppression refusée.', 'error');
+  }
+}
+
+// ============================================================================
 // 15. SURVEILLANCE SERVEUR ET HORLOGE
 // ============================================================================
 
@@ -4089,6 +5486,54 @@ function handleGlobalClick(e) {
       loadSuppliers(false);
       break;
 
+    // Phase 3 — Interventions
+    case 'tab-interventions':
+      state.interventionsQuickTab = args || 'all';
+      document.querySelectorAll('.filter-tabs .filter-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.args === jsArg(state.interventionsQuickTab));
+      });
+      loadInterventionsList(true);
+      break;
+    case 'open-create-intervention':
+      openCreateInterventionModal();
+      break;
+    case 'open-detail-intervention':
+      location.hash = `#/interventions/${args}`;
+      break;
+    case 'open-edit-intervention':
+      openEditInterventionModal(args);
+      break;
+    case 'take-intervention':
+      takeIntervention(args);
+      break;
+    case 'open-complete-intervention':
+      openCompleteInterventionModal(args);
+      break;
+    case 'open-cancel-intervention':
+      openCancelInterventionModal(args);
+      break;
+    case 'open-technician-time':
+      openTechnicianTimeModal(args);
+      break;
+    case 'open-assign-technician':
+      openAssignTechnicianModal(args);
+      break;
+    case 'remove-technician':
+      removeTechnician(args);
+      break;
+    case 'assign-myself':
+      assignMyself(args);
+      break;
+    case 'open-create-sub-intervention':
+      openCreateSubInterventionModal(args);
+      break;
+    case 'delete-intervention':
+      deleteIntervention(args);
+      break;
+    case 'load-more-interventions':
+      loadInterventionsList(false);
+      break;
+
     default:
       break;
   }
@@ -4156,6 +5601,26 @@ function handleGlobalSubmit(e) {
       handleEditSupplierSubmit(form);
       break;
 
+    // Phase 3
+    case 'create-intervention-submit':
+      handleCreateInterventionSubmit(form);
+      break;
+    case 'edit-intervention-submit':
+      handleEditInterventionSubmit(form);
+      break;
+    case 'complete-intervention-submit':
+      handleCompleteInterventionSubmit(form);
+      break;
+    case 'cancel-intervention-submit':
+      handleCancelInterventionSubmit(form);
+      break;
+    case 'technician-time-submit':
+      handleTechnicianTimeSubmit(form);
+      break;
+    case 'assign-technician-submit':
+      handleAssignTechnicianSubmit(form);
+      break;
+
     default:
       break;
   }
@@ -4178,6 +5643,9 @@ function handleGlobalInput(e) {
   } else if (action === 'filter-suppliers-search') {
     state.suppliersSearchQuery = input.value;
     debounce('suppliers-search', () => loadSuppliers(true), 300);
+  } else if (action === 'filter-interventions-search') {
+    state.interventionsSearchQuery = input.value;
+    debounce('interventions-search', () => loadInterventionsList(true), 300);
   }
 }
 
@@ -4200,6 +5668,8 @@ function handleGlobalChange(e) {
       loadLocationsTree();
     } else if (r === 'fournisseurs') {
       loadSuppliers(true);
+    } else if (r === 'interventions') {
+      loadInterventionsList(true);
     }
     return;
   }
@@ -4220,6 +5690,42 @@ function handleGlobalChange(e) {
   } else if (action === 'filter-equipments-line') {
     state.equipmentsLineFilter = sel.value;
     loadEquipmentsList(true);
+  } else if (action === 'filter-interventions-type') {
+    state.interventionsTypeFilter = sel.value;
+    loadInterventionsList(true);
+  } else if (action === 'filter-interventions-status') {
+    state.interventionsStatusFilter = sel.value;
+    loadInterventionsList(true);
+  } else if (action === 'filter-interventions-priority') {
+    state.interventionsPriorityFilter = sel.value;
+    loadInterventionsList(true);
+  } else if (action === 'filter-interventions-equipment') {
+    state.interventionsEquipmentFilter = sel.value;
+    loadInterventionsList(true);
+  } else if (action === 'on-intervention-type-change') {
+    const isHorsEquip = sel.value === 'hors_equipement';
+    const isAposteriori = sel.value === 'a_posteriori';
+    const equipGroup = document.getElementById('intEquipGroup');
+    const equipSelect = document.getElementById('intEquipmentId');
+    const aposterioriFields = document.getElementById('intAposterioriFields');
+
+    if (equipGroup) equipGroup.hidden = isHorsEquip;
+    if (equipSelect) {
+      if (isHorsEquip) {
+        equipSelect.removeAttribute('required');
+        equipSelect.value = '';
+      } else {
+        equipSelect.setAttribute('required', 'required');
+      }
+    }
+    if (aposterioriFields) {
+      aposterioriFields.hidden = !isAposteriori;
+    }
+  } else if (action === 'on-intervention-machine-state-change') {
+    const alertBox = document.getElementById('intMachineStateAlert') || document.getElementById('editIntMachineStateAlert');
+    if (alertBox) {
+      alertBox.hidden = sel.value !== 'ARRET';
+    }
   } else if (action === 'on-user-role-change') {
     // Si rôle admin sélectionné, le site devient optionnel / non requis
     const siteSel = document.getElementById('uSite');

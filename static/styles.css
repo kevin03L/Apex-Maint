@@ -1741,3 +1741,350 @@ footer.status {
 /* Espacements utilisés par les fiches et les aides contextuelles */
 .detail-card-spaced { margin-top: 1em; }
 .hint-spaced { margin-bottom: .6em; }
+
+/* ============================================================================
+   MODULE INTERVENTIONS (PHASE 3)
+   ============================================================================ */
+
+/* Badges de statut des interventions */
+.badge-status-open {
+  background: rgba(56, 189, 248, .15);
+  border-color: rgba(56, 189, 248, .4);
+  color: var(--accent);
+}
+
+.badge-status-in_progress {
+  background: rgba(245, 158, 11, .15);
+  border-color: rgba(245, 158, 11, .4);
+  color: var(--warn);
+}
+
+.badge-status-completed {
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: var(--ok-text);
+}
+
+.badge-status-cancelled {
+  background: rgba(148, 163, 184, .16);
+  border-color: rgba(148, 163, 184, .35);
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* Badges de priorité */
+.badge-priority-low {
+  background: rgba(148, 163, 184, .12);
+  border-color: rgba(148, 163, 184, .3);
+  color: var(--muted);
+}
+
+.badge-priority-medium {
+  background: rgba(56, 189, 248, .12);
+  border-color: rgba(56, 189, 248, .3);
+  color: var(--accent);
+}
+
+.badge-priority-high {
+  background: rgba(245, 158, 11, .15);
+  border-color: rgba(245, 158, 11, .4);
+  color: var(--warn);
+}
+
+.badge-priority-critical {
+  background: var(--ko-bg);
+  border-color: var(--ko-line);
+  color: var(--ko-text);
+  font-weight: 600;
+}
+
+/* Badges d'état machine */
+.badge-machine-arret {
+  background: rgba(239, 68, 68, .2);
+  border-color: rgba(239, 68, 68, .55);
+  color: #f87171;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+
+:root[data-theme="light"] .badge-machine-arret {
+  background: rgba(220, 38, 38, .12);
+  border-color: rgba(220, 38, 38, .4);
+  color: #dc2626;
+}
+
+.badge-machine-degrade {
+  background: rgba(245, 158, 11, .15);
+  border-color: rgba(245, 158, 11, .4);
+  color: var(--warn);
+}
+
+.badge-machine-fonctionnel {
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: var(--ok-text);
+}
+
+/* Badges de types d'intervention */
+.badge-type {
+  background: var(--glass-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* Badge intervenant lead */
+.badge-lead {
+  display: inline-block;
+  font-size: .75em;
+  padding: .15em .5em;
+  border-radius: 4px;
+  background: rgba(129, 140, 248, .2);
+  border: 1px solid rgba(129, 140, 248, .4);
+  color: var(--violet);
+  font-weight: 600;
+}
+
+/* Onglets de filtrage rapide (segmented buttons) */
+.filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4em;
+  margin-bottom: .8em;
+}
+
+.filter-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: .4em;
+  padding: .45em .9em;
+  border-radius: 20px;
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .88em;
+  cursor: pointer;
+  transition: all .15s ease;
+  user-select: none;
+}
+
+.filter-tab:hover {
+  color: var(--text);
+  border-color: var(--line-2);
+}
+
+.filter-tab.active {
+  background: var(--selected);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.filter-tab-crit.active {
+  background: var(--ko-bg);
+  border-color: var(--ko-line);
+  color: var(--ko-text);
+}
+
+.filter-tab-arret.active {
+  background: rgba(239, 68, 68, .2);
+  border-color: rgba(239, 68, 68, .5);
+  color: #f87171;
+}
+
+.tab-count {
+  display: inline-block;
+  padding: .1em .5em;
+  border-radius: 10px;
+  font-size: .82em;
+  background: rgba(120, 160, 220, .14);
+  color: var(--text);
+}
+
+/* Page de détail de l'intervention */
+.intervention-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+  max-width: 100%;
+}
+
+.detail-nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8em;
+}
+
+.detail-header-card {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1.2em;
+}
+
+.detail-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1em;
+}
+
+.detail-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: .4em;
+}
+
+.detail-code-row {
+  display: flex;
+  align-items: center;
+  gap: .6em;
+  flex-wrap: wrap;
+}
+
+.detail-code-label {
+  font-size: 1.4em;
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: var(--text);
+}
+
+.detail-title-label {
+  font-size: 1.15em;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detail-badges-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5em;
+  margin-top: .2em;
+}
+
+.quick-actions-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .6em;
+  margin-top: 1em;
+  padding-top: 1em;
+  border-top: 1px solid var(--line);
+}
+
+/* Bannières informatives */
+.banner-status {
+  display: flex;
+  align-items: center;
+  gap: .8em;
+  padding: .85em 1.1em;
+  border-radius: var(--r);
+  margin-top: 1em;
+  font-size: .95em;
+}
+
+.banner-status svg.i {
+  width: 1.4em;
+  height: 1.4em;
+  flex-shrink: 0;
+}
+
+.banner-completed {
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-line);
+  color: var(--ok-text);
+}
+
+.banner-cancelled {
+  background: rgba(148, 163, 184, .14);
+  border: 1px solid rgba(148, 163, 184, .35);
+  color: var(--text);
+}
+
+.banner-arret {
+  background: var(--ko-bg);
+  border: 1px solid var(--ko-line);
+  color: var(--ko-text);
+  font-weight: 600;
+}
+
+/* Grille de détail */
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1em;
+}
+
+.solution-report-box {
+  padding: 1em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+/* Section techniciens & durée */
+.tech-total-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .8em 1em;
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-top: .8em;
+  font-weight: 600;
+}
+
+.tech-total-value {
+  color: var(--accent);
+  font-size: 1.1em;
+}
+
+/* Avertissement machine sous arrêt dans formulaires */
+.machine-state-alert {
+  display: flex;
+  align-items: center;
+  gap: .6em;
+  padding: .7em .9em;
+  border-radius: 6px;
+  background: var(--ko-bg);
+  border: 1px solid var(--ko-line);
+  color: var(--ko-text);
+  font-size: .9em;
+  margin-top: .5em;
+}
+
+.machine-state-alert svg.i {
+  width: 1.25em;
+  height: 1.25em;
+  flex-shrink: 0;
+}
+
+@media (max-width: 600px) {
+  .detail-header-top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .quick-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .quick-actions-bar .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .filter-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: .2em;
+  }
+}
+
