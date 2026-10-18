@@ -64,6 +64,10 @@ Les permissions sont celles du catalogue (§2.1 de la spécification), vérifié
 y compris avant lecture du cache mémoire de 60 secondes. La clé du cache inclut acteur, site,
 rôle, permissions, widget et paramètres.
 
+Toute ligne de widget ou de rapport qui porte `equipment_id` reçoit aussi `equipment_code` et
+`equipment_name` (chaînes vides pour une intervention hors équipement) ; toute ligne qui porte
+`user_id` reçoit `user_display_name`. Les exports n'affichent que ces libellés, sans identifiant.
+
 ## Rapports
 
 `GET /api/reports/{report}` : `report` parmi `activity`, `reliability`, `preventive`, `costs`, `stock`.
@@ -132,10 +136,10 @@ est tracé dans l'audit (`type`, `format`, `filters`, `row_count`).
 LIKE échappée dans les contenus avant/après. `GET /api/audit/{id}` renvoie une entrée seule.
 
 ```json
-{"items":[{"id":"uuid","site_id":"uuid","user_id":"uuid","action":"update","entity":"settings","entity_id":"general","before":{"app_name":"Apex Maint"},"after":{"app_name":"Atelier"},"diff":[{"field":"app_name","before":"Apex Maint","after":"Atelier"}],"ip":null,"created_at":"2026-10-18T10:00:00.000Z"}],"next_cursor":"curseur-opaque"}
+{"items":[{"id":"uuid","site_id":"uuid","user_id":"uuid","user_display_name":"Administrateur","action":"update","entity":"settings","entity_id":"general","before":{"app_name":"Apex Maint"},"after":{"app_name":"Atelier"},"diff":[{"field":"app_name","before":"Apex Maint","after":"Atelier"}],"ip":null,"created_at":"2026-10-18T10:00:00.000Z"}],"next_cursor":"curseur-opaque"}
 ```
 
-`before`, `after`, `site_id`, `user_id`, `entity_id`, `ip` peuvent être `null` ; dernier curseur `null`.
+`before`, `after`, `site_id`, `user_id`, `user_display_name`, `entity_id`, `ip` peuvent être `null` ; dernier curseur `null`.
 Le non-admin ne voit que son site. Aucun PUT, PATCH ou DELETE public. Purge quotidienne après
 `audit.retention_days` (1 095 par défaut, minimum 365), tracée avec `deleted_count` et `cutoff`.
 La surcharge debug `APEX_MAINT_TEST_AUDIT_PURGE_SECONDS` raccourcit la cadence, pas la rétention.

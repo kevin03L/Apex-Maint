@@ -8,6 +8,8 @@ pub struct Entry {
     pub id: String,
     pub site_id: Option<String>,
     pub user_id: Option<String>,
+    /// Nom affiché de l'auteur, pour lire le journal sans résoudre les identifiants.
+    pub user_display_name: Option<String>,
     pub action: String,
     pub entity: String,
     pub entity_id: Option<String>,
@@ -36,7 +38,7 @@ fn representation(e: Entry) -> Value {
         .filter(|k| before[k] != after[k])
         .map(|k| json!({"field":k,"before":before[&k],"after":after[&k]}))
         .collect();
-    json!({"id":e.id,"site_id":e.site_id,"user_id":e.user_id,"action":e.action,"entity":e.entity,"entity_id":e.entity_id,"before":before,"after":after,"diff":diff,"ip":e.ip,"created_at":e.created_at})
+    json!({"id":e.id,"site_id":e.site_id,"user_id":e.user_id,"user_display_name":e.user_display_name,"action":e.action,"entity":e.entity,"entity_id":e.entity_id,"before":before,"after":after,"diff":diff,"ip":e.ip,"created_at":e.created_at})
 }
 #[derive(Default, Deserialize, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -70,7 +72,7 @@ pub async fn list(pool: &SqlitePool, actor: &Actor, f: &Filter) -> Result<Value,
         return Err(MaintError::NotFound("Site".into()));
     }
     let limit = f.limit.unwrap_or(50).clamp(1, 1000);
-    let mut q: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT * FROM audit_log WHERE 1=1");
+    let mut q: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT audit_log.*,(SELECT display_name FROM users WHERE users.id=audit_log.user_id) AS user_display_name FROM audit_log WHERE 1=1");
     if !actor.is_admin() {
         q.push(" AND site_id=").push_bind(&actor.site_id);
     }
@@ -124,7 +126,7 @@ pub async fn list(pool: &SqlitePool, actor: &Actor, f: &Filter) -> Result<Value,
 }
 pub async fn get(pool: &SqlitePool, actor: &Actor, id: &str) -> Result<Value, MaintError> {
     actor.require_permission(Permission::AuditView)?;
-    let e = sqlx::query_as("SELECT * FROM audit_log WHERE id=? AND (? OR site_id=?)")
+    let e = sqlx::query_as("SELECT audit_log.*,(SELECT display_name FROM users WHERE users.id=audit_log.user_id) AS user_display_name FROM audit_log WHERE id=? AND (? OR site_id=?)")
         .bind(id)
         .bind(actor.is_admin())
         .bind(&actor.site_id)

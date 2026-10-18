@@ -3468,5 +3468,410 @@ footer.status {
   }
 }
 
+/* ============================================================================
+   PHASE 7 — TABLEAU DE BORD, REPORTING, AUDIT, PARAMÈTRES ET SVG CHARTS
+   ============================================================================ */
+
+/* Tableau de bord */
+.dashboard-head-actions {
+  display: flex;
+  align-items: center;
+  gap: .6em;
+}
+
+.dashboard-customize-banner {
+  background: var(--glass-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r);
+  padding: .8em 1.2em;
+  margin-bottom: 1.2em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  flex-wrap: wrap;
+}
+
+.dashboard-customize-banner-text {
+  display: flex;
+  align-items: center;
+  gap: .6em;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 1.2em;
+  align-items: stretch;
+}
+
+.dashboard-widget {
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1.2em;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  transition: box-shadow .15s ease, border-color .15s ease, transform .15s ease;
+  min-height: 180px;
+}
+
+.dashboard-widget.w-col-1 { grid-column: span 1; }
+.dashboard-widget.w-col-2 { grid-column: span 2; }
+.dashboard-widget.w-col-3 { grid-column: span 3; }
+.dashboard-widget.w-col-4 { grid-column: span 4; }
+.dashboard-widget.w-col-5 { grid-column: span 5; }
+.dashboard-widget.w-col-6 { grid-column: span 6; }
+.dashboard-widget.w-col-7 { grid-column: span 7; }
+.dashboard-widget.w-col-8 { grid-column: span 8; }
+.dashboard-widget.w-col-9 { grid-column: span 9; }
+.dashboard-widget.w-col-10 { grid-column: span 10; }
+.dashboard-widget.w-col-11 { grid-column: span 11; }
+.dashboard-widget.w-col-12 { grid-column: span 12; }
+
+.dashboard-widget:hover {
+  border-color: var(--line-2);
+}
+
+.dashboard-widget.customizing {
+  border: 1px dashed var(--accent);
+  box-shadow: 0 0 10px rgba(56, 189, 248, .12);
+}
+
+.dashboard-widget.dragging {
+  opacity: .5;
+  transform: scale(.98);
+}
+
+.widget-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6em;
+  margin-bottom: .8em;
+  padding-bottom: .4em;
+  border-bottom: 1px solid var(--line);
+}
+
+.widget-head h3 {
+  font-size: 1.05em;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: .5em;
+  margin: 0;
+}
+
+.widget-custom-controls {
+  display: flex;
+  align-items: center;
+  gap: .3em;
+}
+
+.widget-custom-controls button {
+  padding: .2em .4em;
+  font-size: .85em;
+  border-radius: 4px;
+}
+
+.widget-drag-handle {
+  cursor: grab;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  padding: .2em;
+}
+
+.widget-drag-handle:active {
+  cursor: grabbing;
+}
+
+.widget-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Catalog modal for widgets */
+.widget-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1em;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.widget-catalog-card {
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1em;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: .8em;
+}
+
+.widget-catalog-card h4 {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.widget-catalog-card p {
+  font-size: .88em;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* SVG Charts mini-library */
+.svg-chart-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: .6em;
+}
+
+.svg-chart {
+  width: 100%;
+  max-height: 240px;
+  overflow: visible;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8em 1.2em;
+  font-size: .85em;
+  margin-top: .4em;
+}
+
+.chart-legend-item {
+  display: flex;
+  align-items: center;
+  gap: .4em;
+}
+
+.chart-legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.chart-accessible-table {
+  width: 100%;
+  margin-top: .5em;
+  font-size: .85em;
+  border-collapse: collapse;
+}
+
+.chart-accessible-table th,
+.chart-accessible-table td {
+  padding: .3em .6em;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+/* Metric / KPI Cards */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1em;
+  margin-bottom: 1.2em;
+}
+
+.kpi-card {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1em;
+  display: flex;
+  flex-direction: column;
+  gap: .3em;
+}
+
+.kpi-label {
+  font-size: .85em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.kpi-val {
+  font-size: 1.8em;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.kpi-sub {
+  font-size: .8em;
+  color: var(--muted);
+}
+
+/* Reporting tabs & layout */
+.report-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2em;
+}
+
+.report-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.2em;
+}
+
+/* Diff viewer for audit */
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .9em;
+  margin: 1em 0;
+}
+
+.diff-table th,
+.diff-table td {
+  padding: .5em .8em;
+  border: 1px solid var(--line);
+}
+
+.diff-table th {
+  background: var(--glass-2);
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.diff-before {
+  color: var(--ko-text);
+  background: var(--ko-bg);
+  word-break: break-all;
+}
+
+.diff-after {
+  color: var(--ok-text);
+  background: var(--ok-bg);
+  word-break: break-all;
+}
+
+/* Outbox status */
+.badge-status-pending {
+  background: rgba(245, 158, 11, .15);
+  color: var(--warn);
+  border: 1px solid rgba(245, 158, 11, .3);
+}
+
+.badge-status-sent {
+  background: var(--ok-bg);
+  color: var(--ok-text);
+  border: 1px solid var(--ok-line);
+}
+
+.badge-status-failed {
+  background: var(--ko-bg);
+  color: var(--ko-text);
+  border: 1px solid var(--ko-line);
+}
+
+/* Dropdown menu for export */
+.dropdown-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 100;
+  background: var(--glass-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+  padding: .4em;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: .2em;
+}
+
+.dropdown-menu[hidden] {
+  display: none !important;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+  padding: .5em .8em;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: .9em;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.dropdown-item:hover {
+  background: var(--selected);
+}
+
+/* Notifications preferences grid */
+.notif-prefs-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: .8em;
+  margin-top: .8em;
+}
+
+.notif-pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .8em 1em;
+  border-radius: var(--r);
+  background: var(--glass-2);
+  border: 1px solid var(--line);
+}
+
+/* Mot de passe oublié */
+.auth-forgot {
+  text-align: center;
+  margin-top: 1em;
+  font-size: .9em;
+}
+
+.auth-forgot a {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+@media (max-width: 600px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .dashboard-widget {
+    grid-column: span 1 !important;
+  }
+  .report-chart-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .kpi-row {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+
 
 

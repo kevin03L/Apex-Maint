@@ -100,7 +100,8 @@ fn formats_export_et_formules() {
     for v in ["=1", "+2", "-3", "@a", "\tt", "\rr"] {
         assert!(exports::neutralize(v).starts_with('\''));
     }
-    let headers = vec!["texte".into(), "prix_cents".into(), "created_at".into()];
+    let headers: Vec<exports::Column> =
+        vec!["texte".into(), "prix_cents".into(), "created_at".into()];
     let rows = vec![vec![
         json!("=SOMME(A1)"),
         json!(1234),

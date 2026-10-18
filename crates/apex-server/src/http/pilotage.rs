@@ -265,13 +265,15 @@ async fn download(
     s: &AppState,
     session: &Session,
     name: &str,
+    // Jeu de colonnes : nom de la liste, « rapport » ou « intervention ».
+    columns: &str,
     p: exports::Params,
     rows: Vec<Value>,
     landscape: bool,
 ) -> Result<Response> {
     session.actor.require_permission(Permission::ExportsRun)?;
     let format = p.get("format").map(String::as_str).unwrap_or("csv");
-    let (headers, table) = exports::table(&rows);
+    let (headers, table) = exports::table(columns, &rows);
     let (mime, bytes) = match format {
         "csv" => {
             let first = exports::csv(&headers, &[]);
@@ -322,7 +324,7 @@ async fn list_export(
         return Err(MaintError::BadRequest("Le journal s'exporte en CSV ou Excel".into()).into());
     }
     let rows = exports::list(&s.pool, &session.actor, &name, &p).await?;
-    download(&s, &session, &name, p, rows, true).await
+    download(&s, &session, &name, &name, p, rows, true).await
 }
 async fn report_export(
     State(s): State<AppState>,
@@ -341,9 +343,24 @@ async fn report_export(
     summary.insert("section".into(), json!("Synthèse"));
     for (key, value) in report["data"].as_object().expect("rapport objet") {
         if let Some(items) = value.as_array() {
+            // Section lisible, et code de la clé traduit selon ce qu'elle regroupe.
+            let (section, field) = match key.as_str() {
+                "by_status" => ("Par statut", "status"),
+                "by_type" => ("Par type", "type"),
+                "by_priority" => ("Par priorité", "priority"),
+                "by_equipment" => ("Par équipement", ""),
+                "labor" => ("Main-d'œuvre", ""),
+                "items" => ("Détail", ""),
+                other => (other, ""),
+            };
             for item in items {
                 let mut row = item.as_object().cloned().unwrap_or_default();
-                row.insert("section".into(), json!(key));
+                if let Some(code) = row.get("key").and_then(Value::as_str) {
+                    if let Some(l) = exports::code_label(field, code) {
+                        row.insert("key".into(), json!(l));
+                    }
+                }
+                row.insert("section".into(), json!(section));
                 rows.push(Value::Object(row));
             }
         } else {
@@ -351,7 +368,7 @@ async fn report_export(
         }
     }
     rows.insert(0, Value::Object(summary));
-    download(&s, &session, &name, p, rows, false).await
+    download(&s, &session, &name, "rapport", p, rows, false).await
 }
 async fn intervention_pdf(
     State(s): State<AppState>,
@@ -362,6 +379,22 @@ async fn intervention_pdf(
     let intervention =
         apex_core::interventions::get_intervention(&s.pool, &session.actor, &id).await?;
     let mut information = json!(intervention);
+    // Intervenants et temps sur une ligne : le tableau générique ignore les listes imbriquées.
+    let technicians: Vec<String> = intervention
+        .technicians
+        .iter()
+        .map(|t| {
+            let lead = if t.is_lead { " (responsable)" } else { "" };
+            match t.duration_minutes {
+                Some(m) => format!("{}{lead} : {m} min", t.display_name),
+                None => format!("{}{lead}", t.display_name),
+            }
+        })
+        .collect();
+    information["technicians_summary"] = json!(technicians.join(", "));
+    if let Some(e) = &intervention.equipment {
+        information["equipment_label"] = json!(format!("{} — {}", e.code, e.name));
+    }
     let mut rows = Vec::new();
     // Les pièces exigent leur permission de vue, y compris dans une fiche exportée.
     if session.actor.can(Permission::StockView) {
@@ -386,7 +419,7 @@ async fn intervention_pdf(
     let mut p = BTreeMap::new();
     p.insert("format".into(), "pdf".into());
     p.insert("intervention_id".into(), id);
-    download(&s, &session, "intervention", p, rows, false).await
+    download(&s, &session, "intervention", "intervention", p, rows, false).await
 }
 
 #[cfg(test)]
