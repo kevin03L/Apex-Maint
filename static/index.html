@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apex Maint — GMAO</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/theme.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <!-- BIBLIOTHÈQUE D'ICÔNES VECTORIELLES DE L'IHM -->
+  <svg class="icon-lib" width="0" height="0" aria-hidden="true">
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-dash" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
+    <symbol id="i-line" viewBox="0 0 24 24"><path d="M3 17h18"/><rect x="4" y="9" width="4" height="8"/><rect x="10" y="6" width="4" height="11"/><rect x="16" y="11" width="4" height="6"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7M12 11v10"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+    <symbol id="i-truck" viewBox="0 0 24 24"><path d="M2 6h11v10H2zM13 10h4l4 4v2h-8"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 2h8l5 5v15H6z"/><path d="M14 2v5h5M9 13h7M9 17h7"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15v3M12 10v8M17 6v12"/></symbol>
+    <symbol id="i-audit" viewBox="0 0 24 24"><path d="M9 3h6l1 2h3v16H5V5h3z"/><path d="M9 12l2 2 4-4"/></symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></symbol>
+    <symbol id="i-site" viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13"/><path d="M9 21v-6h6v6"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  </svg>
+
+  <!-- EN-TÊTE SUPÉRIEUR -->
+  <header class="top">
+    <button id="navToggle" class="ib" type="button" aria-label="Replier ou déplier le menu" aria-controls="mainNav">
+      <svg class="i"><use href="#i-menu"/></svg>
+    </button>
+    <div class="logo" aria-hidden="true">M</div>
+    <div class="brand"><span id="appName">Apex Maint</span><small id="appSubtitle">GMAO</small></div>
+    <span class="spacer"></span>
+    <label class="chip site-chip" for="siteSelect">
+      <svg class="i"><use href="#i-site"/></svg>
+      <select id="siteSelect" disabled aria-label="Site">
+        <option>Tous les sites</option>
+      </select>
+    </label>
+    <span id="serverPill" class="ws-pill offline" role="status" aria-live="polite"><span class="dot"></span><span class="lab">Connexion…</span></span>
+    <span id="clock" class="clock"></span>
+    <button id="themeToggle" class="ib" type="button" aria-label="Passer au thème clair">
+      <svg class="i"><use href="#i-sun"/></svg>
+    </button>
+    <button class="user-btn" type="button" disabled title="Connexion disponible en phase 1">
+      <span class="avatar"><svg class="i"><use href="#i-user"/></svg></span>
+      <span class="lab">Non connecté</span>
+    </button>
+  </header>
+
+  <!-- MENU GAUCHE REPLIABLE (rempli par app.js) -->
+  <nav id="mainNav" aria-label="Navigation principale"></nav>
+  <div id="navBackdrop" class="nav-backdrop" hidden></div>
+
+  <!-- ZONE PRINCIPALE -->
+  <main id="view" tabindex="-1"></main>
+
+  <!-- BARRE D'ÉTAT -->
+  <footer class="status">
+    <span><svg class="i"><use href="#i-server"/></svg> <span id="statusProduct">Apex Maint</span> <span id="statusVersion" class="mono"></span></span>
+    <span class="spacer"></span>
+    <span id="statusCheck" class="hint"></span>
+  </footer>
+</body>
+</html>

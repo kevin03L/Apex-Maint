@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/apex-config",
+    "crates/apex-core",
+    "crates/apex-server",
+    "crates/apex-build",
+]
+default-members = ["crates/apex-server"]
+
+# Version unique du produit : moteur, utilitaire desktop, installateurs et artefacts.
+# Convention : SemVer avec suffixe de phase (0.1.0-alpha.N → 0.x.0-beta.N → 1.0.0).
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"
+rust-version = "1.89"
+authors = ["kevin03L"]
+repository = "https://github.com/kevin03L/Apex-Maint"
+publish = false
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+apex-config = { path = "crates/apex-config" }
+apex-core = { path = "crates/apex-core" }
+apex-build = { path = "crates/apex-build" }
+
+# Runtime asynchrone & serveur web (mêmes versions qu'Apex Supervision)
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["fs"] }
+
+# Sérialisation
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Base de données embarquée (données GMAO, sessions, audit)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "chrono", "migrate"] }
+
+# Utilitaires
+thiserror = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+rand = "0.8"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+# Argon2 est très lent sans optimisation : on l'optimise même en build debug
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

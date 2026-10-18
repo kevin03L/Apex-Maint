@@ -1,0 +1,24 @@
+# Build Rust
+/target/
+
+# Artefacts de distribution (installateurs, paquets, empreintes)
+/dist/
+
+# Base SQLite d'exploitation et fichiers WAL
+*.db
+*.db-wal
+*.db-shm
+*.db.bak-*
+
+# Instance portable de développement lancée depuis la racine du dépôt
+/apex-maint.toml
+/apex-maint.toml.lock
+/backups/
+/data/
+/logs/
+/run/
+
+# Certificats et métadonnées locales de signature de code
+*.pfx
+*.p12
+signature-metadata*.json
