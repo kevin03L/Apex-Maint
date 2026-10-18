@@ -292,3 +292,7 @@ Phase 1 : les dépôts utilisent provisoirement `sqlx::query` / `query_as` et `F
 - `cargo install sqlx-cli --no-default-features --features sqlite`
 - Node.js pour `node --check static/*.js`
 - Plus tard : Inno Setup 6 (installateur Windows), `cargo-deb` dans un conteneur Ubuntu 22.04 (paquet DEB)
+
+## Avancement des phases 8 à 10
+
+Phase 8 : backend en cours, migration `0009_exploitation.sql`, validation boîte noire bloquée par `icacls` (code 5) ; voir [API-PHASE-8](API-PHASE-8.md). Phases 9 et 10 non entamées, en attente de la validation complète de la phase 8.

@@ -7,12 +7,20 @@ pub mod db;
 pub mod documents;
 pub mod domain;
 pub mod error;
+pub mod exploitation;
+#[cfg(test)]
+#[path = "exploitation_tests.rs"]
+mod exploitation_tests;
+pub mod integration;
 pub mod interventions;
 pub mod maintenance;
 pub mod referentiel;
 pub mod services;
 pub mod stock;
 pub mod store;
+pub mod terrain;
+#[cfg(test)]
+mod terrain_tests;
 
 pub use domain::{actor::Actor, actor::Role, pagination::Cursor, permission::Permission};
 pub use error::MaintError;

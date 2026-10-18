@@ -5,13 +5,14 @@ members = [
     "crates/apex-core",
     "crates/apex-server",
     "crates/apex-build",
+    "crates/apex-maint-admin",
 ]
 default-members = ["crates/apex-server"]
 
 # Version unique du produit : moteur, utilitaire desktop, installateurs et artefacts.
 # Convention : SemVer avec suffixe de phase (0.1.0-alpha.N → 0.x.0-beta.N → 1.0.0).
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.8.0-alpha.1"
 edition = "2021"
 rust-version = "1.89"
 authors = ["kevin03L"]
@@ -52,7 +53,7 @@ object_store = { version = "=0.12.4", features = ["aws"] }
 aes-gcm = "=0.10.3"
 infer = "=0.19.0"
 qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
-zip = { version = "=4.6.1", default-features = false, features = ["deflate"] }
+zip = { version = "=4.6.1", default-features = false, features = ["deflate", "aes-crypto"] }
 tempfile = "=3.23.0"
 bytes = "1"
 http-body-util = "0.1"

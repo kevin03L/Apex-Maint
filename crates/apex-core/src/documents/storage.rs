@@ -28,10 +28,22 @@ use crate::{
 pub struct FileStore {
     pub files_dir: PathBuf,
     key: [u8; 32],
+    #[cfg(test)]
+    test_stores: std::collections::BTreeMap<String, Arc<dyn ObjectStore>>,
 }
 impl FileStore {
     pub fn new(files_dir: PathBuf, key: [u8; 32]) -> Self {
-        Self { files_dir, key }
+        Self {
+            files_dir,
+            key,
+            #[cfg(test)]
+            test_stores: Default::default(),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn with_test_store(mut self, id: &str, store: Arc<dyn ObjectStore>) -> Self {
+        self.test_stores.insert(id.into(), store);
+        self
     }
     pub fn encrypt(&self, plain: &str) -> Result<String, MaintError> {
         let mut nonce = [0; 12];
@@ -63,6 +75,10 @@ impl FileStore {
         String::from_utf8(plain).map_err(|_| invalid())
     }
     pub fn open(&self, backend: &StorageBackend) -> Result<Arc<dyn ObjectStore>, MaintError> {
+        #[cfg(test)]
+        if let Some(store) = self.test_stores.get(&backend.id) {
+            return Ok(store.clone());
+        }
         match backend.kind.as_str() {
             "folder" => {
                 let path = backend.config["path"].as_str().unwrap_or("");

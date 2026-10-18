@@ -376,6 +376,8 @@ pub struct UpdateIntervention {
     pub title: Option<String>,
     #[serde(default)]
     pub description: PatchField<String>,
+    #[serde(default)]
+    pub solution_report: PatchField<String>,
     pub priority: Option<String>,
     pub machine_state: Option<String>,
 }
@@ -920,7 +922,10 @@ pub async fn create_intervention(
     }
 
     let now = store::now();
-    let reported_at = input.reported_at.unwrap_or_else(|| now.clone());
+    let reported_at = crate::terrain::occurred(&mut tx, actor, None)
+        .await?
+        .or(input.reported_at)
+        .unwrap_or_else(|| now.clone());
     let code =
         resolve_or_generate_code(&mut tx, &site_id, input.code.as_deref(), &reported_at).await?;
     let intervention_id = store::id();
@@ -1087,6 +1092,7 @@ pub async fn create_intervention(
     )
     .await?;
 
+    crate::terrain::record(&mut tx, actor, &created, 201).await?;
     tx.commit().await?;
     Ok(created)
 }
@@ -1162,7 +1168,11 @@ pub async fn take_intervention(
         }
     }
 
-    let started_at = current.started_at.unwrap_or_else(|| now.clone());
+    let action_at = crate::terrain::occurred(&mut tx, actor, Some(&current.reported_at)).await?;
+    let started_at = current
+        .started_at
+        .or(action_at)
+        .unwrap_or_else(|| now.clone());
 
     sqlx::query(
         "UPDATE interventions SET status = 'in_progress', started_at = ?, updated_at = ? WHERE id = ?",
@@ -1190,6 +1200,7 @@ pub async fn take_intervention(
     )
     .await?;
 
+    crate::terrain::record(&mut tx, actor, &updated, 200).await?;
     tx.commit().await?;
     Ok(updated)
 }
@@ -1205,6 +1216,7 @@ pub async fn complete_intervention(
     actor.require_permission(Permission::InterventionsEdit)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = scoped_intervention_raw(&mut tx, actor, id).await?;
+    crate::terrain::require_assignment(&mut tx, actor, id).await?;
 
     let cur_status = InterventionStatus::parse(&current.status)?;
     check_transition(cur_status, InterventionStatus::Completed)?;
@@ -1246,7 +1258,14 @@ pub async fn complete_intervention(
     }
 
     let now = store::now();
-    let completed_at = input.completed_at.unwrap_or_else(|| now.clone());
+    let completed_at = crate::terrain::occurred(
+        &mut tx,
+        actor,
+        current.started_at.as_deref().or(Some(&current.reported_at)),
+    )
+    .await?
+    .or(input.completed_at)
+    .unwrap_or_else(|| now.clone());
     let started_at = current.started_at.unwrap_or_else(|| completed_at.clone());
 
     if completed_at < started_at {
@@ -1301,6 +1320,7 @@ pub async fn complete_intervention(
     )
     .await?;
 
+    crate::terrain::record(&mut tx, actor, &updated, 200).await?;
     tx.commit().await?;
     Ok(updated)
 }
@@ -1404,6 +1424,8 @@ pub async fn update_intervention(
     actor.require_permission(Permission::InterventionsEdit)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = scoped_intervention_raw(&mut tx, actor, id).await?;
+    crate::terrain::require_assignment(&mut tx, actor, id).await?;
+    crate::terrain::check_unmodified(&current.updated_at)?;
 
     let cur_status = InterventionStatus::parse(&current.status)?;
     if cur_status == InterventionStatus::Completed || cur_status == InterventionStatus::Cancelled {
@@ -1439,16 +1461,22 @@ pub async fn update_intervention(
     let effective_machine_state = new_machine_state
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| current.machine_state.clone());
+    let solution_report = match input.solution_report {
+        PatchField::Absent => current.solution_report.clone(),
+        PatchField::Null => None,
+        PatchField::Value(value) => clean_opt_string(Some(value), 16384, "Le compte rendu")?,
+    };
 
     let now = store::now();
 
     sqlx::query(
-        "UPDATE interventions SET title = ?, description = ?, priority = ?, machine_state = ?, updated_at = ? WHERE id = ?",
+        "UPDATE interventions SET title = ?, description = ?, priority = ?, machine_state = ?, solution_report = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&effective_title)
     .bind(&effective_description)
     .bind(&effective_priority)
     .bind(&effective_machine_state)
+    .bind(&solution_report)
     .bind(&now)
     .bind(id)
     .execute(&mut *tx)
@@ -1478,6 +1506,7 @@ pub async fn update_intervention(
     )
     .await?;
 
+    crate::terrain::record(&mut tx, actor, &updated, 200).await?;
     tx.commit().await?;
     Ok(updated)
 }
@@ -1682,6 +1711,7 @@ pub async fn set_technician_time(
     actor.require_permission(Permission::InterventionsEdit)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = scoped_intervention_raw(&mut tx, actor, intervention_id).await?;
+    crate::terrain::require_assignment(&mut tx, actor, intervention_id).await?;
 
     let cur_status = InterventionStatus::parse(&current.status)?;
     if cur_status == InterventionStatus::Completed || cur_status == InterventionStatus::Cancelled {
@@ -1746,6 +1776,7 @@ pub async fn set_technician_time(
     )
     .await?;
 
+    crate::terrain::record(&mut tx, actor, &tech, 200).await?;
     tx.commit().await?;
     Ok(tech)
 }

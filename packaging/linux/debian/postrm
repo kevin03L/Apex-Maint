@@ -1,0 +1,21 @@
+#!/bin/sh
+# Désinstallation du paquet apex-maint.
+#  - apt remove : programme supprimé ; configuration, données et journaux CONSERVÉS ;
+#  - apt purge  : suppression DÉFINITIVE de la configuration, des données et des journaux.
+set -e
+
+#DEBHELPER#
+
+case "$1" in
+    purge)
+        rm -rf /etc/apex-maint /var/lib/apex-maint /var/log/apex-maint
+        if getent passwd apex-maint >/dev/null; then
+            deluser --system apex-maint >/dev/null 2>&1 || true
+        fi
+        if getent group apex-maint >/dev/null; then
+            delgroup --system apex-maint >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+exit 0

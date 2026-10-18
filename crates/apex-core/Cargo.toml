@@ -27,6 +27,8 @@ infer.workspace = true
 qrcode.workspace = true
 zip.workspace = true
 bytes.workspace = true
+base64 = "0.23.1"
+subtle = "2.6.1"
 
 [dev-dependencies]
 tempfile.workspace = true

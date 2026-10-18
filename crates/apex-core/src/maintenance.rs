@@ -3204,6 +3204,37 @@ pub async fn process_auto_generation_for_counter(pool: &SqlitePool, counter_id: 
 // TESTS UNITAIRES (CALCUL DES ÉCHÉANCES)
 // ============================================================================
 
+/// Génération après relevé externe, dans la transaction de ce relevé.
+pub(crate) async fn generate_counter_in_tx(
+    conn: &mut SqliteConnection,
+    actor: &Actor,
+    counter_id: &str,
+) -> Result<u64, MaintError> {
+    actor.require_permission(Permission::MaintenanceManage)?;
+    let query=format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.counter_id=? AND (? OR p.site_id=?) AND p.deleted_at IS NULL AND p.active=1 AND p.auto_generate=1");
+    let plans: Vec<RawPlanRow> = sqlx::query_as(&query)
+        .bind(counter_id)
+        .bind(actor.is_admin())
+        .bind(&actor.site_id)
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut generated = 0;
+    for plan in plans {
+        if plan.open_occ_id.is_none()
+            && plan.counter_active == Some(1)
+            && plan.counter_current_value.unwrap_or(0)
+                >= plan
+                    .next_due_counter
+                    .unwrap_or(0)
+                    .saturating_sub(plan.lead_counter)
+        {
+            do_generate_in_tx(conn, &plan, actor, "auto", None).await?;
+            generated += 1;
+        }
+    }
+    Ok(generated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,37 @@
+[package]
+name = "apex-maint-admin"
+description = "Utilitaire d'administration graphique d'Apex Maint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+apex-config.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+zip.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+rustls = "0.23.46"
+rustls-pemfile = "2.2.0"
+rustls-native-certs = "0.8.3"
+# Rendu wgpu : DirectX 12 / Vulkan, avec repli logiciel (WARP) sur les postes sans GPU.
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "links",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+
+[build-dependencies]
+apex-build.workspace = true

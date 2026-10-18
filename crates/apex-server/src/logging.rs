@@ -45,7 +45,6 @@ pub fn init(cfg: &AppConfig, log_dir: &Path) -> Result<Option<WorkerGuard>, Stri
         .rotation(rolling::Rotation::DAILY)
         .filename_prefix(LOG_FILE_PREFIX)
         .filename_suffix("log")
-        .max_log_files(cfg.logging.retention_files as usize)
         .build(log_dir)
         .map_err(|e| {
             format!(

@@ -147,6 +147,8 @@ pub async fn run(
         logging::startup_error(&eff.layout.log_dir, &message);
         return Err(StartupError::new(exit::CONFIG, message));
     }
+    crate::tls::check(&eff.config.server.tls, &eff.layout.data_dir)
+        .map_err(|e| StartupError::new(exit::CONFIG, e))?;
 
     // 2. Journaux
     let _log_guard = logging::init(&eff.config, &eff.layout.log_dir).map_err(|e| {
@@ -197,6 +199,18 @@ pub async fn run(
         error!("{e}");
         StartupError::new(code, e.to_string())
     })?;
+
+    let tls = crate::tls::prepare(&cfg.server.tls, &layout.data_dir, &cfg.server.bind)
+        .map_err(|e| StartupError::new(exit::CONFIG, e))?;
+    let redirect_listener = if let Some(port) = cfg.server.tls.http_redirect_port {
+        Some(
+            tokio::net::TcpListener::bind((cfg.server.bind.as_str(), port))
+                .await
+                .map_err(|e| StartupError::new(exit::BIND, format!("Port de redirection : {e}")))?,
+        )
+    } else {
+        None
+    };
 
     // 4. Réservation du port web AVANT d'ouvrir la base (code 5)
     let ip: std::net::IpAddr = cfg.server.bind.trim().parse().map_err(|_| {
@@ -296,8 +310,19 @@ pub async fn run(
             StartupError::new(exit::DATABASE, "Clé secrète invalide (32 octets attendus)")
         })?;
     let files = apex_core::documents::storage::FileStore::new(files_dir, key);
+    let exploitation_task = crate::exploitation::scheduler(
+        pool.clone(),
+        files.clone(),
+        crate::exploitation::context(&eff),
+        layout.log_dir.clone(),
+    );
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
+        integration_rates: Default::default(),
+        tls_mode: cfg.server.tls.mode.clone(),
+        trusted_proxies: cfg.server.trusted_proxies.clone(),
+        hsts_max_age: cfg.server.hsts_max_age,
+        terrain_lock: Arc::new(tokio::sync::Mutex::new(())),
         files,
         pool: pool.clone(),
         auth,
@@ -344,22 +369,99 @@ pub async fn run(
     // 7. Service HTTP et attente des signaux
     on_ready();
     let notify_clone = Arc::clone(&shutdown_notify);
-    let served = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    let shutdown = async move {
         tokio::select! {
-            _ = notify_clone.notified() => info!("Arrêt demandé depuis l'utilitaire local ou l'API"),
-            _ = wait_os_signal() => info!("Signal d'arrêt du système reçu (SIGINT / SIGTERM)"),
-            _ = stop.wait_for(|s| *s) => info!("Arrêt demandé par le gestionnaire de services"),
+            _ = notify_clone.notified() => {},
+            _ = wait_os_signal() => {},
+            _ = stop.wait_for(|s| *s) => {},
         }
         notify_clone.notify_waiters();
-        info!("Arrêt propre en cours : fermeture du serveur web...");
-    })
-    .await;
+    };
+    let redirect_task = redirect_listener.map(|listener| {
+        let port = cfg.server.port;
+        tokio::spawn(async move {
+            let router = axum::Router::new().fallback(
+                move |headers: axum::http::HeaderMap, uri: axum::http::Uri| async move {
+                    let host = headers
+                        .get("host")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<axum::http::uri::Authority>().ok());
+                    match host {
+                        Some(host) if !host.as_str().contains('@') => {
+                            axum::response::Redirect::permanent(&format!(
+                                "https://{}:{port}{uri}",
+                                host.host()
+                            ))
+                            .into_response()
+                        }
+                        _ => axum::http::StatusCode::BAD_REQUEST.into_response(),
+                    }
+                },
+            );
+            axum::serve(listener, router).await
+        })
+    });
+    use axum::response::IntoResponse;
+    let mut reload_task = None;
+    let served = if let Some((tls_config, cert, key)) = tls {
+        let reload_config = tls_config.clone();
+        let tls_settings = cfg.server.tls.clone();
+        let base = layout.data_dir.clone();
+        let bind = cfg.server.bind.clone();
+        reload_task = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let result = (|| -> Result<_, String> {
+                    if tls_settings.mode == "self_signed" {
+                        crate::tls::self_signed(&tls_settings, &base, &bind)?;
+                    }
+                    crate::tls::load(&cert, &key)
+                })();
+                match result {
+                    Ok(config) => reload_config.reload_from_config(config),
+                    Err(e) => tracing::error!("{}", e),
+                }
+            }
+        }));
+        let handle = axum_server::Handle::new();
+        let stopper = handle.clone();
+        let shutdown_task = tokio::spawn(async move {
+            shutdown.await;
+            stopper.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+        });
+        let result = axum_server::from_tcp_rustls(
+            listener
+                .into_std()
+                .map_err(|e| StartupError::new(exit::FAILURE, e.to_string()))?,
+            tls_config,
+        )
+        .handle(handle)
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+        .await;
+        shutdown_task.abort();
+        result
+    } else {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await
+    };
+    if let Some(task) = reload_task {
+        task.abort();
+        let _ = task.await;
+    }
+    if let Some(task) = redirect_task {
+        task.abort();
+        let _ = task.await;
+    }
 
     // 8. Arrêt propre : suppression du jeton et fermeture propre de la base avec checkpoint WAL
+    exploitation_task.abort();
+    let _ = exploitation_task.await;
     let _ = std::fs::remove_file(&token_file);
     apex_core::db::close(&pool).await;
     info!("{} arrêté proprement.", apex_config::version::PRODUCT_NAME);
@@ -393,7 +495,7 @@ fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<(
 }
 
 /// Même restriction d'accès pour le jeton local et la clé de chiffrement persistante.
-fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

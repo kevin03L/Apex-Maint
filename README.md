@@ -52,3 +52,7 @@ Ce projet est distribué sous licence **GPL-3.0-or-later** (GNU General Public L
 Copyright © 2026 kevin03L.
 
 Consultez le texte intégral dans le fichier [LICENSE](LICENSE) à la racine du dépôt.
+
+## Avancement du backend d'exploitation
+
+Phase 8 : première implémentation en cours (migration 0009, archives, outils de fichiers, service et utilitaire) ; validation bloquée par les ACL Windows, détails et limites dans [API-PHASE-8](docs/API-PHASE-8.md). Phases 9 et 10 non entamées.

@@ -5,9 +5,12 @@
 
 mod app;
 mod cli;
+mod exploitation;
 mod http;
 mod instance;
 mod logging;
+mod service;
+mod tls;
 
 use std::path::Path;
 
@@ -24,6 +27,17 @@ fn main() {
         }
     };
     let code = match cli.command {
+        Command::Exploitation(args) => exploitation::command(cli.config.as_deref(), &args),
+        Command::Service(action, account) => match service::manage(&action, cli.config, account) {
+            Ok(message) => {
+                println!("{message}");
+                exit::OK
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                exit::FAILURE
+            }
+        },
         Command::Run => run_foreground(cli.config.as_deref()),
         Command::ConfigCheck => config_check(cli.config.as_deref()),
         Command::ConfigShow => config_show(cli.config.as_deref()),
@@ -133,6 +147,13 @@ fn config_check(config: Option<&Path>) -> i32 {
         return exit::CONFIG;
     }
     let mut issues = eff.config.validate();
+    if let Err(message) = tls::check(&eff.config.server.tls, &eff.layout.data_dir) {
+        issues.push(apex_config::Issue {
+            severity: Severity::Error,
+            field: "server.tls".into(),
+            message,
+        });
+    }
     if let Ok(ip) = eff.config.server.bind.trim().parse::<std::net::IpAddr>() {
         if std::net::TcpListener::bind((ip, eff.config.server.port)).is_err() {
             issues.push(apex_config::Issue {

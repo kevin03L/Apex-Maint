@@ -1,0 +1,19 @@
+#!/bin/sh
+# Installation : droits minimaux et aucun démarrage sans configuration explicite.
+set -e
+if [ "$1" = configure ]; then
+    getent group apex-maint >/dev/null || addgroup --system apex-maint
+    getent passwd apex-maint >/dev/null || adduser --system --ingroup apex-maint --no-create-home --home /var/lib/apex-maint --shell /usr/sbin/nologin apex-maint
+    install -d -m0750 -o root -g apex-maint /etc/apex-maint
+    install -d -m0700 -o apex-maint -g apex-maint /var/lib/apex-maint /run/apex-maint
+    install -d -m0750 -o apex-maint -g apex-maint /var/log/apex-maint
+    systemctl daemon-reload || true
+    systemctl enable apex-maint.service || true
+    if [ -f /etc/apex-maint/apex-maint.toml ]; then
+        /usr/bin/apex-maint config check --config /etc/apex-maint/apex-maint.toml
+        systemctl restart apex-maint.service || true
+    else
+        echo 'Configuration absente : lancez apex-maint-admin --wizard en administrateur.'
+    fi
+    echo 'Adresse par défaut : http://127.0.0.1:3100 ; compte admin / admin123, à changer immédiatement.'
+fi

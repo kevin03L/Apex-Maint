@@ -5,6 +5,10 @@ use std::{path::Path, time::Duration};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
 use crate::error::MaintError;
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+pub fn schema_version() -> i64 {
+    MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0)
+}
 
 /// Ouvre un pool de connexions SQLite (mode WAL, clés étrangères actives, délai d'attente),
 /// puis exécute les migrations embarquées.
@@ -62,7 +66,7 @@ pub async fn open(path: Option<&Path>) -> Result<sqlx::SqlitePool, MaintError> {
 
 /// Exécute les migrations SQL embarquées sur le pool.
 pub async fn migrate(pool: &sqlx::SqlitePool) -> Result<(), MaintError> {
-    sqlx::migrate!("./migrations")
+    MIGRATOR
         .run(pool)
         .await
         .map_err(|e| MaintError::DatabaseError(format!("échec des migrations : {e}")))?;
