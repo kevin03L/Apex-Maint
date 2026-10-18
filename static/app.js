@@ -718,6 +718,91 @@ function adaptStock(o) {
 }
 
 /**
+ * Adapte un document renvoyé par le serveur de façon tolérante aux deux formes :
+ * champs imbriqués (current_version { ... }, entity { ... }, uploaded_by { ... })
+ * ou à plat (original_name, size_bytes, mime_type, entity_code, entity_label...).
+ */
+function adaptDocument(o) {
+  if (!o || typeof o !== 'object') return o;
+  const d = { ...o };
+  if (!d.current_version && (o.original_name || o.version_no || o.size_bytes)) {
+    d.current_version = {
+      id: o.current_version_id || o.version_id,
+      version_no: o.version_no || 1,
+      original_name: o.original_name || 'document',
+      mime_type: o.mime_type || 'application/octet-stream',
+      extension: o.extension || '',
+      size_bytes: o.size_bytes || 0,
+      sha256: o.sha256 || '',
+      comment: o.comment || null,
+      uploaded_at: o.uploaded_at || o.created_at,
+      uploaded_by: o.uploaded_by || (o.uploaded_by_name ? { id: o.uploaded_by_id, display_name: o.uploaded_by_name } : null),
+    };
+  }
+  if (d.current_version && !d.current_version.uploaded_by && d.current_version.uploaded_by_name) {
+    d.current_version.uploaded_by = { id: d.current_version.uploaded_by_id, display_name: d.current_version.uploaded_by_name };
+  }
+  if (!d.entity && (o.entity_code || o.entity_name || o.entity_label)) {
+    d.entity = {
+      type: o.entity_type,
+      id: o.entity_id,
+      code: o.entity_code,
+      label: o.entity_label || o.entity_name,
+    };
+  }
+  return d;
+}
+
+/** Formate une taille en octets en chaîne lisible en français (ex: "1,2 Mo"). */
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return '—';
+  const num = Number(bytes);
+  if (num === 0) return '0 o';
+  const k = 1024;
+  const sizes = ['o', 'Ko', 'Mo', 'Go'];
+  const i = Math.floor(Math.log(num) / Math.log(k));
+  const val = (num / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1).replace('.', ',');
+  return `${val} ${sizes[i]}`;
+}
+
+/** Libellé convivial d'une catégorie de document. */
+function formatDocCategory(cat) {
+  switch (cat) {
+    case 'notice': return 'Notice';
+    case 'schéma':
+    case 'schema': return 'Schéma';
+    case 'certificat': return 'Certificat';
+    case 'photo': return 'Photo';
+    case 'rapport': return 'Rapport';
+    case 'gamme': return 'Gamme';
+    case 'autre': return 'Autre';
+    default: return cat ? (cat.charAt(0).toUpperCase() + cat.slice(1)) : 'Non classé';
+  }
+}
+
+/** Icône SVG selon le type MIME ou l'extension du document. */
+function docFileIcon(mimeOrExt) {
+  const str = String(mimeOrExt || '').toLowerCase();
+  if (str.includes('pdf')) return 'i-doc';
+  if (str.includes('image') || str.includes('jpg') || str.includes('jpeg') || str.includes('png') || str.includes('webp') || str.includes('gif')) return 'i-file-image';
+  if (str.includes('word') || str.includes('doc') || str.includes('text') || str.includes('txt') || str.includes('odt')) return 'i-file-text';
+  if (str.includes('excel') || str.includes('xls') || str.includes('sheet') || str.includes('csv') || str.includes('ods')) return 'i-chart';
+  if (str.includes('dwg') || str.includes('dxf') || str.includes('step') || str.includes('stp') || str.includes('iges') || str.includes('igs')) return 'i-layers';
+  return 'i-doc';
+}
+
+/** Le document peut-il être affiché en ligne dans un nouvel onglet (PDF ou image) ? */
+function isDocInline(doc) {
+  const v = doc && doc.current_version;
+  if (!v) return false;
+  const mime = String(v.mime_type || '').toLowerCase();
+  const ext = String(v.extension || '').toLowerCase();
+  if (mime.includes('pdf') || ext === '.pdf') return true;
+  if (mime.startsWith('image/') || ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) return true;
+  return false;
+}
+
+/**
  * Charge une intervention avec ses pièces consommées et ses réservations, servies par le
  * serveur sur des routes dédiées (absentes sans la permission stock.view).
  */
@@ -827,8 +912,8 @@ function confirmDialog(title, message, confirmLabel = 'Confirmer', danger = fals
 // 5. MODULES, PERMISSIONS ET RÔLES
 // ============================================================================
 
-/** Phase actuelle du projet (Phase 5 : Maintenance préventive). */
-const CURRENT_PHASE = 5;
+/** Phase actuelle du projet (Phase 6 : Documents et QR code). */
+const CURRENT_PHASE = 6;
 
 /** Liste de tous les modules de l'application avec leur permission de vue requise. */
 const MODULES = [
@@ -851,7 +936,7 @@ const MODULES = [
   { grp: 'Administration' },
   { id: 'sites', label: 'Sites', icon: 'i-site', phase: 1, adminOnly: true },
   { id: 'utilisateurs', label: 'Utilisateurs', icon: 'i-users', phase: 1, perm: 'users.view' },
-  { id: 'parametres', label: 'Paramètres', icon: 'i-cog', phase: 7, perm: 'settings.view' },
+  { id: 'parametres', label: 'Paramètres', icon: 'i-cog', phase: 6, perm: 'settings.view' },
 ];
 
 const DEFAULT_ROUTE = 'tableau-de-bord';
@@ -1038,6 +1123,28 @@ const state = {
   usersSearchQuery: '',
   usersRoleFilter: '',
   usersSiteFilter: '',
+
+  // Documents, QR code et Paramètres (Phase 6)
+  selectedEquipmentIds: new Set(),
+  documents: [],
+  documentsNextCursor: null,
+  documentsLoading: false,
+  documentsSearchQuery: '',
+  documentsEntityTypeFilter: '',
+  documentsCategoryFilter: '',
+
+  entityDocuments: new Map(),
+  entityDocumentsLoading: new Set(),
+
+  settingsTab: 'storage', // 'storage' | 'files' | 'labels'
+  storageBackends: [],
+  storageLoading: false,
+  documentSettings: null,
+  documentSettingsLoading: false,
+  labelSettings: null,
+  labelSettingsLoading: false,
+  currentPrintEquipments: [],
+  currentPrintOffset: 1,
 
   // État du serveur
   health: null,
@@ -1473,7 +1580,9 @@ function setMobileNav(open) {
 function currentRouteInfo() {
   const raw = (location.hash || '').replace(/^#\/?/, '').trim();
   const path = raw.split(/[?#]/)[0].replace(/\/+$/, '');
-  if (path === 'profil') return { route: 'profil', id: null };
+  const queryStr = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
+  if (path === 'profil') return { route: 'profil', id: null, query: queryStr };
+  if (path === 'etiquettes') return { route: 'etiquettes', id: null, query: queryStr };
   const parts = path.split('/');
   let root = parts[0];
   if (root === 'pieces') root = 'stock';
@@ -1482,6 +1591,7 @@ function currentRouteInfo() {
   return {
     route: mod ? mod.id : DEFAULT_ROUTE,
     id: id || null,
+    query: queryStr,
   };
 }
 
@@ -1512,6 +1622,19 @@ async function render() {
   if (route === 'profil') {
     document.title = 'Mon profil — Apex Maint';
     view.innerHTML = profilePage();
+    return;
+  }
+
+  // Route spéciale : Impression d'étiquettes
+  if (route === 'etiquettes') {
+    if (!hasPermission('equipments.view')) {
+      document.title = 'Accès refusé — Apex Maint';
+      view.innerHTML = accessDeniedPage();
+      return;
+    }
+    document.title = 'Étiquettes QR code — Apex Maint';
+    view.innerHTML = labelsPrintPage();
+    await initLabelsPrintPageView();
     return;
   }
 
@@ -1573,6 +1696,12 @@ async function render() {
       view.innerHTML = maintenancePage();
       await initMaintenancePageView();
     }
+  } else if (route === 'documents') {
+    view.innerHTML = documentsPage();
+    await initDocumentsPageView();
+  } else if (route === 'parametres') {
+    view.innerHTML = settingsPage();
+    await initSettingsPageView();
   } else {
     view.innerHTML = plannedPage(mod);
   }
@@ -2983,6 +3112,12 @@ function equipmentsPage() {
       <option value="">Toutes les lignes</option>
       ${state.productionLines.map(l => `<option value="${esc(l.id)}" ${state.equipmentsLineFilter === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
     </select>
+    ${state.selectedEquipmentIds && state.selectedEquipmentIds.size > 0 ? `
+      <button type="button" class="btn primary sm" data-action="open-print-selected-labels">
+        ${icon('i-print')} <span>Imprimer les étiquettes (${state.selectedEquipmentIds.size})</span>
+      </button>
+      <button type="button" class="btn sm" data-action="clear-selected-equipments">Désélectionner</button>
+    ` : ''}
   `;
 
   const viewSwitcherHtml = `
@@ -3100,9 +3235,12 @@ function renderEquipmentsListView() {
     return;
   }
 
+  const allSelected = items.length > 0 && items.every(eq => state.selectedEquipmentIds.has(eq.id));
+
   const rows = items.map(eq => {
     const lineLabel = eq.production_line ? eq.production_line.name : '—';
     const parentLabel = eq.parent ? eq.parent.name : '—';
+    const isSelected = state.selectedEquipmentIds.has(eq.id);
 
     const actionButtons = [
       `<button type="button" class="btn sm" title="Fiche détaillée" data-action="open-detail-equipment" data-args="${jsArg(eq.id)}">
@@ -3127,7 +3265,10 @@ function renderEquipmentsListView() {
     }
 
     return `
-      <tr>
+      <tr class="${isSelected ? 'row-selected' : ''}">
+        <td class="td-cb">
+          <input type="checkbox" data-action="toggle-select-equipment" data-args="${jsArg(eq.id)}" ${isSelected ? 'checked' : ''} aria-label="Sélectionner ${esc(eq.code)}" />
+        </td>
         <td>
           <button type="button" class="link-action mono" data-action="open-detail-equipment" data-args="${jsArg(eq.id)}">
             ${esc(eq.code)}
@@ -3152,6 +3293,9 @@ function renderEquipmentsListView() {
       <table class="data-table">
         <thead>
           <tr>
+            <th class="th-cb">
+              <input type="checkbox" data-action="toggle-select-all-equipments" ${allSelected ? 'checked' : ''} aria-label="Tout sélectionner" />
+            </th>
             <th>Code</th>
             <th>Nom de l'équipement</th>
             <th>Statut</th>
@@ -3530,6 +3674,26 @@ async function openEquipmentDetailModal(equipmentId) {
           </div>
         ` : '<p class="hint">Cet équipement ne comporte aucun sous-équipement.</p>'}
       </div>
+
+      <!-- SECTION ÉTIQUETTE ET QR CODE (PHASE 6) -->
+      <div class="detail-card detail-card-spaced qr-card">
+        <div class="detail-nav-bar">
+          <h3>${icon('i-qrcode')} Étiquette et QR code</h3>
+          <button type="button" class="btn sm" data-action="print-equipment-label" data-args="${jsArg(eq.id)}">
+            ${icon('i-print')} <span>Imprimer l'étiquette</span>
+          </button>
+        </div>
+        <div class="qr-preview-box">
+          <img src="/api/equipments/${esc(eq.id)}/qr.svg" alt="QR Code équipement" class="qr-preview-img" width="100" height="100" />
+          <div class="qr-preview-info">
+            <p>Scannez ce QR code sur le terrain pour ouvrir directement la fiche de cet équipement.</p>
+            <div class="hint mono">${esc(eq.code)} — ${esc(eq.name)}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION DOCUMENTS (PHASE 6) -->
+      <div id="equipmentDocumentsContainer"></div>
     `;
 
     const footerHtml = `
@@ -3542,6 +3706,7 @@ async function openEquipmentDetailModal(equipmentId) {
     `;
 
     openModal(`Équipement « ${eq.code} »`, bodyHtml, footerHtml);
+    loadAndRenderEntityDocuments('equipment', eq.id, 'equipmentDocumentsContainer');
   } catch (err) {
     openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
   }
@@ -4869,6 +5034,7 @@ async function loadInterventionDetail(id) {
     const inter = await fetchInterventionFull(id);
     state.currentInterventionDetail = inter;
     renderInterventionDetailView(inter);
+    loadAndRenderEntityDocuments('intervention', inter.id, 'interventionDocumentsContainer');
   } catch (err) {
     container.innerHTML = `
       <div class="card">
@@ -5338,6 +5504,9 @@ function renderInterventionDetailView(inter) {
         </div>
       </section>
     ` : ''}
+
+    <!-- SECTION DOCUMENTS (PHASE 6) -->
+    <div id="interventionDocumentsContainer"></div>
   `;
 }
 
@@ -6083,6 +6252,7 @@ async function loadPartDetail(id) {
     const part = await api(`/api/parts/${encodeURIComponent(id)}`);
     state.currentPartDetail = part;
     renderPartDetailView(part);
+    loadAndRenderEntityDocuments('part', part.id, 'partDocumentsContainer');
   } catch (err) {
     container.innerHTML = `
       <div class="card">
@@ -6375,6 +6545,9 @@ function renderPartDetailView(part) {
         </table>
       </div>
     </section>
+
+    <!-- SECTION DOCUMENTS (PHASE 6) -->
+    <div id="partDocumentsContainer"></div>
   `;
 }
 
@@ -8904,6 +9077,7 @@ async function loadMaintenancePlanDetail(id) {
     state.currentPlanOccurrencesNextCursor = occsRes ? occsRes.next_cursor : null;
 
     renderPlanDetailView(plan);
+    loadAndRenderEntityDocuments('maintenance_plan', plan.id, 'planDocumentsContainer');
   } catch (err) {
     container.innerHTML = `
       <div class="card">
@@ -9102,6 +9276,9 @@ function renderPlanDetailView(plan) {
       </div>
       ${renderLoadMore(state.currentPlanOccurrencesNextCursor, 'load-more-plan-occurrences', state.currentPlanOccurrencesLoading)}
     </section>
+
+    <!-- SECTION DOCUMENTS (PHASE 6) -->
+    <div id="planDocumentsContainer"></div>
   `;
 }
 
@@ -10043,6 +10220,2049 @@ async function updateCounterSelectForEquipment(equipmentId) {
 }
 
 // ============================================================================
+// 14H. MODULE DOCUMENTS ET ÉTIQUETTES (PHASE 6)
+// ============================================================================
+
+const EXT_TO_TYPE_ID = {
+  pdf: 'pdf',
+  jpg: 'jpeg', jpeg: 'jpeg',
+  png: 'png',
+  webp: 'webp',
+  docx: 'docx', doc: 'doc',
+  xlsx: 'xlsx', xls: 'xls',
+  pptx: 'pptx', ppt: 'ppt',
+  txt: 'txt', csv: 'csv', rtf: 'rtf',
+  odt: 'odt', ods: 'ods',
+  dwg: 'dwg', dxf: 'dxf', step: 'step', stp: 'step', iges: 'iges', igs: 'iges',
+  zip: 'zip'
+};
+
+function uploadFileWithProgress(url, formData, onProgress, method = 'POST') {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.responseType = 'json';
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          onProgress(percent);
+        }
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response);
+      } else {
+        const errorMsg = (xhr.response && typeof xhr.response.message === 'string' && xhr.response.message) || `Erreur serveur (${xhr.status})`;
+        const err = new Error(errorMsg);
+        err.status = xhr.status;
+        reject(err);
+      }
+    };
+    xhr.onerror = () => reject(new Error('Erreur réseau lors de l\'envoi du fichier.'));
+    xhr.send(formData);
+  });
+}
+
+// Catégories de documents acceptées par le serveur (valeur stockée, libellé affiché).
+const DOC_CATEGORIES = [
+  ['notice', 'Notice / Manuel'],
+  ['schéma', 'Plan / Schéma'],
+  ['certificat', 'Certificat / Conformité'],
+  ['photo', 'Photo'],
+  ['rapport', 'Rapport'],
+  ['gamme', 'Gamme / Mode opératoire'],
+  ['autre', 'Autre'],
+];
+
+function docCategoryOptions(selected, emptyLabel) {
+  const current = selected || '';
+  return [['', emptyLabel], ...DOC_CATEGORIES]
+    .map(([v, label]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(label)}</option>`)
+    .join('');
+}
+
+async function ensureDocumentSettings() {
+  if (!state.documentSettings) {
+    try {
+      state.documentSettings = await api('/api/settings/documents');
+    } catch (_) {
+      state.documentSettings = {
+        allowed_types: ['pdf', 'jpeg', 'png', 'webp', 'docx', 'doc', 'xlsx', 'xls', 'dwg', 'dxf', 'step'],
+        max_size_mb: 50,
+        catalog: []
+      };
+    }
+  }
+  return state.documentSettings;
+}
+
+function validateDocumentFile(file, settings) {
+  if (!file) return 'Veuillez sélectionner un fichier à téléverser.';
+  const nameParts = file.name.split('.');
+  if (nameParts.length < 2) return 'Le fichier ne comporte pas d\'extension valide.';
+  const ext = nameParts.pop().toLowerCase();
+  const typeId = EXT_TO_TYPE_ID[ext];
+  if (!typeId || !Array.isArray(settings.allowed_types) || !settings.allowed_types.includes(typeId)) {
+    return `Le format « .${ext} » n'est pas autorisé par les paramètres du site.`;
+  }
+  const maxBytes = (settings.max_size_mb || 50) * 1024 * 1024;
+  if (file.size > maxBytes) {
+    return `La taille du fichier (${formatBytes(file.size)}) dépasse le plafond autorisé de ${settings.max_size_mb} Mo.`;
+  }
+  return null;
+}
+
+async function loadAndRenderEntityDocuments(entityType, entityId, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  if (!hasPermission('documents.view')) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="detail-card detail-card-spaced documents-section">
+      <p class="hint">${icon('i-clock')} Chargement des documents…</p>
+    </div>
+  `;
+
+  try {
+    const res = await api(`/api/documents?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`);
+    const rawList = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+    const docs = rawList.map(adaptDocument);
+    state.entityDocuments.set(`${entityType}:${entityId}`, docs);
+    renderEntityDocumentsView(entityType, entityId, containerId, docs);
+  } catch (err) {
+    container.innerHTML = `
+      <div class="detail-card detail-card-spaced documents-section">
+        <p class="hint state-ko">${icon('i-alert')} Impossible de charger les documents : ${esc(err.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function renderEntityDocumentsView(entityType, entityId, containerId, docs) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const canCreate = hasPermission('documents.create');
+  const canDelete = hasPermission('documents.delete');
+
+  const dropzoneHtml = canCreate ? `
+    <div class="dropzone" id="dropzone-${esc(containerId)}" data-entity-type="${esc(entityType)}" data-entity-id="${esc(entityId)}" data-container-id="${esc(containerId)}">
+      ${icon('i-upload')}
+      <div class="dropzone-text">
+        <span>Glissez-déposez un document ici, ou</span>
+        <button type="button" class="btn sm" data-action="open-upload-document" data-args="${jsArg({ entityType, entityId, containerId })}">
+          ${icon('i-plus')} <span>Parcourir</span>
+        </button>
+      </div>
+    </div>
+  ` : '';
+
+  let docsHtml = '';
+  if (!docs.length) {
+    docsHtml = '<p class="hint">Aucun document joint pour le moment.</p>';
+  } else {
+    docsHtml = `
+      <div class="documents-grid">
+        ${docs.map(doc => {
+          const v = doc.current_version || {};
+          const isInline = isDocInline(doc);
+          const author = v.uploaded_by ? v.uploaded_by.display_name : '—';
+          return `
+            <div class="document-card">
+              <div class="document-card-top">
+                <span class="document-card-icon">${icon(docFileIcon(v.mime_type || v.original_name))}</span>
+                <div class="document-card-title-block">
+                  <h4 class="document-card-title">${esc(doc.title)}</h4>
+                  <div class="document-card-filename mono hint">${esc(v.original_name || 'Fichier')}</div>
+                </div>
+                <span class="badge ${doc.category ? 'badge-info' : ''}">${esc(formatDocCategory(doc.category))}</span>
+              </div>
+              ${doc.description ? `<p class="document-card-desc">${esc(doc.description)}</p>` : ''}
+              <div class="document-card-meta hint">
+                <span>Version <b>v${esc(v.version_no || 1)}</b></span>
+                <span>•</span>
+                <span>${esc(formatBytes(v.size_bytes))}</span>
+                <span>•</span>
+                <span>${esc(formatDate(v.uploaded_at))}</span>
+                <span>par ${esc(author)}</span>
+              </div>
+              <div class="document-card-actions">
+                ${isInline ? `
+                  <a href="/api/documents/${esc(doc.id)}/download" target="_blank" rel="noopener noreferrer" class="btn sm" title="Ouvrir dans un nouvel onglet">
+                    ${icon('i-eye')} <span>Ouvrir</span>
+                  </a>
+                ` : ''}
+                <a href="/api/documents/${esc(doc.id)}/download?download=1" class="btn sm" title="Télécharger le fichier">
+                  ${icon('i-download')} <span>Télécharger</span>
+                </a>
+                ${canCreate ? `
+                  <button type="button" class="btn sm" data-action="open-new-version" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Téléverser une nouvelle révision">
+                    ${icon('i-upload')} <span>Nouvelle version</span>
+                  </button>
+                ` : ''}
+                <button type="button" class="btn sm" data-action="open-document-history" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Historique des versions">
+                  ${icon('i-history')} <span>Versions (${esc(doc.versions_count || 1)})</span>
+                </button>
+                ${canCreate ? `
+                  <button type="button" class="btn sm" data-action="open-edit-document" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Modifier le titre ou la catégorie">
+                    ${icon('i-edit')}
+                  </button>
+                ` : ''}
+                ${canDelete ? `
+                  <button type="button" class="btn sm danger" data-action="delete-document" data-args="${jsArg({ documentId: doc.id, entityType, entityId, containerId })}" title="Supprimer le document">
+                    ${icon('i-trash')}
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  container.innerHTML = `
+    <div class="detail-card detail-card-spaced documents-section">
+      <div class="detail-nav-bar">
+        <h3>${icon('i-doc')} Documents joints (${docs.length})</h3>
+        ${canCreate ? `
+          <button type="button" class="btn sm primary" data-action="open-upload-document" data-args="${jsArg({ entityType, entityId, containerId })}">
+            ${icon('i-plus')} <span>Ajouter un document</span>
+          </button>
+        ` : ''}
+      </div>
+      ${dropzoneHtml}
+      ${docsHtml}
+    </div>
+  `;
+}
+
+function handleDropzoneDragOver(e) {
+  const dz = e.target.closest('.dropzone');
+  if (dz) {
+    e.preventDefault();
+    dz.classList.add('dragover');
+  }
+}
+
+function handleDropzoneDragLeave(e) {
+  const dz = e.target.closest('.dropzone');
+  if (dz) {
+    dz.classList.remove('dragover');
+  }
+}
+
+function handleDropzoneDrop(e) {
+  const dz = e.target.closest('.dropzone');
+  if (dz) {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    const entityType = dz.dataset.entityType;
+    const entityId = dz.dataset.entityId;
+    const containerId = dz.dataset.containerId;
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      openUploadDocModal({ entityType, entityId, containerId, preselectedFile: e.dataTransfer.files[0] });
+    }
+  }
+}
+
+async function openUploadDocModal({ entityType, entityId, containerId, preselectedFile = null }) {
+  await ensureDocumentSettings();
+  const maxMb = state.documentSettings ? state.documentSettings.max_size_mb : 50;
+
+  const bodyHtml = `
+    <form id="docUploadForm" class="modal-form">
+      <input type="hidden" name="entity_type" value="${esc(entityType)}" />
+      <input type="hidden" name="entity_id" value="${esc(entityId)}" />
+      <input type="hidden" name="container_id" value="${esc(containerId || '')}" />
+
+      <div class="form-group">
+        <label for="docFileInput">Fichier à joindre *</label>
+        <input type="file" id="docFileInput" name="file" required />
+        <span class="form-help">Formats autorisés selon réglages. Taille max : <b>${esc(maxMb)} Mo</b>.</span>
+      </div>
+
+      <div class="form-group">
+        <label for="docTitleInput">Titre du document *</label>
+        <input type="text" id="docTitleInput" name="title" required placeholder="ex. Schéma électrique armoire principale" />
+        <span class="form-help">Intitulé clair pour la recherche transversale.</span>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="docCategorySelect">Catégorie</label>
+          <select id="docCategorySelect" name="category">
+            ${docCategoryOptions('', 'Sans catégorie')}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="docDescInput">Description ou notes (optionnel)</label>
+        <textarea id="docDescInput" name="description" rows="2" placeholder="Observations, version papier, indices de révision…"></textarea>
+      </div>
+
+      <div id="docUploadProgressContainer" class="upload-progress-container" hidden>
+        <div class="upload-progress-label">
+          <span>Téléversement en cours…</span>
+          <span id="docUploadProgressPercent" class="mono font-bold">0%</span>
+        </div>
+        <div class="upload-progress-bar">
+          <div id="docUploadProgressFill" class="upload-progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="docUploadError" class="form-error" hidden></div>
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="docUploadForm" class="btn primary" id="btnSubmitDocUpload">
+      ${icon('i-upload')} <span>Téléverser</span>
+    </button>
+  `;
+
+  openModal('Ajouter un document', bodyHtml, footerHtml);
+
+  if (preselectedFile) {
+    const fileInput = document.getElementById('docFileInput');
+    if (fileInput) {
+      const dt = new DataTransfer();
+      dt.items.add(preselectedFile);
+      fileInput.files = dt.files;
+      const titleInput = document.getElementById('docTitleInput');
+      if (titleInput && !titleInput.value) {
+        titleInput.value = preselectedFile.name.replace(/\.[^/.]+$/, '');
+      }
+    }
+  }
+}
+
+async function submitDocUpload(form) {
+  const errBox = document.getElementById('docUploadError');
+  const progBox = document.getElementById('docUploadProgressContainer');
+  const progFill = document.getElementById('docUploadProgressFill');
+  const progText = document.getElementById('docUploadProgressPercent');
+  const submitBtn = document.getElementById('btnSubmitDocUpload');
+
+  if (errBox) errBox.hidden = true;
+
+  const fileInput = form.file;
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+  const docSettings = await ensureDocumentSettings();
+
+  const valErr = validateDocumentFile(file, docSettings);
+  if (valErr) {
+    if (errBox) {
+      errBox.textContent = valErr;
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  // Seuls les champs attendus par le serveur : il refuse tout champ multipart inconnu.
+  const formData = new FormData();
+  formData.append('entity_type', form.entity_type.value);
+  formData.append('entity_id', form.entity_id.value);
+  formData.append('title', form.title.value.trim());
+  if (form.category.value) formData.append('category', form.category.value);
+  if (form.description.value.trim()) formData.append('description', form.description.value.trim());
+  formData.append('file', file);
+  const entityType = form.entity_type.value;
+  const entityId = form.entity_id.value;
+  const containerId = form.container_id.value;
+
+  if (progBox) progBox.hidden = false;
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    await uploadFileWithProgress('/api/documents', formData, (percent) => {
+      if (progFill) progFill.style.width = `${percent}%`;
+      if (progText) progText.textContent = `${percent}%`;
+    });
+
+    closeModal();
+    notify('Document ajouté avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    if (progBox) progBox.hidden = true;
+    if (submitBtn) submitBtn.disabled = false;
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors du téléversement.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function openNewVersionModal({ documentId, entityType, entityId, containerId }) {
+  await ensureDocumentSettings();
+  const maxMb = state.documentSettings ? state.documentSettings.max_size_mb : 50;
+
+  const bodyHtml = `
+    <form id="docVersionForm" class="modal-form">
+      <input type="hidden" name="document_id" value="${esc(documentId)}" />
+      <input type="hidden" name="entity_type" value="${esc(entityType || '')}" />
+      <input type="hidden" name="entity_id" value="${esc(entityId || '')}" />
+      <input type="hidden" name="container_id" value="${esc(containerId || '')}" />
+
+      <div class="form-group">
+        <label for="versionFileInput">Nouveau fichier de révision *</label>
+        <input type="file" id="versionFileInput" name="file" required />
+        <span class="form-help">Formats autorisés selon réglages. Max : <b>${esc(maxMb)} Mo</b>.</span>
+      </div>
+
+      <div class="form-group">
+        <label for="versionCommentInput">Commentaire de révision (optionnel)</label>
+        <input type="text" id="versionCommentInput" name="comment" placeholder="ex. Mise à jour plan de câblage 2026" />
+      </div>
+
+      <div id="versionUploadProgressContainer" class="upload-progress-container" hidden>
+        <div class="upload-progress-label">
+          <span>Envoi de la nouvelle version…</span>
+          <span id="versionUploadProgressPercent" class="mono font-bold">0%</span>
+        </div>
+        <div class="upload-progress-bar">
+          <div id="versionUploadProgressFill" class="upload-progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="versionUploadError" class="form-error" hidden></div>
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="docVersionForm" class="btn primary" id="btnSubmitDocVersion">
+      ${icon('i-upload')} <span>Enregistrer la nouvelle version</span>
+    </button>
+  `;
+
+  openModal('Nouvelle version du document', bodyHtml, footerHtml);
+}
+
+async function submitNewVersion(form) {
+  const errBox = document.getElementById('versionUploadError');
+  const progBox = document.getElementById('versionUploadProgressContainer');
+  const progFill = document.getElementById('versionUploadProgressFill');
+  const progText = document.getElementById('versionUploadProgressPercent');
+  const submitBtn = document.getElementById('btnSubmitDocVersion');
+
+  if (errBox) errBox.hidden = true;
+
+  const fileInput = form.file;
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+  const docSettings = await ensureDocumentSettings();
+
+  const valErr = validateDocumentFile(file, docSettings);
+  if (valErr) {
+    if (errBox) {
+      errBox.textContent = valErr;
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  if (form.comment && form.comment.value.trim()) {
+    formData.append('comment', form.comment.value.trim());
+  }
+
+  const documentId = form.document_id.value;
+  const entityType = form.entity_type.value;
+  const entityId = form.entity_id.value;
+  const containerId = form.container_id.value;
+
+  if (progBox) progBox.hidden = false;
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    await uploadFileWithProgress(`/api/documents/${encodeURIComponent(documentId)}/versions`, formData, (percent) => {
+      if (progFill) progFill.style.width = `${percent}%`;
+      if (progText) progText.textContent = `${percent}%`;
+    });
+
+    closeModal();
+    notify('Nouvelle version enregistrée avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    if (progBox) progBox.hidden = true;
+    if (submitBtn) submitBtn.disabled = false;
+    if (errBox) {
+      if (err.status === 409) {
+        errBox.textContent = 'Ce fichier est strictement identique à la version actuelle du document (doublon rejeté).';
+      } else {
+        errBox.textContent = err.message || 'Erreur lors de l\'envoi de la révision.';
+      }
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function openDocumentHistoryModal({ documentId, entityType, entityId, containerId }) {
+  openModal('Historique des versions', `<p class="hint">${icon('i-clock')} Chargement des versions…</p>`);
+
+  try {
+    const [doc, versionsRes] = await Promise.all([
+      api(`/api/documents/${encodeURIComponent(documentId)}`),
+      api(`/api/documents/${encodeURIComponent(documentId)}/versions`),
+    ]);
+
+    const versions = Array.isArray(versionsRes) ? versionsRes : (versionsRes && Array.isArray(versionsRes.items) ? versionsRes.items : []);
+    const canCreate = hasPermission('documents.create');
+    const curVerNo = doc.current_version ? doc.current_version.version_no : (versions[0] ? versions[0].version_no : 1);
+
+    const rows = versions.map(v => {
+      const isCur = v.version_no === curVerNo;
+      const author = v.uploaded_by ? v.uploaded_by.display_name : '—';
+      return `
+        <tr>
+          <td>
+            <b class="mono">v${esc(v.version_no)}</b>
+            ${isCur ? ' <span class="badge badge-active-on">Actuelle</span>' : ''}
+          </td>
+          <td>
+            <div class="mono font-bold">${esc(v.original_name)}</div>
+            ${v.comment ? `<div class="hint">« ${esc(v.comment)} »</div>` : ''}
+          </td>
+          <td class="mono">${esc(formatBytes(v.size_bytes))}</td>
+          <td>
+            <div>${esc(author)}</div>
+            <div class="hint">${esc(formatDate(v.uploaded_at))}</div>
+          </td>
+          <td>
+            <div class="cell-actions">
+              <a href="/api/documents/${esc(documentId)}/download?version=${esc(v.version_no)}&download=1" class="btn sm" title="Télécharger cette version">
+                ${icon('i-download')} <span>Télécharger</span>
+              </a>
+              ${canCreate && !isCur ? `
+                <button type="button" class="btn sm primary" data-action="restore-doc-version" data-args="${jsArg({ documentId, versionNo: v.version_no, entityType, entityId, containerId })}" title="Restaurer cette version en créant une nouvelle révision">
+                  ${icon('i-refresh')} <span>Restaurer</span>
+                </button>
+              ` : ''}
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const bodyHtml = `
+      <div class="modal-intro">
+        <h3>${esc(doc.title)}</h3>
+        <p class="hint">Consultez et téléchargez les anciennes versions de ce document, ou restaurez une révision antérieure.</p>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Fichier original & Commentaire</th>
+              <th>Taille</th>
+              <th>Auteur & Date</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows : '<tr><td colspan="5" class="empty-cell">Aucune version répertoriée.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const footerHtml = `<button type="button" class="btn" data-action="close-modal">Fermer</button>`;
+    openModal(`Versions : ${doc.title}`, bodyHtml, footerHtml);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function restoreDocumentVersion({ documentId, versionNo, entityType, entityId, containerId }) {
+  const ok = await confirmDialog(
+    'Restaurer une version',
+    `Voulez-vous restaurer la version v${versionNo} ? Cela créera une nouvelle version active basée sur cette archive.`,
+    'Restaurer'
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionNo)}/restore`, { method: 'POST' });
+    notify(`Version v${versionNo} restaurée avec succès.`, 'success');
+    closeModal();
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    notify(err.message || 'Erreur lors de la restauration.', 'error');
+  }
+}
+
+async function openEditDocumentModal({ documentId, entityType, entityId, containerId }) {
+  openModal('Modifier le document', `<p class="hint">${icon('i-clock')} Chargement du document…</p>`);
+
+  try {
+    const doc = await api(`/api/documents/${encodeURIComponent(documentId)}`);
+
+    const bodyHtml = `
+      <form id="editDocForm" class="modal-form">
+        <input type="hidden" name="document_id" value="${esc(documentId)}" />
+        <input type="hidden" name="entity_type" value="${esc(entityType || '')}" />
+        <input type="hidden" name="entity_id" value="${esc(entityId || '')}" />
+        <input type="hidden" name="container_id" value="${esc(containerId || '')}" />
+
+        <div class="form-group">
+          <label for="editDocTitleInput">Titre du document *</label>
+          <input type="text" id="editDocTitleInput" name="title" required value="${esc(doc.title)}" />
+        </div>
+
+        <div class="form-group">
+          <label for="editDocCategorySelect">Catégorie</label>
+          <select id="editDocCategorySelect" name="category">
+            ${docCategoryOptions(doc.category, 'Sans catégorie')}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="editDocDescInput">Description ou notes</label>
+          <textarea id="editDocDescInput" name="description" rows="3">${esc(doc.description || '')}</textarea>
+        </div>
+
+        <div id="editDocError" class="form-error" hidden></div>
+      </form>
+    `;
+
+    const footerHtml = `
+      <button type="button" class="btn" data-action="close-modal">Annuler</button>
+      <button type="submit" form="editDocForm" class="btn primary">
+        ${icon('i-check')} <span>Enregistrer</span>
+      </button>
+    `;
+
+    openModal('Modifier le document', bodyHtml, footerHtml);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function submitEditDocument(form) {
+  const errBox = document.getElementById('editDocError');
+  if (errBox) errBox.hidden = true;
+
+  const documentId = form.document_id.value;
+  const entityType = form.entity_type.value;
+  const entityId = form.entity_id.value;
+  const containerId = form.container_id.value;
+
+  const payload = {
+    title: form.title.value.trim(),
+    category: form.category.value || null,
+    description: form.description.value.trim() || null
+  };
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(documentId)}`, {
+      method: 'PATCH',
+      body: payload
+    });
+
+    closeModal();
+    notify('Document mis à jour avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la modification.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function deleteDocument({ documentId, entityType, entityId, containerId }) {
+  const ok = await confirmDialog(
+    'Supprimer le document',
+    'Voulez-vous supprimer ce document ? L\'ensemble de ses versions sera archivé.',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+    notify('Document supprimé avec succès.', 'success');
+
+    if (containerId) {
+      await loadAndRenderEntityDocuments(entityType, entityId, containerId);
+    }
+    if (currentRoute() === 'documents') {
+      await loadDocumentsList(true);
+    }
+  } catch (err) {
+    notify(err.message || 'Erreur lors de la suppression.', 'error');
+  }
+}
+
+function documentsPage() {
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-doc')}
+        <div>
+          <h1>Documents et pièces jointes</h1>
+          <p class="page-subtitle">Vue transversale des manuels, schémas, procédures et rapports de maintenance.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-box">
+          ${icon('i-search')}
+          <input type="search" id="documentsSearchInput" placeholder="Rechercher par titre ou nom de fichier…" value="${esc(state.documentsSearchQuery)}" autocomplete="off" />
+        </div>
+        <div class="filter-select-wrap">
+          <label for="documentsEntityTypeSelect" class="sr-only">Type d'entité</label>
+          <select id="documentsEntityTypeSelect" data-action="filter-documents-entity-type">
+            <option value="" ${!state.documentsEntityTypeFilter ? 'selected' : ''}>Toutes les entités</option>
+            <option value="equipment" ${state.documentsEntityTypeFilter === 'equipment' ? 'selected' : ''}>Équipements</option>
+            <option value="intervention" ${state.documentsEntityTypeFilter === 'intervention' ? 'selected' : ''}>Interventions</option>
+            <option value="part" ${state.documentsEntityTypeFilter === 'part' ? 'selected' : ''}>Pièces détachées</option>
+            <option value="maintenance_plan" ${state.documentsEntityTypeFilter === 'maintenance_plan' ? 'selected' : ''}>Plannings préventifs</option>
+          </select>
+        </div>
+        <div class="filter-select-wrap">
+          <label for="documentsCategorySelect" class="sr-only">Catégorie</label>
+          <select id="documentsCategorySelect" data-action="filter-documents-category">
+            ${docCategoryOptions(state.documentsCategoryFilter, 'Toutes les catégories')}
+          </select>
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <span id="documentsCountInfo" class="hint mono"></span>
+      </div>
+    </div>
+
+    <div id="documentsListContainer">
+      <p class="hint">${icon('i-clock')} Chargement des documents…</p>
+    </div>
+  `;
+}
+
+async function initDocumentsPageView() {
+  await loadDocumentsList(true);
+}
+
+async function loadDocumentsList(reset = true) {
+  const container = document.getElementById('documentsListContainer');
+  if (!container) return;
+
+  if (reset) {
+    state.documents = [];
+    state.documentsNextCursor = null;
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des documents…</p>`;
+  }
+
+  state.documentsLoading = true;
+
+  try {
+    const params = new URLSearchParams();
+    if (state.documentsSearchQuery) params.set('q', state.documentsSearchQuery);
+    if (state.documentsEntityTypeFilter) params.set('entity_type', state.documentsEntityTypeFilter);
+    if (state.documentsCategoryFilter) params.set('category', state.documentsCategoryFilter);
+    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+    params.set('limit', '25');
+    if (!reset && state.documentsNextCursor) {
+      params.set('cursor', state.documentsNextCursor);
+    }
+
+    const res = await api(`/api/documents/search?${params.toString()}`);
+    const rawList = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+    const items = rawList.map(adaptDocument);
+    const nextCursor = res && res.next_cursor ? res.next_cursor : null;
+
+    if (reset) {
+      state.documents = items;
+    } else {
+      state.documents = state.documents.concat(items);
+    }
+    state.documentsNextCursor = nextCursor;
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement des documents : ${esc(err.message)}</p>`;
+    state.documentsLoading = false;
+    return;
+  }
+
+  state.documentsLoading = false;
+  renderDocumentsListView();
+}
+
+function renderDocumentsListView() {
+  const container = document.getElementById('documentsListContainer');
+  if (!container) return;
+
+  const countInfo = document.getElementById('documentsCountInfo');
+  if (countInfo) {
+    const len = state.documents.length;
+    countInfo.textContent = `${len} document${len > 1 ? 's' : ''}`;
+  }
+
+  if (!state.documents.length) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint">Aucun document ne correspond aux filtres appliqués.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const canCreate = hasPermission('documents.create');
+  const canDelete = hasPermission('documents.delete');
+
+  const rows = state.documents.map(doc => {
+    const v = doc.current_version || {};
+    const ent = doc.entity || {};
+    const isInline = isDocInline(doc);
+    const author = v.uploaded_by ? v.uploaded_by.display_name : '—';
+
+    let entityLinkHtml = '—';
+    if (ent.type === 'equipment') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Équipement</span>
+        <button type="button" class="link-action font-bold mono" data-action="open-detail-equipment" data-args="${jsArg(ent.id)}">
+          ${esc(ent.code || ent.label || 'Équipement')}
+        </button>
+      `;
+    } else if (ent.type === 'intervention') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Intervention</span>
+        <a href="#/interventions/${esc(ent.id)}" class="link-action font-bold mono">
+          ${esc(ent.code || ent.label || 'Intervention')}
+        </a>
+      `;
+    } else if (ent.type === 'part') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Pièce</span>
+        <a href="#/pieces/${esc(ent.id)}" class="link-action font-bold mono">
+          ${esc(ent.code || ent.label || 'Pièce')}
+        </a>
+      `;
+    } else if (ent.type === 'maintenance_plan') {
+      entityLinkHtml = `
+        <span class="badge badge-subtle">Planning</span>
+        <a href="#/maintenance-preventive/${esc(ent.id)}" class="link-action font-bold mono">
+          ${esc(ent.code || ent.label || 'Planning')}
+        </a>
+      `;
+    }
+
+    return `
+      <tr>
+        <td>
+          <div class="cell-doc-title">
+            <span class="doc-icon">${icon(docFileIcon(v.mime_type || v.original_name))}</span>
+            <div>
+              <b>${esc(doc.title)}</b>
+              <div class="hint mono">${esc(v.original_name || '')}</div>
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="cell-entity">${entityLinkHtml}</div>
+        </td>
+        <td><span class="badge ${doc.category ? 'badge-info' : ''}">${esc(formatDocCategory(doc.category))}</span></td>
+        <td>
+          <span class="badge font-bold">v${esc(v.version_no || 1)}</span>
+          <span class="hint mono">${esc(formatBytes(v.size_bytes))}</span>
+        </td>
+        <td>
+          <div>${esc(author)}</div>
+          <div class="hint">${esc(formatDate(v.uploaded_at))}</div>
+        </td>
+        <td>
+          <div class="cell-actions">
+            ${isInline ? `
+              <a href="/api/documents/${esc(doc.id)}/download" target="_blank" rel="noopener noreferrer" class="btn sm" title="Ouvrir dans un nouvel onglet">
+                ${icon('i-eye')} <span>Ouvrir</span>
+              </a>
+            ` : ''}
+            <a href="/api/documents/${esc(doc.id)}/download?download=1" class="btn sm" title="Télécharger">
+              ${icon('i-download')}
+            </a>
+            ${canCreate ? `
+              <button type="button" class="btn sm" data-action="open-new-version" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Nouvelle version">
+                ${icon('i-upload')}
+              </button>
+            ` : ''}
+            <button type="button" class="btn sm" data-action="open-document-history" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Historique">
+              ${icon('i-history')}
+            </button>
+            ${canCreate ? `
+              <button type="button" class="btn sm" data-action="open-edit-document" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Modifier">
+                ${icon('i-edit')}
+              </button>
+            ` : ''}
+            ${canDelete ? `
+              <button type="button" class="btn sm danger" data-action="delete-document" data-args="${jsArg({ documentId: doc.id, entityType: ent.type, entityId: ent.id })}" title="Supprimer">
+                ${icon('i-trash')}
+              </button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Entité liée</th>
+            <th>Catégorie</th>
+            <th>Version & Taille</th>
+            <th>Auteur & Date</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+    ${renderLoadMore(state.documentsNextCursor, 'load-more-documents', state.documentsLoading)}
+  `;
+}
+
+async function loadMoreDocuments() {
+  if (!state.documentsNextCursor || state.documentsLoading) return;
+  await loadDocumentsList(false);
+}
+
+function labelsPrintPage() {
+  return `
+    <div class="labels-page-wrap">
+      <div class="labels-toolbar no-print">
+        <div class="labels-toolbar-left">
+          <a href="#/equipements" class="btn">
+            ${icon('i-arrow-left')} <span>Retour aux équipements</span>
+          </a>
+          <h2>${icon('i-qrcode')} Impression d'étiquettes QR Code</h2>
+        </div>
+        <div class="labels-toolbar-right">
+          <div class="labels-offset-ctrl" id="labelsOffsetBox">
+            <label for="labelsOffsetInput">Commencer à la position n° :</label>
+            <input type="number" id="labelsOffsetInput" min="1" max="100" value="1" data-action="change-labels-offset" />
+          </div>
+          <button type="button" class="btn primary" data-action="trigger-print">
+            ${icon('i-print')} <span>Imprimer</span>
+          </button>
+          ${hasPermission('settings.edit') ? `
+            <a href="#/parametres" class="btn" title="Modifier le format d'étiquette">
+              ${icon('i-gear')} <span>Format</span>
+            </a>
+          ` : ''}
+        </div>
+      </div>
+
+      <div id="labelsPrintContainer">
+        <p class="hint">${icon('i-clock')} Chargement du format et des équipements…</p>
+      </div>
+    </div>
+  `;
+}
+
+async function initLabelsPrintPageView() {
+  const container = document.getElementById('labelsPrintContainer');
+  if (!container) return;
+
+  const { query } = currentRouteInfo();
+  let ids = [];
+  if (query) {
+    const params = new URLSearchParams(query);
+    const idsParam = params.get('ids');
+    if (idsParam) {
+      ids = idsParam.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  if (!ids.length && state.selectedEquipmentIds.size > 0) {
+    ids = Array.from(state.selectedEquipmentIds);
+  }
+
+  if (!ids.length) {
+    container.innerHTML = `
+      <div class="card">
+        <p class="hint">Aucun équipement sélectionné pour l'impression.</p>
+        <p><a href="#/equipements" class="btn primary">${icon('i-gear')} <span>Sélectionner des équipements</span></a></p>
+      </div>
+    `;
+    return;
+  }
+
+  try {
+    const [fmt, ...equipments] = await Promise.all([
+      api('/api/settings/labels').catch(() => ({
+        mode: 'sheet', page: 'A4', columns: 3, rows: 8, margin_top_mm: 10, margin_left_mm: 7, spacing_h_mm: 2, spacing_v_mm: 0,
+        width_mm: 64, height_mm: 34, qr_size_mm: 20, show_code: true, show_name: true, show_site: false, show_line: false
+      })),
+      ...ids.map(id => api(`/api/equipments/${encodeURIComponent(id)}`).catch(() => null))
+    ]);
+
+    state.labelSettings = labelFromServer(fmt);
+    state.currentPrintEquipments = equipments.filter(Boolean);
+    state.currentPrintOffset = 1;
+
+    renderLabelsSheet();
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+  }
+}
+
+function renderLabelsSheet() {
+  const container = document.getElementById('labelsPrintContainer');
+  if (!container) return;
+
+  const fmt = state.labelSettings || {};
+  const equips = state.currentPrintEquipments || [];
+  const offset = Math.max(1, parseInt(state.currentPrintOffset || 1, 10));
+
+  const offsetBox = document.getElementById('labelsOffsetBox');
+  if (offsetBox) {
+    offsetBox.hidden = fmt.mode !== 'sheet';
+  }
+
+  if (fmt.mode === 'single') {
+    container.innerHTML = `
+      <div class="labels-single-container">
+        ${equips.map(eq => renderStickerHtml(eq, fmt)).join('')}
+      </div>
+    `;
+    const singleWrap = container.querySelector('.labels-single-container');
+    if (singleWrap) {
+      singleWrap.style.setProperty('--label-w', `${fmt.width_mm || 64}mm`);
+      singleWrap.style.setProperty('--label-h', `${fmt.height_mm || 34}mm`);
+    }
+    container.querySelectorAll('.label-sticker').forEach(stk => {
+      stk.style.setProperty('--qr-size', `${fmt.qr_size_mm || 20}mm`);
+    });
+    return;
+  }
+
+  const cols = fmt.columns || 3;
+  const rows = fmt.rows || 8;
+  const stickersPerPage = cols * rows;
+
+  const cells = [];
+  for (let i = 1; i < offset; i++) {
+    cells.push('<div class="label-sticker sticker-empty"></div>');
+  }
+  for (const eq of equips) {
+    cells.push(renderStickerHtml(eq, fmt));
+  }
+
+  const pagesHtml = [];
+  for (let i = 0; i < cells.length; i += stickersPerPage) {
+    const pageCells = cells.slice(i, i + stickersPerPage);
+    pagesHtml.push(`
+      <div class="label-sheet-page label-page-${esc(fmt.page || 'A4').toLowerCase()}">
+        <div class="label-sheet-grid">
+          ${pageCells.join('')}
+        </div>
+      </div>
+    `);
+  }
+
+  container.innerHTML = pagesHtml.join('');
+
+  container.querySelectorAll('.label-sheet-page').forEach(page => {
+    page.style.setProperty('--sheet-cols', cols);
+    page.style.setProperty('--sheet-rows', rows);
+    page.style.setProperty('--margin-top', `${fmt.margin_top_mm || 10}mm`);
+    page.style.setProperty('--margin-left', `${fmt.margin_left_mm || 7}mm`);
+    page.style.setProperty('--spacing-h', `${fmt.spacing_h_mm || 2}mm`);
+    page.style.setProperty('--spacing-v', `${fmt.spacing_v_mm || 0}mm`);
+    page.style.setProperty('--sticker-w', `${fmt.width_mm || 64}mm`);
+    page.style.setProperty('--sticker-h', `${fmt.height_mm || 34}mm`);
+  });
+
+  container.querySelectorAll('.label-sticker').forEach(stk => {
+    stk.style.setProperty('--qr-size', `${fmt.qr_size_mm || 20}mm`);
+  });
+}
+
+function renderStickerHtml(eq, fmt) {
+  const lineLabel = eq.production_line ? `${eq.production_line.code}` : '';
+  const siteLabel = eq.site ? `${eq.site.name}` : (state.site ? state.site.name : '');
+  const qrSize = fmt.qr_size_mm || 20;
+
+  return `
+    <div class="label-sticker">
+      <div class="sticker-qr">
+        <img src="/api/equipments/${esc(eq.id)}/qr.svg" alt="QR Code" width="${qrSize * 4}" height="${qrSize * 4}" />
+      </div>
+      <div class="sticker-info">
+        ${fmt.show_code ? `<div class="sticker-code mono">${esc(eq.code)}</div>` : ''}
+        ${fmt.show_name ? `<div class="sticker-name">${esc(eq.name)}</div>` : ''}
+        ${fmt.show_line && lineLabel ? `<div class="sticker-line hint mono">${esc(lineLabel)}</div>` : ''}
+        ${fmt.show_site && siteLabel ? `<div class="sticker-site hint">${esc(siteLabel)}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function changeLabelsOffset(val) {
+  const num = parseInt(val, 10);
+  if (!isNaN(num) && num >= 1) {
+    state.currentPrintOffset = num;
+    renderLabelsSheet();
+  }
+}
+
+// ============================================================================
+// 14I. MODULE PARAMÈTRES (PHASE 6)
+// ============================================================================
+
+function settingsPage() {
+  if (!hasPermission('settings.view')) {
+    return accessDeniedPage();
+  }
+
+  const tab = state.settingsTab || 'storage';
+
+  return `
+    <div class="page-head">
+      <div class="page-head-title">
+        ${icon('i-cog')}
+        <div>
+          <h1>Paramètres du système</h1>
+          <p class="page-subtitle">Gestion du stockage des fichiers, catalogue des formats autorisés et étiquettes QR Code.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs-nav settings-tabs-nav">
+      <button type="button" class="tab-btn ${tab === 'storage' ? 'on' : ''}" data-action="switch-settings-tab" data-args="storage">
+        ${icon('i-database')} <span>Stockage</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'documents' ? 'on' : ''}" data-action="switch-settings-tab" data-args="documents">
+        ${icon('i-folder')} <span>Types de fichiers</span>
+      </button>
+      <button type="button" class="tab-btn ${tab === 'labels' ? 'on' : ''}" data-action="switch-settings-tab" data-args="labels">
+        ${icon('i-qrcode')} <span>Étiquettes</span>
+      </button>
+    </div>
+
+    <div id="settingsTabContent">
+      <p class="hint">${icon('i-clock')} Chargement des paramètres…</p>
+    </div>
+  `;
+}
+
+async function initSettingsPageView() {
+  const tab = state.settingsTab || 'storage';
+  await switchSettingsTab(tab);
+}
+
+async function switchSettingsTab(tab) {
+  state.settingsTab = tab;
+
+  document.querySelectorAll('.settings-tabs-nav .tab-btn').forEach(btn => {
+    btn.classList.toggle('on', btn.dataset.args === tab);
+  });
+
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  if (tab === 'storage') {
+    await loadSettingsStorage();
+  } else if (tab === 'documents') {
+    await loadSettingsDocuments();
+  } else if (tab === 'labels') {
+    await loadSettingsLabels();
+  }
+}
+
+/** Stockage renvoyé par le serveur (kind, label, is_active) vers les noms utilisés par l'écran. */
+function adaptStorage(b) {
+  return {
+    ...b,
+    driver: b.kind || b.driver,
+    name: b.label || b.name || '',
+    active: b.is_active !== undefined ? !!b.is_active : !!b.active,
+  };
+}
+
+async function loadSettingsStorage() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.storageLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des stockages…</p>`;
+
+  try {
+    const list = await api('/api/settings/storage');
+    state.storageBackends = (Array.isArray(list) ? list : (list && Array.isArray(list.items) ? list.items : [])).map(adaptStorage);
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement des stockages : ${esc(err.message)}</p>`;
+    state.storageLoading = false;
+    return;
+  }
+
+  state.storageLoading = false;
+  renderSettingsStorageView();
+}
+
+function renderSettingsStorageView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const canEdit = hasPermission('settings.edit');
+
+  const rows = state.storageBackends.map(b => {
+    const isFolder = b.driver === 'folder';
+    const driverLabel = isFolder ? 'Dossier local / UNC' : 'Stockage objet S3';
+    const cfg = b.config || {};
+    const pathInfo = isFolder
+      ? (cfg.path ? cfg.path : 'Dossier par défaut du serveur')
+      : `${cfg.bucket || ''} (${cfg.endpoint || ''})`;
+
+    return `
+      <tr>
+        <td>
+          <b>${esc(b.name)}</b>
+          ${b.active ? ' <span class="badge badge-active-on">Actif</span>' : '<span class="badge badge-active-off">Inactif</span>'}
+        </td>
+        <td>
+          <span class="badge ${isFolder ? 'badge-info' : 'badge-subtle'}">${esc(driverLabel)}</span>
+        </td>
+        <td class="mono hint">${esc(pathInfo)}</td>
+        <td>
+          <div class="cell-actions">
+            <button type="button" class="btn sm" data-action="test-storage" data-args="${jsArg(b.id)}" title="Vérifier l'accessibilité en écriture et lecture">
+              ${icon('i-check')} <span>Tester la connexion</span>
+            </button>
+            ${canEdit && !b.active ? `
+              <button type="button" class="btn sm primary" data-action="activate-storage" data-args="${jsArg(b.id)}" title="Définir comme stockage actif pour les nouveaux fichiers">
+                ${icon('i-check')} <span>Activer</span>
+              </button>
+            ` : ''}
+            ${canEdit ? `
+              <button type="button" class="btn sm" data-action="open-edit-storage" data-args="${jsArg(b.id)}" title="Modifier">
+                ${icon('i-edit')}
+              </button>
+              <button type="button" class="btn sm danger" data-action="delete-storage" data-args="${jsArg(b.id)}" title="Supprimer">
+                ${icon('i-trash')}
+              </button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="detail-nav-bar">
+        <div>
+          <h2>${icon('i-database')} Emplacements de stockage des documents</h2>
+          <p class="hint">Apex Maint prend en charge le stockage sur système de fichiers local / partage réseau UNC, ou sur serveur S3 (AWS, MinIO, Scaleway, Ceph).</p>
+        </div>
+        ${canEdit ? `
+          <button type="button" class="btn primary" data-action="open-create-storage">
+            ${icon('i-plus')} <span>Ajouter un stockage</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Nom du stockage</th>
+              <th>Pilote</th>
+              <th>Chemin / Bucket</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows : '<tr><td colspan="4" class="empty-cell">Aucun stockage configuré.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function testStorageConnection(storageId) {
+  try {
+    const res = await api(`/api/settings/storage/${encodeURIComponent(storageId)}/test`, { method: 'POST' });
+    if (res && res.ok) {
+      notify('Test de connexion réussi : écriture et lecture validées.', 'success');
+    } else {
+      notify(`Échec du test de connexion : ${(res && res.message) || 'Inaccessible'}`, 'error');
+    }
+  } catch (err) {
+    notify(`Échec du test de connexion : ${err.message}`, 'error');
+  }
+}
+
+async function activateStorage(storageId) {
+  try {
+    await api(`/api/settings/storage/${encodeURIComponent(storageId)}/activate`, { method: 'POST' });
+    notify('Stockage activé avec succès pour les prochains téléversements.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    notify(`Erreur lors de l'activation : ${err.message}`, 'error');
+  }
+}
+
+async function deleteStorage(storageId) {
+  const ok = await confirmDialog(
+    'Supprimer le stockage',
+    'Voulez-vous supprimer ce stockage ? S\'il contient des documents référencés, la suppression sera refusée.',
+    'Supprimer',
+    true
+  );
+  if (!ok) return;
+
+  try {
+    await api(`/api/settings/storage/${encodeURIComponent(storageId)}`, { method: 'DELETE' });
+    notify('Stockage supprimé avec succès.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    notify(`Suppression impossible : ${err.message}`, 'error');
+  }
+}
+
+function openCreateStorageModal() {
+  const bodyHtml = `
+    <form id="createStorageForm" class="modal-form">
+      <div class="form-group">
+        <label for="storageNameInput">Nom du stockage *</label>
+        <input type="text" id="storageNameInput" name="name" required placeholder="ex. Serveur NAS Ateliers ou S3 MinIO" />
+      </div>
+
+      <div class="form-group">
+        <label for="storageDriverSelect">Pilote de stockage *</label>
+        <select id="storageDriverSelect" name="driver" data-action="toggle-storage-driver-fields">
+          <option value="folder" selected>Dossier local ou partage UNC (folder)</option>
+          <option value="s3">Stockage objet compatible S3 (s3)</option>
+        </select>
+      </div>
+
+      <!-- CHAMPS PILOTE FOLDER -->
+      <div id="storageFolderFields" class="storage-driver-section">
+        <div class="form-group">
+          <label for="storageFolderPath">Chemin absolu du dossier</label>
+          <input type="text" id="storageFolderPath" name="path" placeholder="ex. D:\\GMAO\\fichiers ou \\\\nas\\partage\\gmao (laisser vide pour le dossier par défaut)" />
+          <span class="form-help">Si vide, le dossier par défaut configuré au démarrage du serveur sera utilisé.</span>
+        </div>
+      </div>
+
+      <!-- CHAMPS PILOTE S3 -->
+      <div id="storageS3Fields" class="storage-driver-section" hidden>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="s3Endpoint">Point de terminaison (Endpoint) *</label>
+            <input type="text" id="s3Endpoint" name="endpoint" placeholder="ex. https://s3.eu-west-1.amazonaws.com ou http://minio:9000" />
+          </div>
+          <div class="form-group">
+            <label for="s3Region">Région</label>
+            <input type="text" id="s3Region" name="region" placeholder="ex. eu-west-1 ou us-east-1" value="eu-west-1" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="s3Bucket">Nom du Bucket *</label>
+            <input type="text" id="s3Bucket" name="bucket" placeholder="ex. apex-maint-documents" />
+          </div>
+          <div class="form-group">
+            <label for="s3Prefix">Préfixe de dossier (optionnel)</label>
+            <input type="text" id="s3Prefix" name="prefix" placeholder="ex. production/" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="s3AccessKey">Clé d'accès (Access Key ID) *</label>
+            <input type="text" id="s3AccessKey" name="access_key_id" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label for="s3SecretKey">Clé secrète (Secret Access Key) *</label>
+            <input type="password" id="s3SecretKey" name="secret" autocomplete="new-password" />
+            <span class="form-help">Chiffrée de manière sécurisée en AES-256-GCM.</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="s3PathStyle" name="path_style" />
+            <span>Activer le mode Path Style (recommandé pour MinIO ou Ceph)</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="createStorageError" class="form-error" hidden></div>
+    </form>
+  `;
+
+  const footerHtml = `
+    <button type="button" class="btn" data-action="close-modal">Annuler</button>
+    <button type="submit" form="createStorageForm" class="btn primary">
+      ${icon('i-check')} <span>Créer le stockage</span>
+    </button>
+  `;
+
+  openModal('Nouveau stockage de documents', bodyHtml, footerHtml);
+}
+
+async function submitCreateStorage(form) {
+  const errBox = document.getElementById('createStorageError');
+  if (errBox) errBox.hidden = true;
+
+  const driver = form.driver.value;
+  const name = form.name.value.trim();
+
+  let config = {};
+  let secret = null;
+
+  if (driver === 'folder') {
+    config = { path: form.path ? form.path.value.trim() : '' };
+  } else if (driver === 's3') {
+    config = {
+      endpoint: form.endpoint.value.trim(),
+      region: form.region.value.trim() || 'eu-west-1',
+      bucket: form.bucket.value.trim(),
+      access_key_id: form.access_key_id.value.trim(),
+      prefix: form.prefix ? form.prefix.value.trim() : '',
+      path_style: form.path_style ? form.path_style.checked : false
+    };
+    secret = form.secret.value;
+    if (!config.endpoint || !config.bucket || !config.access_key_id || !secret) {
+      if (errBox) {
+        errBox.textContent = 'Tous les champs S3 obligatoires doivent être renseignés.';
+        errBox.hidden = false;
+      }
+      return;
+    }
+  }
+
+  const payload = { label: name, kind: driver, config };
+  if (secret) payload.secret = secret;
+
+  try {
+    await api('/api/settings/storage', {
+      method: 'POST',
+      body: payload
+    });
+
+    closeModal();
+    notify('Stockage ajouté avec succès.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la création du stockage.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function openEditStorageModal(storageId) {
+  openModal('Modifier le stockage', `<p class="hint">${icon('i-clock')} Chargement du stockage…</p>`);
+
+  try {
+    const list = await api('/api/settings/storage');
+    const items = Array.isArray(list) ? list : (list && Array.isArray(list.items) ? list.items : []);
+    const found = items.find(item => item.id === storageId);
+    if (!found) throw new Error('Stockage introuvable.');
+    const b = adaptStorage(found);
+
+    const isFolder = b.driver === 'folder';
+    const cfg = b.config || {};
+
+    const bodyHtml = `
+      <form id="editStorageForm" class="modal-form">
+        <input type="hidden" name="storage_id" value="${esc(b.id)}" />
+        <input type="hidden" name="driver" value="${esc(b.driver)}" />
+
+        <div class="form-group">
+          <label for="editStorageName">Nom du stockage *</label>
+          <input type="text" id="editStorageName" name="name" required value="${esc(b.name)}" />
+        </div>
+
+        ${isFolder ? `
+          <div class="form-group">
+            <label for="editStoragePath">Chemin du dossier</label>
+            <input type="text" id="editStoragePath" name="path" value="${esc(cfg.path || '')}" placeholder="Laisser vide pour le dossier par défaut" />
+          </div>
+        ` : `
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editS3Endpoint">Point de terminaison (Endpoint) *</label>
+              <input type="text" id="editS3Endpoint" name="endpoint" required value="${esc(cfg.endpoint || '')}" />
+            </div>
+            <div class="form-group">
+              <label for="editS3Region">Région</label>
+              <input type="text" id="editS3Region" name="region" value="${esc(cfg.region || 'eu-west-1')}" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editS3Bucket">Nom du Bucket *</label>
+              <input type="text" id="editS3Bucket" name="bucket" required value="${esc(cfg.bucket || '')}" />
+            </div>
+            <div class="form-group">
+              <label for="editS3Prefix">Préfixe</label>
+              <input type="text" id="editS3Prefix" name="prefix" value="${esc(cfg.prefix || '')}" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editS3AccessKey">Clé d'accès *</label>
+              <input type="text" id="editS3AccessKey" name="access_key_id" required value="${esc(cfg.access_key_id || '')}" />
+            </div>
+            <div class="form-group">
+              <label for="editS3Secret">Nouvelle clé secrète (optionnel)</label>
+              <input type="password" id="editS3Secret" name="secret" placeholder="${b.has_secret ? 'Laisser vide pour conserver le secret existant' : 'Saisir le secret'}" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="editS3PathStyle" name="path_style" ${cfg.path_style ? 'checked' : ''} />
+              <span>Mode Path Style (MinIO / Ceph)</span>
+            </label>
+          </div>
+        `}
+
+        <div id="editStorageError" class="form-error" hidden></div>
+      </form>
+    `;
+
+    const footerHtml = `
+      <button type="button" class="btn" data-action="close-modal">Annuler</button>
+      <button type="submit" form="editStorageForm" class="btn primary">
+        ${icon('i-check')} <span>Enregistrer les modifications</span>
+      </button>
+    `;
+
+    openModal(`Modifier « ${b.name} »`, bodyHtml, footerHtml);
+  } catch (err) {
+    openModal('Erreur', `<p class="hint state-ko">${esc(err.message)}</p>`, `<button type="button" class="btn" data-action="close-modal">Fermer</button>`);
+  }
+}
+
+async function submitEditStorage(form) {
+  const errBox = document.getElementById('editStorageError');
+  if (errBox) errBox.hidden = true;
+
+  const storageId = form.storage_id.value;
+  const driver = form.driver.value;
+  const name = form.name.value.trim();
+
+  let config = {};
+  let secret = null;
+
+  if (driver === 'folder') {
+    config = { path: form.path ? form.path.value.trim() : '' };
+  } else if (driver === 's3') {
+    config = {
+      endpoint: form.endpoint.value.trim(),
+      region: form.region.value.trim() || 'eu-west-1',
+      bucket: form.bucket.value.trim(),
+      access_key_id: form.access_key_id.value.trim(),
+      prefix: form.prefix ? form.prefix.value.trim() : '',
+      path_style: form.path_style ? form.path_style.checked : false
+    };
+    if (form.secret && form.secret.value) {
+      secret = form.secret.value;
+    }
+  }
+
+  const payload = { label: name, config };
+  if (secret) payload.secret = secret;
+
+  try {
+    await api(`/api/settings/storage/${encodeURIComponent(storageId)}`, {
+      method: 'PATCH',
+      body: payload
+    });
+
+    closeModal();
+    notify('Stockage mis à jour avec succès.', 'success');
+    await loadSettingsStorage();
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la modification.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function loadSettingsDocuments() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.documentSettingsLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des types de fichiers…</p>`;
+
+  try {
+    state.documentSettings = await api('/api/settings/documents');
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+    state.documentSettingsLoading = false;
+    return;
+  }
+
+  state.documentSettingsLoading = false;
+  renderSettingsDocumentsView();
+}
+
+function renderSettingsDocumentsView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const docSettings = state.documentSettings || {};
+  const allowed = Array.isArray(docSettings.allowed_types) ? docSettings.allowed_types : [];
+  const catalog = Array.isArray(docSettings.catalog) ? docSettings.catalog : [];
+  const maxSize = docSettings.max_size_mb || 50;
+  const canEdit = hasPermission('settings.edit');
+
+  const catalogItemsHtml = catalog.map(cat => {
+    const isChecked = allowed.includes(cat.id);
+    const exts = Array.isArray(cat.extensions) ? cat.extensions.join(', ') : cat.extensions;
+    return `
+      <label class="catalog-item-card">
+        <input type="checkbox" name="allowed_types" value="${esc(cat.id)}" ${isChecked ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+        <div class="catalog-item-info">
+          <div class="catalog-item-title">${esc(cat.label)}</div>
+          <div class="catalog-item-ext mono hint">${esc(exts)}</div>
+          <div class="catalog-item-disp hint">${cat.disposition === 'inline' ? 'Consultable dans le navigateur' : 'Téléchargement direct'}</div>
+        </div>
+      </label>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="card">
+      <form id="settingsDocumentsForm">
+        <div class="detail-nav-bar">
+          <div>
+            <h2>${icon('i-folder')} Formats de fichiers et quotas de téléversement</h2>
+            <p class="hint">Activez les types de documents acceptés par l'application et fixez la limite maximale de taille autorisée.</p>
+          </div>
+          ${canEdit ? `
+            <button type="submit" class="btn primary">
+              ${icon('i-check')} <span>Enregistrer les réglages</span>
+            </button>
+          ` : ''}
+        </div>
+
+        <div class="form-row form-row-tight">
+          <div class="form-group max-size-group">
+            <label for="docMaxSizeInput">Taille maximale par fichier (en Mo) *</label>
+            <div class="input-with-unit">
+              <input type="number" id="docMaxSizeInput" name="max_size_mb" min="1" max="200" required value="${esc(maxSize)}" ${!canEdit ? 'disabled' : ''} />
+              <span class="unit-addon">Mo</span>
+            </div>
+            <span class="form-help">Valeur comprise entre 1 et 200 Mo (par défaut 50 Mo).</span>
+          </div>
+        </div>
+
+        <div class="catalog-section">
+          <h3>Catalogue des types de fichiers pris en charge (${catalog.length})</h3>
+          <div class="catalog-grid">
+            ${catalogItemsHtml}
+          </div>
+        </div>
+
+        <div id="settingsDocumentsError" class="form-error" hidden></div>
+      </form>
+    </div>
+  `;
+}
+
+async function submitSettingsDocuments(form) {
+  const errBox = document.getElementById('settingsDocumentsError');
+  if (errBox) errBox.hidden = true;
+
+  const max_size_mb = parseInt(form.max_size_mb.value, 10);
+  if (isNaN(max_size_mb) || max_size_mb < 1 || max_size_mb > 200) {
+    if (errBox) {
+      errBox.textContent = 'La taille maximale doit être un nombre entier entre 1 et 200 Mo.';
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  const allowed_types = Array.from(form.querySelectorAll('input[name="allowed_types"]:checked')).map(cb => cb.value);
+  if (!allowed_types.length) {
+    if (errBox) {
+      errBox.textContent = 'Vous devez autoriser au moins un type de fichier.';
+      errBox.hidden = false;
+    }
+    return;
+  }
+
+  try {
+    const res = await api('/api/settings/documents', {
+      method: 'PUT',
+      body: { allowed_types, max_size_mb }
+    });
+    state.documentSettings = res;
+    notify('Paramètres de documents enregistrés avec succès.', 'success');
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la sauvegarde.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+async function loadSettingsLabels() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  state.labelSettingsLoading = true;
+  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des paramètres d'étiquettes…</p>`;
+
+  try {
+    state.labelSettings = labelFromServer(await api('/api/settings/labels'));
+  } catch (err) {
+    container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur : ${esc(err.message)}</p>`;
+    state.labelSettingsLoading = false;
+    return;
+  }
+
+  state.labelSettingsLoading = false;
+  renderSettingsLabelsView();
+}
+
+function renderSettingsLabelsView() {
+  const container = document.getElementById('settingsTabContent');
+  if (!container) return;
+
+  const fmt = state.labelSettings || {
+    mode: 'sheet', page: 'A4', columns: 3, rows: 8, margin_top_mm: 10, margin_left_mm: 7, spacing_h_mm: 2, spacing_v_mm: 0,
+    width_mm: 64, height_mm: 34, qr_size_mm: 20, show_code: true, show_name: true, show_site: false, show_line: false
+  };
+
+  const isSheet = fmt.mode === 'sheet';
+  const canEdit = hasPermission('settings.edit');
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="detail-nav-bar">
+        <div>
+          <h2>${icon('i-qrcode')} Format d'impression des étiquettes d'équipement</h2>
+          <p class="hint">Configurez les dimensions des étiquettes pour planche adhésive ou rouleau d'imprimante thermique.</p>
+        </div>
+        ${canEdit ? `
+          <button type="submit" form="settingsLabelsForm" class="btn primary">
+            ${icon('i-check')} <span>Enregistrer le format</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <div class="settings-labels-layout">
+        <!-- FORMULAIRE -->
+        <form id="settingsLabelsForm" class="settings-labels-form">
+          <div class="form-group">
+            <label for="labelModeSelect">Mode d'impression *</label>
+            <select id="labelModeSelect" name="mode" ${!canEdit ? 'disabled' : ''}>
+              <option value="sheet" ${isSheet ? 'selected' : ''}>Planche d'étiquettes (A4 / Letter)</option>
+              <option value="single" ${!isSheet ? 'selected' : ''}>Étiquette unitaire (imprimante thermique)</option>
+            </select>
+          </div>
+
+          <!-- REGLAGES PLANCHE -->
+          <div id="sheetSpecificFields" ${!isSheet ? 'hidden' : ''}>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="labelPageSelect">Format de page</label>
+                <select id="labelPageSelect" name="page" ${!canEdit ? 'disabled' : ''}>
+                  <option value="A4" ${fmt.page === 'A4' ? 'selected' : ''}>A4 (210 × 297 mm)</option>
+                  <option value="Letter" ${fmt.page === 'Letter' ? 'selected' : ''}>Letter (216 × 279 mm)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="labelColsInput">Colonnes par page</label>
+                <input type="number" id="labelColsInput" name="columns" min="1" max="10" value="${esc(fmt.columns || 3)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelRowsInput">Lignes par page</label>
+                <input type="number" id="labelRowsInput" name="rows" min="1" max="25" value="${esc(fmt.rows || 8)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="labelMarginTop">Marge haute (mm)</label>
+                <input type="number" id="labelMarginTop" name="margin_top_mm" min="0" max="100" value="${esc(fmt.margin_top_mm || 10)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelMarginLeft">Marge gauche (mm)</label>
+                <input type="number" id="labelMarginLeft" name="margin_left_mm" min="0" max="100" value="${esc(fmt.margin_left_mm || 7)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelSpacingH">Espacement horizontal (mm)</label>
+                <input type="number" id="labelSpacingH" name="spacing_h_mm" min="0" max="50" value="${esc(fmt.spacing_h_mm || 2)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+              <div class="form-group">
+                <label for="labelSpacingV">Espacement vertical (mm)</label>
+                <input type="number" id="labelSpacingV" name="spacing_v_mm" min="0" max="50" value="${esc(fmt.spacing_v_mm || 0)}" ${!canEdit ? 'disabled' : ''} />
+              </div>
+            </div>
+          </div>
+
+          <!-- DIMENSIONS DE L'ÉTIQUETTE -->
+          <h3>Dimensions de chaque étiquette</h3>
+          ${isSheet ? '<p class="hint">En mode planche, la taille de chaque étiquette est calculée à partir du format de page, du nombre de colonnes et de lignes, des marges et des espacements.</p>' : ''}
+          <div class="form-row">
+            <div class="form-group">
+              <label for="labelWidthMm">Largeur étiquette (mm) *</label>
+              <input type="number" id="labelWidthMm" name="width_mm" min="10" max="500" step="0.1" required value="${esc(fmt.width_mm || 64)}" ${!canEdit ? 'disabled' : ''} ${isSheet ? 'readonly' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="labelHeightMm">Hauteur étiquette (mm) *</label>
+              <input type="number" id="labelHeightMm" name="height_mm" min="10" max="500" step="0.1" required value="${esc(fmt.height_mm || 34)}" ${!canEdit ? 'disabled' : ''} ${isSheet ? 'readonly' : ''} />
+            </div>
+            <div class="form-group">
+              <label for="labelQrSizeMm">Taille du QR Code (mm) *</label>
+              <input type="number" id="labelQrSizeMm" name="qr_size_mm" min="10" max="100" step="0.1" required value="${esc(fmt.qr_size_mm || 20)}" ${!canEdit ? 'disabled' : ''} />
+            </div>
+          </div>
+
+          <!-- ÉLÉMENTS AFFICHÉS -->
+          <h3>Éléments textuels imprimés</h3>
+          <div class="checkbox-grid">
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_code" ${fmt.show_code ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Code équipement (ex. EXT-101)</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_name" ${fmt.show_name ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Désignation de l'équipement</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_site" ${fmt.show_site ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Nom du site</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="show_line" ${fmt.show_line ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} />
+              <span>Ligne de production rattachée</span>
+            </label>
+          </div>
+
+          <div id="settingsLabelsError" class="form-error" hidden></div>
+        </form>
+
+        <!-- APERÇU EN DIRECT -->
+        <div class="settings-labels-preview">
+          <h3>Aperçu en direct</h3>
+          <p class="hint">Rendu réel d'une étiquette selon les paramètres saisis :</p>
+          <div class="preview-sticker-container">
+            <div id="labelLivePreviewSticker" class="label-sticker label-preview-sticker">
+              <div class="sticker-qr">
+                <svg width="80" height="80" viewBox="0 0 100 100" fill="currentColor">
+                  <rect width="100" height="100" fill="var(--bg-surface)" />
+                  <rect x="10" y="10" width="30" height="30" fill="currentColor" />
+                  <rect x="60" y="10" width="30" height="30" fill="currentColor" />
+                  <rect x="10" y="60" width="30" height="30" fill="currentColor" />
+                  <rect x="20" y="20" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="70" y="20" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="20" y="70" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="45" y="45" width="10" height="10" fill="currentColor" />
+                </svg>
+              </div>
+              <div class="sticker-info">
+                <div class="sticker-code mono font-bold">EXT-101</div>
+                <div class="sticker-name">Extrudeuse principale</div>
+                <div class="sticker-line hint mono">LIGNE-A</div>
+                <div class="sticker-site hint">Usine Principale</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  updateLabelsPreviewLive();
+}
+
+function updateLabelsPreviewLive() {
+  const form = document.getElementById('settingsLabelsForm');
+  const preview = document.getElementById('labelLivePreviewSticker');
+  if (!form || !preview) return;
+
+  const mode = form.mode ? form.mode.value : 'sheet';
+  const sheetFields = document.getElementById('sheetSpecificFields');
+  if (sheetFields) {
+    sheetFields.hidden = mode !== 'sheet';
+  }
+
+  const showCode = form.show_code ? form.show_code.checked : true;
+  const showName = form.show_name ? form.show_name.checked : true;
+  const showSite = form.show_site ? form.show_site.checked : false;
+  const showLine = form.show_line ? form.show_line.checked : false;
+  const qrSize = Math.max(10, Math.min(60, parseInt(form.qr_size_mm ? form.qr_size_mm.value : 20, 10)));
+  const widthMm = Math.max(20, Math.min(200, parseInt(form.width_mm ? form.width_mm.value : 64, 10)));
+  const heightMm = Math.max(15, Math.min(200, parseInt(form.height_mm ? form.height_mm.value : 34, 10)));
+
+  preview.style.setProperty('--qr-size', `${qrSize}mm`);
+  preview.style.setProperty('--label-w', `${widthMm}mm`);
+  preview.style.setProperty('--label-h', `${heightMm}mm`);
+
+  const codeEl = preview.querySelector('.sticker-code');
+  const nameEl = preview.querySelector('.sticker-name');
+  const siteEl = preview.querySelector('.sticker-site');
+  const lineEl = preview.querySelector('.sticker-line');
+  const qrSvg = preview.querySelector('.sticker-qr svg');
+
+  if (codeEl) codeEl.hidden = !showCode;
+  if (nameEl) nameEl.hidden = !showName;
+  if (siteEl) siteEl.hidden = !showSite;
+  if (lineEl) lineEl.hidden = !showLine;
+  if (qrSvg) {
+    qrSvg.setAttribute('width', qrSize * 4);
+    qrSvg.setAttribute('height', qrSize * 4);
+  }
+}
+
+// Format d'étiquette : le serveur imbrique la planche (sheet) et l'étiquette unitaire (single) ;
+// l'écran travaille sur un objet à plat. En planche, la case est calculée (marges symétriques).
+const LABEL_PAGES_MM = { A4: [210, 297], Letter: [215.9, 279.4] };
+
+function labelFromServer(s) {
+  if (!s || !s.sheet) return s;
+  const sh = s.sheet;
+  const single = s.single || { width_mm: 70, height_mm: 37 };
+  const [pw, ph] = LABEL_PAGES_MM[sh.page] || LABEL_PAGES_MM.A4;
+  const round = (n) => Math.round(n * 10) / 10;
+  const cellW = (pw - 2 * sh.margin_left_mm - (sh.columns - 1) * sh.gap_horizontal_mm) / sh.columns;
+  const cellH = (ph - 2 * sh.margin_top_mm - (sh.rows - 1) * sh.gap_vertical_mm) / sh.rows;
+  const isSingle = s.mode === 'single';
+  return {
+    mode: s.mode,
+    page: sh.page,
+    columns: sh.columns,
+    rows: sh.rows,
+    margin_top_mm: sh.margin_top_mm,
+    margin_left_mm: sh.margin_left_mm,
+    spacing_h_mm: sh.gap_horizontal_mm,
+    spacing_v_mm: sh.gap_vertical_mm,
+    width_mm: isSingle ? single.width_mm : round(cellW),
+    height_mm: isSingle ? single.height_mm : round(cellH),
+    qr_size_mm: s.qr_size_mm,
+    show_code: !!s.show_code,
+    show_name: !!s.show_name,
+    show_site: !!s.show_site,
+    show_line: !!s.show_production_line,
+    single,
+  };
+}
+
+function labelToServer(f, previous) {
+  const keptSingle = (previous && previous.single) || { width_mm: 70, height_mm: 37 };
+  return {
+    mode: f.mode,
+    sheet: {
+      page: f.page,
+      columns: f.columns,
+      rows: f.rows,
+      margin_top_mm: f.margin_top_mm,
+      margin_left_mm: f.margin_left_mm,
+      gap_horizontal_mm: f.spacing_h_mm,
+      gap_vertical_mm: f.spacing_v_mm,
+    },
+    single: f.mode === 'single' ? { width_mm: f.width_mm, height_mm: f.height_mm } : keptSingle,
+    qr_size_mm: f.qr_size_mm,
+    show_code: f.show_code,
+    show_name: f.show_name,
+    show_site: f.show_site,
+    show_production_line: f.show_line,
+  };
+}
+
+async function submitSettingsLabels(form) {
+  const errBox = document.getElementById('settingsLabelsError');
+  if (errBox) errBox.hidden = true;
+
+  const mode = form.mode.value;
+  const page = form.page ? form.page.value : 'A4';
+  const columns = form.columns ? parseInt(form.columns.value, 10) : 3;
+  const rows = form.rows ? parseInt(form.rows.value, 10) : 8;
+  const margin_top_mm = form.margin_top_mm ? parseFloat(form.margin_top_mm.value.replace(',', '.')) : 10;
+  const margin_left_mm = form.margin_left_mm ? parseFloat(form.margin_left_mm.value.replace(',', '.')) : 7;
+  const spacing_h_mm = form.spacing_h_mm ? parseFloat(form.spacing_h_mm.value.replace(',', '.')) : 2;
+  const spacing_v_mm = form.spacing_v_mm ? parseFloat(form.spacing_v_mm.value.replace(',', '.')) : 0;
+  const width_mm = parseFloat(form.width_mm.value.replace(',', '.'));
+  const height_mm = parseFloat(form.height_mm.value.replace(',', '.'));
+  const qr_size_mm = parseFloat(form.qr_size_mm.value.replace(',', '.'));
+
+  const show_code = form.show_code.checked;
+  const show_name = form.show_name.checked;
+  const show_site = form.show_site.checked;
+  const show_line = form.show_line.checked;
+
+  const payload = {
+    mode,
+    page,
+    columns,
+    rows,
+    margin_top_mm,
+    margin_left_mm,
+    spacing_h_mm,
+    spacing_v_mm,
+    width_mm,
+    height_mm,
+    qr_size_mm,
+    show_code,
+    show_name,
+    show_site,
+    show_line
+  };
+
+  try {
+    const res = await api('/api/settings/labels', {
+      method: 'PUT',
+      body: labelToServer(payload, state.labelSettings)
+    });
+    state.labelSettings = labelFromServer(res);
+    notify('Format d\'étiquette enregistré avec succès.', 'success');
+  } catch (err) {
+    if (errBox) {
+      errBox.textContent = err.message || 'Erreur lors de la sauvegarde du format.';
+      errBox.hidden = false;
+    }
+  }
+}
+
+// ============================================================================
 // 15. SURVEILLANCE SERVEUR ET HORLOGE
 // ============================================================================
 
@@ -10459,17 +12679,65 @@ function handleGlobalClick(e) {
       openCounterHistoryModal(args);
       break;
 
+    // Phase 6 - Documents, Étiquettes & Paramètres
+    case 'open-upload-document':
+      openUploadDocModal(args || {});
+      break;
+    case 'open-new-version':
+      openNewVersionModal(args || {});
+      break;
+    case 'open-document-history':
+      openDocumentHistoryModal(args || {});
+      break;
+    case 'restore-doc-version':
+      restoreDocumentVersion(args || {});
+      break;
+    case 'open-edit-document':
+      openEditDocumentModal(args || {});
+      break;
+    case 'delete-document':
+      deleteDocument(args || {});
+      break;
+    case 'load-more-documents':
+      loadMoreDocuments();
+      break;
+    case 'print-equipment-label':
+      closeModal();
+      location.hash = `#/etiquettes?ids=${encodeURIComponent(args)}`;
+      break;
+    case 'trigger-print':
+      window.print();
+      break;
+    case 'switch-settings-tab':
+      switchSettingsTab(args);
+      break;
+    case 'open-create-storage':
+      openCreateStorageModal();
+      break;
+    case 'open-edit-storage':
+      openEditStorageModal(args);
+      break;
+    case 'test-storage':
+      testStorageConnection(args);
+      break;
+    case 'activate-storage':
+      activateStorage(args);
+      break;
+    case 'delete-storage':
+      deleteStorage(args);
+      break;
+
     default:
       break;
   }
 }
 
 function handleGlobalSubmit(e) {
-  const form = e.target.closest('form[data-action]');
+  const form = e.target.closest('form');
   if (!form) return;
 
   e.preventDefault();
-  const action = form.dataset.action;
+  const action = form.dataset.action || form.id;
   let args = null;
   if (form.dataset.args) {
     try {
@@ -10607,16 +12875,54 @@ function handleGlobalSubmit(e) {
       handleAddEquipmentPartSubmit(form, args);
       break;
 
+    // Phase 6 - Documents, Étiquettes & Paramètres
+    case 'docUploadForm':
+      submitDocUpload(form);
+      break;
+    case 'docVersionForm':
+      submitNewVersion(form);
+      break;
+    case 'editDocForm':
+      submitEditDocument(form);
+      break;
+    case 'createStorageForm':
+      submitCreateStorage(form);
+      break;
+    case 'editStorageForm':
+      submitEditStorage(form);
+      break;
+    case 'settingsDocumentsForm':
+      submitSettingsDocuments(form);
+      break;
+    case 'settingsLabelsForm':
+      submitSettingsLabels(form);
+      break;
+
     default:
       break;
   }
 }
 
 function handleGlobalInput(e) {
+  if (e.target && e.target.id === 'documentsSearchInput') {
+    state.documentsSearchQuery = e.target.value;
+    debounce('documents-search', () => loadDocumentsList(true), 300);
+    return;
+  }
+
+  if (e.target && e.target.closest('#settingsLabelsForm')) {
+    updateLabelsPreviewLive();
+    return;
+  }
+
   const input = e.target.closest('input[data-action]');
   if (!input) return;
 
   const action = input.dataset.action;
+  if (action === 'change-labels-offset') {
+    changeLabelsOffset(input.value);
+    return;
+  }
   if (action === 'filter-users-search') {
     state.usersSearchQuery = input.value;
     renderUsersTable();
@@ -10668,7 +12974,25 @@ function handleGlobalChange(e) {
       initStockPageView();
     } else if (r === 'maintenance-preventive') {
       initMaintenancePageView();
+    } else if (r === 'documents') {
+      loadDocumentsList(true);
     }
+    return;
+  }
+
+  if (e.target && e.target.id === 'docFileInput') {
+    const file = e.target.files && e.target.files[0];
+    if (file) {
+      const titleInput = document.getElementById('docTitleInput');
+      if (titleInput && !titleInput.value.trim()) {
+        titleInput.value = file.name.replace(/\.[^/.]+$/, '');
+      }
+    }
+    return;
+  }
+
+  if (e.target && e.target.closest('#settingsLabelsForm')) {
+    updateLabelsPreviewLive();
     return;
   }
 
@@ -10840,6 +13164,18 @@ function handleGlobalChange(e) {
         }
       }).catch(() => {});
     }
+  } else if (action === 'filter-documents-entity-type') {
+    state.documentsEntityTypeFilter = sel.value;
+    loadDocumentsList(true);
+  } else if (action === 'filter-documents-category') {
+    state.documentsCategoryFilter = sel.value;
+    loadDocumentsList(true);
+  } else if (action === 'toggle-storage-driver-fields') {
+    const isS3 = sel.value === 's3';
+    const folderFields = document.getElementById('storageFolderFields');
+    const s3Fields = document.getElementById('storageS3Fields');
+    if (folderFields) folderFields.hidden = isS3;
+    if (s3Fields) s3Fields.hidden = !isS3;
   }
 }
 
@@ -10868,6 +13204,9 @@ async function init() {
   document.addEventListener('input', handleGlobalInput);
   document.addEventListener('change', handleGlobalChange);
   document.addEventListener('keydown', handleGlobalKeydown);
+  document.addEventListener('dragover', handleDropzoneDragOver);
+  document.addEventListener('dragleave', handleDropzoneDragLeave);
+  document.addEventListener('drop', handleDropzoneDrop);
 
   // Synchronisation du thème si changement externe (OS)
   new MutationObserver(renderThemeToggle).observe(document.documentElement, { attributeFilter: ['data-theme'] });

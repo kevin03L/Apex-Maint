@@ -507,6 +507,7 @@ pub struct OpenOccurrenceRef {
 /// Planning de maintenance préventive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaintenancePlan {
+    pub documents_count: i64,
     pub id: String,
     pub site_id: String,
     pub code: String,
@@ -1311,6 +1312,7 @@ pub async fn record_counter_reading(
 
 #[derive(Debug, FromRow)]
 pub struct RawPlanRow {
+    pub documents_count: i64,
     pub id: String,
     pub site_id: String,
     pub code: String,
@@ -1412,6 +1414,7 @@ fn raw_plan_to_plan(r: RawPlanRow, today: NaiveDate) -> MaintenancePlan {
     };
 
     MaintenancePlan {
+        documents_count: r.documents_count,
         id: r.id,
         site_id: r.site_id,
         code: r.code,
@@ -1453,6 +1456,7 @@ const PLAN_SELECT_FIELDS: &str = r#"
     p.anchor_date, p.next_due_date, p.anchor_counter, p.next_due_counter,
     p.lead_days, p.lead_counter, p.auto_generate, p.active, p.estimated_minutes,
     p.default_technician_id, p.created_at, p.updated_at,
+    (SELECT count(*) FROM documents d WHERE d.site_id=p.site_id AND d.entity_type='maintenance_plan' AND d.entity_id=p.id AND d.deleted_at IS NULL) AS documents_count,
     eq.code AS equipment_code, eq.name AS equipment_name,
     c.name AS counter_name, c.unit AS counter_unit, c.current_value AS counter_current_value, c.active AS counter_active,
     occ.id AS open_occ_id, occ.intervention_id AS open_occ_int_id, intv.code AS open_occ_int_code
@@ -2358,6 +2362,8 @@ async fn do_generate_in_tx(
         }
     }
 
+    crate::pilotage::notifications::generated(&mut *tx, actor, &plan.id, &intervention_id).await?;
+    crate::pilotage::notifications::intervention(&mut *tx, actor, &intervention_id, true).await?;
     // 3. Création de l'occurrence
     sqlx::query(
         r#"

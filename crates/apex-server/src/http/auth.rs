@@ -138,7 +138,16 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
         }
     }
     // Refus par défaut : toute route de l'API exige une session, sauf ces routes publiques.
-    if matches!(path, "/health" | "/auth/login") {
+    // Phase 7 : identité de l'écran de connexion et récupération du compte (§2.8).
+    // Ce passage reste après le contrôle d'Origin, également pour les deux POST publics.
+    if matches!(
+        path,
+        "/health"
+            | "/auth/login"
+            | "/public/branding"
+            | "/auth/password-reset/request"
+            | "/auth/password-reset/confirm"
+    ) {
         return next.run(req).await;
     }
     let session = match cookie_token(req.headers()) {

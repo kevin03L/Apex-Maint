@@ -5,7 +5,7 @@
 > l'outillage et les conventions d'**Apex Supervision** (`D:\Vs-code\Apex-Supervision`, `0.4.0-alpha.1`).
 > Choix validés : **SQLite embarquée** et **IHM web statique** (HTML/CSS/JS sans framework ni build),
 > comme Apex Supervision. Dépôt privé `kevin03L/Apex-Maint` (GPL-3.0).
-> Statut : plan uniquement, aucun code écrit pour l'instant.
+> Statut : backend de la phase 7 implémenté (pilotage, exports, paramètres, audit et e-mails) ; contrat : [API-PHASE-7.md](API-PHASE-7.md).
 
 ---
 
@@ -245,7 +245,7 @@ Les phases 0 et 1 reprennent largement le code de Supervision (`apex-config`, `a
 | **3. Interventions** | CRUD, transitions de statut, sous-interventions, état machine, liste filtrable, page de détail | parcours technicien complet (backend fait) |
 | **4. Pièces & stock** | Catalogue, stock par emplacement, mouvements transactionnels, pièces consommées sur intervention, alertes de stock bas | aucun stock négatif, même en concurrence (fait) |
 | **5. Maintenance préventive** | Plannings, occurrences, calcul d'échéance, vue planning ou calendrier, génération d'interventions préventives | les échéances se mettent à jour à chaque réalisation (fait) |
-| **6. Documents & QR** | Upload en streaming, contrôle MIME et taille, téléchargement contrôlé, QR code par équipement | fichiers servis seulement aux utilisateurs autorisés |
+| **6. Documents & QR** | Backend ajouté : documents versionnés, stockage dossier/S3, contrôle MIME/taille, QR et formats d'étiquettes ([contrat HTTP](API-PHASE-6.md)) | validation Rust en attente des dépendances Cargo ; IHM développée séparément |
 | **7. Pilotage** | Tableau de bord, reporting, export CSV, journal d'audit, paramètres | parité fonctionnelle avec l'ancienne application |
 | **8. Exploitation** | Service Windows et systemd, `apex-maint-admin` (adapté de Supervision), installateur Inno Setup, paquet DEB, `backup`/`restore` (sauvegarde SQLite à chaud + fichiers), purge, `import-legacy` | première version alpha installable, migration des données |
 | **9. Terrain** | PWA installable, mode hors-ligne pour les interventions (service worker + IndexedDB, file d'attente synchronisée), scan de QR code | utilisable sur tablette ou téléphone en atelier |

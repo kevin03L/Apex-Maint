@@ -264,8 +264,42 @@ pub async fn run(
         full_version: apex_config::version::full_version(),
     };
 
+    let files_dir = layout.files_dir(cfg);
+    std::fs::create_dir_all(&files_dir).map_err(|e| {
+        StartupError::new(
+            exit::DATABASE,
+            format!("Dossier des documents inaccessible : {e}"),
+        )
+    })?;
+    let secret_file = layout.data_dir.join("secret.key");
+    if !secret_file.exists() {
+        use rand::RngCore;
+        let mut key = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut key);
+        if let Err(e) = write_private_file(&secret_file, &key) {
+            let _ = std::fs::remove_file(&secret_file);
+            return Err(StartupError::new(
+                exit::DATABASE,
+                format!("Création de la clé secrète impossible : {e}"),
+            ));
+        }
+    }
+    let key: [u8; 32] = std::fs::read(&secret_file)
+        .map_err(|e| {
+            StartupError::new(
+                exit::DATABASE,
+                format!("Lecture de la clé secrète impossible : {e}"),
+            )
+        })?
+        .try_into()
+        .map_err(|_| {
+            StartupError::new(exit::DATABASE, "Clé secrète invalide (32 octets attendus)")
+        })?;
+    let files = apex_core::documents::storage::FileStore::new(files_dir, key);
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
+        widget_cache: Default::default(),
+        files: files.clone(),
         pool: pool.clone(),
         auth,
         secure_cookie: cfg.security.secure_cookie,
@@ -303,6 +337,42 @@ pub async fn run(
                 }
                 _ = interval.tick() => {
                     apex_core::maintenance::process_auto_generation(&scheduler_pool).await;
+                }
+            }
+        }
+    });
+
+    // File SMTP et récapitulatif ; la purge est quotidienne, sans bloquer l'API.
+    let pilotage_pool = pool.clone();
+    let pilotage_notify = Arc::clone(&shutdown_notify);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        let purge_seconds = if cfg!(debug_assertions) {
+            std::env::var("APEX_MAINT_TEST_AUDIT_PURGE_SECONDS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|n| *n > 0 && *n <= 86400)
+                .unwrap_or(86400)
+        } else {
+            86400
+        };
+        let mut purge_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(purge_seconds));
+        loop {
+            tokio::select! {
+                _ = pilotage_notify.notified() => break,
+                _ = purge_interval.tick() => {
+                    if let Err(e) = apex_core::pilotage::audit::purge(&pilotage_pool).await {
+                        tracing::error!("Purge du journal d'audit : {e}");
+                    }
+                }
+                _ = interval.tick() => {
+                    if let Err(e) = apex_core::pilotage::notifications::digest(&pilotage_pool).await {
+                        tracing::error!("Récapitulatif des échéances : {e}");
+                    }
+                    if let Err(e) = apex_core::pilotage::notifications::send_pending(&pilotage_pool, &files).await {
+                        tracing::error!("Traitement de la file d'e-mails : {e}");
+                    }
                 }
             }
         }
@@ -356,6 +426,11 @@ fn display_host(ip: std::net::IpAddr) -> String {
 
 /// Écrit le jeton de contrôle local avec des permissions restreintes.
 fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<()> {
+    write_private_file(path, token.as_bytes())
+}
+
+/// Même restriction d'accès pour le jeton local et la clé de chiffrement persistante.
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -367,11 +442,11 @@ fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<(
             .create(true)
             .write(true)
             .truncate(true)
-            .mode(0o640)
+            .mode(0o600)
             .open(path)?;
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o640))?;
-        file.write_all(token.as_bytes())?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents)?;
     }
 
     #[cfg(windows)]
@@ -399,12 +474,13 @@ fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<(
             .args(&grant_args)
             .output()?;
         if !result.status.success() {
-            return Err(std::io::Error::other(
-                "Restriction des permissions du jeton impossible",
-            ));
+            return Err(std::io::Error::other(format!(
+                "Restriction des permissions du fichier privé impossible : {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            )));
         }
         use std::io::Write;
-        file.write_all(token.as_bytes())?;
+        file.write_all(contents)?;
     }
     Ok(())
 }

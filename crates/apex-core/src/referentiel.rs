@@ -476,6 +476,7 @@ pub struct Equipment {
     pub production_line: Option<NamedRef>,
     pub parent: Option<NamedRef>,
     pub children_count: i64,
+    pub documents_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -562,6 +563,7 @@ struct RawEquipmentRow {
     pe_code: Option<String>,
     pe_name: Option<String>,
     children_count: i64,
+    documents_count: i64,
 }
 
 fn map_raw_equipment(r: RawEquipmentRow) -> Equipment {
@@ -589,6 +591,7 @@ fn map_raw_equipment(r: RawEquipmentRow) -> Equipment {
         production_line,
         parent,
         children_count: r.children_count,
+        documents_count: r.documents_count,
         created_at: r.created_at,
         updated_at: r.updated_at,
     }
@@ -630,7 +633,8 @@ pub async fn list_equipments(
             pe.id AS pe_id,
             pe.code AS pe_code,
             pe.name AS pe_name,
-            (SELECT count(*) FROM equipments c WHERE c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count
+            (SELECT count(*) FROM equipments c WHERE c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=e.site_id AND d.entity_type='equipment' AND d.entity_id=e.id AND d.deleted_at IS NULL) AS documents_count
         FROM equipments e
         LEFT JOIN production_lines pl ON pl.id = e.production_line_id AND pl.deleted_at IS NULL
         LEFT JOIN equipments pe ON pe.id = e.parent_id AND pe.deleted_at IS NULL
@@ -743,7 +747,8 @@ async fn scoped_equipment(
             pe.id AS pe_id,
             pe.code AS pe_code,
             pe.name AS pe_name,
-            (SELECT count(*) FROM equipments c WHERE c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count
+            (SELECT count(*) FROM equipments c WHERE c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count,
+            (SELECT count(*) FROM documents d WHERE d.site_id=e.site_id AND d.entity_type='equipment' AND d.entity_id=e.id AND d.deleted_at IS NULL) AS documents_count
         FROM equipments e
         LEFT JOIN production_lines pl ON pl.id = e.production_line_id AND pl.deleted_at IS NULL
         LEFT JOIN equipments pe ON pe.id = e.parent_id AND pe.deleted_at IS NULL

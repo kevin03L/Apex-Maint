@@ -1,0 +1,67 @@
+/* ============================================================================
+   Apex Maint — Feuille de style d'impression dédiée (Phase 6 : Étiquettes QR)
+   ----------------------------------------------------------------------------
+   Masque toute l'interface de l'application lors de l'impression et restitue
+   fidèlement les étiquettes et planches selon le format paramétré.
+   ============================================================================ */
+
+@media print {
+  /* Masquage de tous les composants de l'IHM web */
+  header.top,
+  nav#mainNav,
+  footer.status,
+  .nav-backdrop,
+  .auth-overlay,
+  .modal-backdrop,
+  .toast-box,
+  .toolbar,
+  .btn,
+  .labels-toolbar,
+  .print-hide,
+  .detail-nav-bar {
+    display: none !important;
+  }
+
+  /* Réinitialisation de la page et du corps pour impression pleine feuille */
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  main#view {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .labels-page-wrap {
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+
+  .labels-print-area {
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+
+  /* Planche thermique ou feuille unitaire */
+  .label-sticker {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    box-sizing: border-box !important;
+  }
+
+  .label-sticker-empty {
+    visibility: hidden !important;
+  }
+}

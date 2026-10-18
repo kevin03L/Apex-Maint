@@ -67,6 +67,7 @@ pub struct PartEquipmentRef {
 /// Fiche détaillée d'une pièce avec indicateurs de stock et relations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartDetail {
+    pub documents_count: i64,
     #[serde(flatten)]
     pub part: Part,
     pub total_stock: i64,
@@ -404,7 +405,7 @@ pub async fn list_parts(
 
     let mut items = Vec::with_capacity(parts.len());
     for part in parts {
-        let detail = build_part_detail(pool, part, global_threshold, false).await?;
+        let detail = build_part_detail(pool, actor, part, global_threshold, false).await?;
         if let Some(low_only) = filter.low_stock {
             if low_only && !detail.is_low_stock {
                 continue;
@@ -425,7 +426,7 @@ pub async fn get_part(
     let mut conn = pool.acquire().await?;
     let part = scoped_part(&mut conn, actor, id).await?;
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
-    build_part_detail(pool, part, global_threshold, true).await
+    build_part_detail(pool, actor, part, global_threshold, true).await
 }
 
 pub async fn create_part(
@@ -556,10 +557,11 @@ pub async fn create_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
-    build_part_detail(pool, part, global_threshold, true).await
+    build_part_detail(pool, actor, part, global_threshold, true).await
 }
 
 pub async fn update_part(
@@ -764,10 +766,11 @@ pub async fn update_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
-    build_part_detail(pool, updated, global_threshold, true).await
+    build_part_detail(pool, actor, updated, global_threshold, true).await
 }
 
 pub async fn delete_part(
@@ -819,6 +822,7 @@ pub async fn delete_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -928,7 +932,7 @@ pub async fn list_stock_alerts(
 
     let mut alerts = Vec::new();
     for part in parts {
-        let detail = build_part_detail(pool, part, global_threshold, false).await?;
+        let detail = build_part_detail(pool, actor, part, global_threshold, false).await?;
         if detail.is_low_stock {
             alerts.push(detail);
         }
@@ -1357,6 +1361,7 @@ pub async fn create_stock_movement(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let mov: StockMovement = fetch_stock_movement_by_id(pool, &movement_id).await?;
@@ -1523,6 +1528,7 @@ pub async fn create_stock_adjustment(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_stock_movement_by_id(pool, &movement_id).await
@@ -1557,7 +1563,7 @@ pub async fn list_intervention_parts(
         "#,
     )
     .bind(intervention_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows)
@@ -1709,6 +1715,7 @@ pub async fn consume_part_on_intervention(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_intervention_part_by_id(pool, &item_id).await
@@ -1827,6 +1834,7 @@ pub async fn delete_intervention_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -1965,6 +1973,7 @@ pub async fn create_stock_reservation(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_stock_reservation_by_id(pool, &res_id).await
@@ -2164,6 +2173,7 @@ pub async fn consume_stock_reservation(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_intervention_part_by_id(pool, &item_id).await
@@ -2223,6 +2233,7 @@ pub async fn release_stock_reservation(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     fetch_stock_reservation_by_id(pool, &id).await
@@ -2346,6 +2357,7 @@ pub async fn associate_equipment_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
 
     let list = list_equipment_parts(pool, actor, equipment_id).await?;
@@ -2402,6 +2414,7 @@ pub async fn disassociate_equipment_part(
     )
     .await?;
 
+    crate::pilotage::notifications::stock(&mut tx, actor).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -2412,6 +2425,7 @@ pub async fn disassociate_equipment_part(
 
 async fn build_part_detail(
     pool: &SqlitePool,
+    actor: &Actor,
     part: Part,
     global_threshold: i64,
     include_equipments: bool,
@@ -2518,7 +2532,10 @@ async fn build_part_detail(
         None
     };
 
+    let documents_count: i64 = sqlx::query_scalar("SELECT count(*) FROM documents WHERE entity_type='part' AND entity_id=? AND site_id=? AND deleted_at IS NULL AND (? OR site_id=?)")
+        .bind(&part.id).bind(&part.site_id).bind(actor.is_admin()).bind(&actor.site_id).fetch_one(pool).await?;
     Ok(PartDetail {
+        documents_count,
         part,
         total_stock,
         total_reserved,
