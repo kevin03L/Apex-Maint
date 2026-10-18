@@ -688,4 +688,11 @@ async fn ingestion_statuts_rapprochement_historique_html_et_peremption() {
     let purge_res = purge_history(&pool, &admin).await.unwrap();
     assert_eq!(purge_res["history_deleted"], 1);
     assert_eq!(purge_res["events_deleted"], 1);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action='purge' AND entity='integration_history'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
 }

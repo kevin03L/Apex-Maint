@@ -508,6 +508,23 @@ main {
   color: var(--ko-text);
 }
 
+/* Couleurs de valeurs (indicateurs) : classes plutôt que style en ligne, bloqué par la CSP. */
+.text-ok {
+  color: var(--ok-text);
+}
+
+.text-warn {
+  color: var(--warn);
+}
+
+.text-danger {
+  color: var(--ko-text);
+}
+
+.text-accent {
+  color: var(--accent);
+}
+
 .planned {
   max-width: 40em;
   margin: 3em auto;
@@ -3886,7 +3903,7 @@ footer.status {
   font-size: .92em;
   font-weight: 500;
   border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--glass-2);
   transition: all .2s ease;
   z-index: 90;
 }
@@ -4268,7 +4285,7 @@ footer.status {
   display: flex;
   align-items: center;
   gap: .8em;
-  background: var(--surface);
+  background: var(--glass-2);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: .6em 1em;

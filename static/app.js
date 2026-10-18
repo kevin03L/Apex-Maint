@@ -2259,7 +2259,7 @@ function renderSvgDonutChart({ slices = [], size = 180, donutWidth = 24, title =
     'var(--accent)',
     'var(--ok-line, #10b981)',
     'var(--warn, #f59e0b)',
-    'var(--danger, #ef4444)',
+    'var(--crit)',
     '#8b5cf6',
     '#ec4899',
     '#06b6d4',
@@ -2650,7 +2650,7 @@ function renderWidgetContent(w, data) {
         low: 'var(--muted)',
         medium: 'var(--accent)',
         high: 'var(--warn)',
-        critical: 'var(--danger)',
+        critical: 'var(--crit)',
       };
       const slices = items.map(it => ({
         label: formatInterventionPriority(it.key),
@@ -2725,7 +2725,7 @@ function renderWidgetContent(w, data) {
 
     case 'preventive_compliance': {
       const pct = data.compliance_percent || 0;
-      const color = pct >= 80 ? 'var(--ok-line)' : (pct >= 50 ? 'var(--warn)' : 'var(--danger)');
+      const color = pct >= 80 ? 'var(--ok-text)' : (pct >= 50 ? 'var(--warn)' : 'var(--ko-text)');
       return `
         <div class="preventive-gauge-row">
           ${renderSvgGauge({ percent: pct, label: 'Respect des échéances', color, size: 160 })}
@@ -3386,7 +3386,8 @@ function renderReportingContent() {
     `;
   } else if (tab === 'preventive') {
     const pct = data.compliance_percent || 0;
-    const color = pct >= 80 ? 'var(--ok-line)' : (pct >= 50 ? 'var(--warn)' : 'var(--danger)');
+    const color = pct >= 80 ? 'var(--ok-text)' : (pct >= 50 ? 'var(--warn)' : 'var(--ko-text)');
+    const colorClass = pct >= 80 ? 'text-ok' : (pct >= 50 ? 'text-warn' : 'text-danger');
     const byType = Array.isArray(data.by_type) ? data.by_type : [];
     const typeSlices = byType.map(it => ({
       label: formatInterventionType(it.key),
@@ -3405,7 +3406,7 @@ function renderReportingContent() {
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Taux de conformité</span>
-          <span class="kpi-val" style="color:${color};">${pct} %</span>
+          <span class="kpi-val ${colorClass}">${pct} %</span>
         </div>
       </div>
 
@@ -14483,13 +14484,13 @@ function renderSettingsLabelsView() {
             <div id="labelLivePreviewSticker" class="label-sticker label-preview-sticker">
               <div class="sticker-qr">
                 <svg width="80" height="80" viewBox="0 0 100 100" fill="currentColor">
-                  <rect width="100" height="100" fill="var(--bg-surface)" />
+                  <rect width="100" height="100" fill="var(--glass-2)" />
                   <rect x="10" y="10" width="30" height="30" fill="currentColor" />
                   <rect x="60" y="10" width="30" height="30" fill="currentColor" />
                   <rect x="10" y="60" width="30" height="30" fill="currentColor" />
-                  <rect x="20" y="20" width="10" height="10" fill="var(--bg-surface)" />
-                  <rect x="70" y="20" width="10" height="10" fill="var(--bg-surface)" />
-                  <rect x="20" y="70" width="10" height="10" fill="var(--bg-surface)" />
+                  <rect x="20" y="20" width="10" height="10" fill="var(--glass-2)" />
+                  <rect x="70" y="20" width="10" height="10" fill="var(--glass-2)" />
+                  <rect x="20" y="70" width="10" height="10" fill="var(--glass-2)" />
                   <rect x="45" y="45" width="10" height="10" fill="currentColor" />
                 </svg>
               </div>
@@ -15334,7 +15335,7 @@ async function loadSettingsDashboardDefaults(role = 'responsable') {
 
         <div class="tabs-nav mb-4">
           ${roles.map(r => `
-            <button type="button" class="tab-btn ${r === role ? 'on' : ''}" data-action="switch-role-dashboard-tab" data-args="${esc(r)}">
+            <button type="button" class="tab-btn ${r === role ? 'on' : ''}" data-action="switch-role-dashboard-tab" data-args="${jsArg(r)}">
               <span>${esc(formatRole(r))}</span>
             </button>
           `).join('')}

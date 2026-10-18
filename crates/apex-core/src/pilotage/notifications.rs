@@ -334,8 +334,9 @@ pub async fn test(pool: &SqlitePool, actor: &Actor) -> Result<(), MaintError> {
     if raw(&mut tx, "smtp.enabled").await? != "true" {
         return Err(MaintError::BadRequest("SMTP désactivé".into()));
     }
-    let address:Option<String>=sqlx::query_scalar("SELECT email FROM users WHERE id=? AND active=1 AND deleted_at IS NULL AND (? OR site_id=?)").bind(&actor.user_id).bind(actor.is_admin()).bind(&actor.site_id).fetch_one(&mut *tx).await?;
-    let address = address.ok_or_else(|| {
+    let address:Option<Option<String>>=sqlx::query_scalar("SELECT email FROM users WHERE id=? AND active=1 AND deleted_at IS NULL AND (? OR site_id=?)").bind(&actor.user_id).bind(actor.is_admin()).bind(&actor.site_id).fetch_optional(&mut *tx).await?;
+    // Compte introuvable dans le périmètre ou sans adresse : même refus explicite, jamais une 500.
+    let address = address.flatten().ok_or_else(|| {
         MaintError::BadRequest("Votre compte ne possède pas d'adresse e-mail".into())
     })?;
     queue(
