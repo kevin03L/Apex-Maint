@@ -186,7 +186,7 @@ et appliquée tout de suite à l'instantané local, pour que l'écran reste just
 
 - `GET /api/offline/snapshot` (§3.1).
 - Prise en charge des en-têtes `Idempotency-Key`, `X-Occurred-At` et `If-Unmodified-Since` sur les
-  routes du §3.2, avec la table `idempotency_keys` (migration `0009_terrain.sql`).
+  routes du §3.2, avec la table `idempotency_keys` (migration `0010_terrain.sql`).
 - `GET /api/equipments/by-code/{code}` : équipement du site de l'acteur. Pour l'admin, la réponse
   est une liste si le code existe dans plusieurs sites.
 - Configuration TLS et proxies de confiance (§1), page de téléchargement de l'autorité locale

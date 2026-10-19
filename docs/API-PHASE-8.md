@@ -1,6 +1,6 @@
 # Contrat HTTP - backend de la phase 8
 
-Migration : `0009_exploitation.sql`. Aucune migration 0008 ni fonction de phase 7.
+Migration : `0009_exploitation.sql`. La migration `0008_pilotage.sql` de la phase 7 la précède.
 Les 36 permissions existantes suffisent. Les opérations globales exigent aussi le rôle admin,
 afin qu'un acteur limité à un site ne sauvegarde ni ne purge les données des autres sites.
 
@@ -174,14 +174,8 @@ des réglages locaux reste en JSON. Les diagnostics affichent espace libre et ve
 le service se gère dans son onglet, avec saisie du mot de passe dans un terminal distinct ;
 le contenu des archives peut être inspecté sans extraction, y compris leurs noms si chiffrés.
 
-## À raccorder après la phase 7
+## Raccordements réalisés (19 octobre 2026)
 
-- Page Paramètres : GET/PUT `/api/exploitation/settings`, GET/POST `/api/backups` et
-  GET `/api/exploitation/status` (état et bandeau d'échec).
-- E-mails : **raccordé**. Tout échec enregistré (sauvegarde manuelle ou automatique) met en file
-  l'événement `backup_failed` pour les comptes actifs qui ont `settings.edit` et une adresse, une
-  fois par jour et par compte, si le SMTP est actif.
-- Audit : **sans objet**. La phase 7 purge déjà le journal chaque jour selon
-  `audit.retention_days` ; `purge_audit` reste disponible mais n'est pas appelée. La purge métier
-  ne touche pas à l'audit.
-
+L’IHM Paramètres utilise les routes d’exploitation et de sauvegarde. Les échecs de sauvegarde
+alimentent l’événement SMTP `backup_failed`. La phase 7 purge le journal d’audit selon
+`audit.retention_days` ; la purge métier ne touche pas à ce journal.

@@ -163,7 +163,7 @@ pub struct StockFilter {
 }
 
 /// Mouvement de stock tracé.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct StockMovement {
     pub id: String,
     pub site_id: String,
@@ -1041,33 +1041,7 @@ pub async fn list_stock_movements(
     qb.push(" ORDER BY sm.created_at DESC, sm.id DESC LIMIT ")
         .push_bind(limit as i64 + 1);
 
-    #[derive(FromRow)]
-    struct RawMovementRow {
-        id: String,
-        site_id: String,
-        part_id: String,
-        movement_type: String,
-        quantity: i64,
-        from_location_id: Option<String>,
-        to_location_id: Option<String>,
-        intervention_id: Option<String>,
-        user_id: String,
-        unit_price_cents: Option<i64>,
-        reason: Option<String>,
-        adjustment_kind: Option<String>,
-        delta: Option<i64>,
-        created_at: String,
-        part_reference: Option<String>,
-        part_name: Option<String>,
-        from_location_code: Option<String>,
-        from_location_name: Option<String>,
-        to_location_code: Option<String>,
-        to_location_name: Option<String>,
-        user_display_name: Option<String>,
-        intervention_code: Option<String>,
-    }
-
-    let rows: Vec<RawMovementRow> = qb.build_query_as().fetch_all(pool).await?;
+    let rows: Vec<StockMovement> = qb.build_query_as().fetch_all(pool).await?;
 
     let has_more = rows.len() > limit as usize;
     let mut movements = rows;
@@ -1083,33 +1057,7 @@ pub async fn list_stock_movements(
         None
     };
 
-    let items = movements
-        .into_iter()
-        .map(|r| StockMovement {
-            id: r.id,
-            site_id: r.site_id,
-            part_id: r.part_id,
-            movement_type: r.movement_type,
-            quantity: r.quantity,
-            from_location_id: r.from_location_id,
-            to_location_id: r.to_location_id,
-            intervention_id: r.intervention_id,
-            user_id: r.user_id,
-            unit_price_cents: r.unit_price_cents,
-            reason: r.reason,
-            adjustment_kind: r.adjustment_kind,
-            delta: r.delta,
-            created_at: r.created_at,
-            part_reference: r.part_reference,
-            part_name: r.part_name,
-            from_location_code: r.from_location_code,
-            from_location_name: r.from_location_name,
-            to_location_code: r.to_location_code,
-            to_location_name: r.to_location_name,
-            user_display_name: r.user_display_name,
-            intervention_code: r.intervention_code,
-        })
-        .collect();
+    let items = movements;
 
     Ok(crate::referentiel::Page { items, next_cursor })
 }
@@ -1596,6 +1544,11 @@ pub async fn consume_part_on_intervention(
     }
 
     let part = scoped_part(&mut tx, actor, &input.part_id).await?;
+    if part.site_id != int.site_id {
+        return Err(MaintError::BadRequest(
+            "La pièce doit appartenir au même site que l'intervention".into(),
+        ));
+    }
     ensure_location_exists(&mut tx, &int.site_id, &input.location_id).await?;
 
     // Règle Décisions du 2026-10-18 §7.3 :
@@ -1770,6 +1723,14 @@ pub async fn delete_intervention_part(
 
     let item = item.ok_or_else(|| MaintError::NotFound("Ligne de pièce consommée".into()))?;
 
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM locations WHERE id = ? AND site_id = ? AND deleted_at IS NULL)")
+        .bind(&item.location_id).bind(&int.site_id).fetch_one(&mut *tx).await?;
+    if !active {
+        return Err(MaintError::Conflict(
+            "Impossible d'annuler la consommation : l'emplacement d'origine a été supprimé".into(),
+        ));
+    }
+
     let now = store::now();
 
     // Réintégration atomique du stock sur l'emplacement d'origine
@@ -1913,6 +1874,11 @@ pub async fn create_stock_reservation(
     }
 
     let part = scoped_part(&mut tx, actor, &input.part_id).await?;
+    if part.site_id != int.site_id {
+        return Err(MaintError::BadRequest(
+            "La pièce doit appartenir au même site que l'intervention".into(),
+        ));
+    }
     ensure_location_exists(&mut tx, &int.site_id, &input.location_id).await?;
 
     // Calcul du disponible = stock physique - somme des réservations prepared de l'emplacement
@@ -2587,33 +2553,7 @@ async fn fetch_stock_movement_by_id(
     pool: &SqlitePool,
     id: &str,
 ) -> Result<StockMovement, MaintError> {
-    #[derive(FromRow)]
-    struct RawMov {
-        id: String,
-        site_id: String,
-        part_id: String,
-        movement_type: String,
-        quantity: i64,
-        from_location_id: Option<String>,
-        to_location_id: Option<String>,
-        intervention_id: Option<String>,
-        user_id: String,
-        unit_price_cents: Option<i64>,
-        reason: Option<String>,
-        adjustment_kind: Option<String>,
-        delta: Option<i64>,
-        created_at: String,
-        part_reference: Option<String>,
-        part_name: Option<String>,
-        from_location_code: Option<String>,
-        from_location_name: Option<String>,
-        to_location_code: Option<String>,
-        to_location_name: Option<String>,
-        user_display_name: Option<String>,
-        intervention_code: Option<String>,
-    }
-
-    let r: Option<RawMov> = sqlx::query_as(
+    let r: Option<StockMovement> = sqlx::query_as(
         r#"
         SELECT 
             sm.id, sm.site_id, sm.part_id, sm.movement_type, sm.quantity,
@@ -2640,30 +2580,7 @@ async fn fetch_stock_movement_by_id(
 
     let r = r.ok_or_else(|| MaintError::NotFound("Mouvement de stock".into()))?;
 
-    Ok(StockMovement {
-        id: r.id,
-        site_id: r.site_id,
-        part_id: r.part_id,
-        movement_type: r.movement_type,
-        quantity: r.quantity,
-        from_location_id: r.from_location_id,
-        to_location_id: r.to_location_id,
-        intervention_id: r.intervention_id,
-        user_id: r.user_id,
-        unit_price_cents: r.unit_price_cents,
-        reason: r.reason,
-        adjustment_kind: r.adjustment_kind,
-        delta: r.delta,
-        created_at: r.created_at,
-        part_reference: r.part_reference,
-        part_name: r.part_name,
-        from_location_code: r.from_location_code,
-        from_location_name: r.from_location_name,
-        to_location_code: r.to_location_code,
-        to_location_name: r.to_location_name,
-        user_display_name: r.user_display_name,
-        intervention_code: r.intervention_code,
-    })
+    Ok(r)
 }
 
 async fn fetch_intervention_part_by_id(

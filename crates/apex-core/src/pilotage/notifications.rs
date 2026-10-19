@@ -189,7 +189,7 @@ pub async fn stock(conn: &mut SqliteConnection, actor: &Actor) -> Result<(), Mai
     for (id, site, name, quantity, threshold) in rows {
         let key = format!("alerts.stock_low.{id}");
         let previous = raw(conn, &key).await?;
-        if quantity < threshold {
+        if quantity <= threshold {
             if previous != "low" {
                 recipients(
                     conn,

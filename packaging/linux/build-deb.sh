@@ -15,6 +15,11 @@ install -m644 packaging/linux/systemd/apex-maint.service "$root/lib/systemd/syst
 install -m644 packaging/linux/polkit/50-apex-maint.rules "$root/usr/share/polkit-1/rules.d/"
 install -m644 packaging/linux/apex-maint-admin.desktop "$root/usr/share/applications/"
 install -m644 README.md docs/INSTALLATION.md docs/ADMINISTRATION.md "$root/usr/share/doc/apex-maint/"
+install -m644 packaging/linux/copyright "$root/usr/share/doc/apex-maint/copyright"
+install -m644 crates/apex-core/assets/fonts/LICENSE-LiberationSans.txt "$root/usr/share/doc/apex-maint/"
+install -d "$root/usr/share/icons/hicolor/scalable/apps" "$root/usr/share/icons/hicolor/256x256/apps"
+install -m644 packaging/icons/apex-maint.svg "$root/usr/share/icons/hicolor/scalable/apps/"
+install -m644 packaging/icons/apex-maint-256.png "$root/usr/share/icons/hicolor/256x256/apps/apex-maint.png"
 for script in postinst prerm postrm; do install -m755 "packaging/linux/debian/$script" "$root/DEBIAN/$script"; done
 cat > "$root/DEBIAN/control" <<EOF
 Package: apex-maint

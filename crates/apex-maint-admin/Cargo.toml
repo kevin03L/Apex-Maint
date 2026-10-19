@@ -35,3 +35,6 @@ windows-service = "0.7"
 
 [build-dependencies]
 apex-build.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

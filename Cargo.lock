@@ -274,6 +274,7 @@ dependencies = [
  "rustls-pemfile",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
  "windows-service",
  "zip 4.6.1",

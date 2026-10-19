@@ -566,6 +566,12 @@ async fn stock_bas_deduplication_et_rearmement() {
     let (pool, admin) = fixture().await;
     smtp(&pool, &admin).await;
     sqlx::query("INSERT INTO parts(id,site_id,reference,name,alert_threshold,created_at,updated_at) VALUES('piece','a','REF','Pièce',5,?,?)").bind(store::now()).bind(store::now()).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO locations(id,site_id,code,name,kind,created_at,updated_at) VALUES('seuil','a','SEUIL','Magasin','magasin','2026','2026')").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO stock(id,site_id,part_id,location_id,quantity,updated_at) VALUES('seuil','a','piece','seuil',5,'2026')").execute(&pool).await.unwrap();
+    let report = reports::report(&pool, &admin, "stock", &reports::Filter::default())
+        .await
+        .unwrap();
+    assert_eq!(report["data"]["items"][0]["low"], true);
     for _ in 0..2 {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
         notifications::stock(&mut tx, &admin).await.unwrap();
@@ -577,7 +583,7 @@ async fn stock_bas_deduplication_et_rearmement() {
             .await
             .unwrap();
     assert!(count > 0);
-    sqlx::query("UPDATE parts SET alert_threshold=0 WHERE id='piece'")
+    sqlx::query("UPDATE parts SET alert_threshold=4 WHERE id='piece'")
         .execute(&pool)
         .await
         .unwrap();

@@ -513,20 +513,7 @@ struct RawTechRow {
 // SERVICES ET FONCTIONS DE DÉPÔT
 // ============================================================================
 
-/// Liste paginée des interventions avec filtres multiples.
-pub async fn list_interventions(
-    pool: &SqlitePool,
-    actor: &Actor,
-    filter: InterventionFilter,
-) -> Result<crate::referentiel::Page<Intervention>, MaintError> {
-    actor.require_permission(Permission::InterventionsView)?;
-    let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
-
-    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-        r#"
-        SELECT
-            i.id,
+const INTERVENTION_SELECT_FIELDS: &str = r#"i.id,
             i.site_id,
             i.code,
             i.title,
@@ -555,15 +542,26 @@ pub async fn list_interventions(
             p.code AS parent_code,
             p.title AS parent_title,
             (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count"#;
+const INTERVENTION_FROM_JOINS: &str = r#"FROM interventions i
+LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
         LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.deleted_at IS NULL
-        "#,
-    );
+        LEFT JOIN interventions p ON p.id = i.parent_id"#;
+
+/// Liste paginée des interventions avec filtres multiples.
+pub async fn list_interventions(
+    pool: &SqlitePool,
+    actor: &Actor,
+    filter: InterventionFilter,
+) -> Result<crate::referentiel::Page<Intervention>, MaintError> {
+    actor.require_permission(Permission::InterventionsView)?;
+    let limit = validate_limit(filter.limit)?;
+    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
+        "SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.deleted_at IS NULL"
+    ));
 
     if let Some(sid) = site_scope {
         qb.push(" AND i.site_id = ").push_bind(sid);
@@ -737,46 +735,7 @@ pub async fn get_intervention(
 
     // Sous-interventions directes
     let sub_rows: Vec<RawInterventionRow> = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.parent_id = ? AND i.deleted_at IS NULL
-        ORDER BY i.created_at DESC, i.id DESC
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL         ORDER BY i.created_at DESC, i.id DESC"),
     )
     .bind(id)
     .fetch_all(pool)
@@ -830,46 +789,7 @@ pub async fn list_sub_interventions(
     let _parent = scoped_intervention_raw(&mut conn, actor, parent_id).await?;
 
     let sub_rows: Vec<RawInterventionRow> = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.parent_id = ? AND i.deleted_at IS NULL
-        ORDER BY i.created_at DESC, i.id DESC
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL         ORDER BY i.created_at DESC, i.id DESC"),
     )
     .bind(parent_id)
     .fetch_all(pool)
@@ -2050,45 +1970,7 @@ pub(crate) async fn scoped_intervention_raw(
     id: &str,
 ) -> Result<RawInterventionRow, MaintError> {
     let row: Option<RawInterventionRow> = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.id = ? AND i.deleted_at IS NULL AND (? OR i.site_id = ?)
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.id = ? AND i.deleted_at IS NULL AND (? OR i.site_id = ?)"),
     )
     .bind(id)
     .bind(actor.is_admin())
@@ -2105,45 +1987,7 @@ pub(crate) async fn fetch_single_intervention_with_conn(
     id: &str,
 ) -> Result<Intervention, MaintError> {
     let raw: RawInterventionRow = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.id = ? AND i.deleted_at IS NULL
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.id = ? AND i.deleted_at IS NULL"),
     )
     .bind(id)
     .fetch_one(&mut *conn)

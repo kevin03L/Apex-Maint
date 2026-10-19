@@ -30,4 +30,6 @@ pub use domain::{actor::Actor, actor::Role, pagination::Cursor, permission::Perm
 pub use error::MaintError;
 
 #[cfg(test)]
+mod audit_tests;
+#[cfg(test)]
 mod tests;

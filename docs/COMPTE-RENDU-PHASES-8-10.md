@@ -1,6 +1,11 @@
 # Compte rendu — backend des phases 8 à 10
 
-## État réel
+## État au 19 octobre 2026
+
+Les phases 8 à 10 sont implémentées. Les limites courantes figurent dans les contrats HTTP.
+Les vérifications en fin de document décrivent la passe qui les a produites.
+
+## Historique — début de la phase 8 (18 octobre 2026)
 
 **Mission non terminée. Phase 8 partielle, non validée ; phases 9 et 10 non entamées.**
 Les vérifications d'une phase doivent passer avant d'entamer la suivante.
@@ -41,7 +46,7 @@ Modifications de raccordement :
 
 Les formes JSON exactes et toutes les routes sont dans [API-PHASE-8.md](API-PHASE-8.md).
 Les écarts et travaux restants de la phase 8 y sont listés dans « Tests et limites restantes ».
-Il reste notamment à compléter la purge de tous les agrégats, la rétention chiffrée, les
+À ce stade historique, il restait notamment à compléter la purge de tous les agrégats, la rétention chiffrée, les
 diagnostics ZIP, les pages de l'installateur et la CI des paquets. Le mode incrémental facultatif
 n'est pas implémenté. Les paquets n'ont pas été construits ni installés sur cette machine.
 
@@ -65,25 +70,11 @@ Fichiers créés ou complétés :
 - `docs/API-PHASE-10.md` : contrat HTTP détaillé avec les schémas JSON exacts de chaque route.
 - `docs/integration-supervision.md` : contrat d'API et recommandations d'intégration à destination de l'équipe Apex Supervision.
 
-## À raccorder après la phase 7
+## Raccordements réalisés (19 octobre 2026)
 
-État au 2026-10-18, après intégration de la phase 7 : le widget `supervision_status` est au
-catalogue du tableau de bord, l'alerte `backup_failed` est branchée sur `record_result`, et la
-purge de l'audit est déjà assurée par la phase 7. Restent les écrans de l'IHM ci-dessous.
-
-- Page Paramètres : GET/PUT `/api/exploitation/settings`, GET/POST `/api/backups`,
-  GET `/api/exploitation/status` pour les réglages, la liste et le bandeau d'échec.
-- Événement e-mail `backup_failed` : raccorder les échecs persistés à l'expéditeur SMTP et
-  aux destinataires ayant `settings.edit` ; aucun module d'e-mails de phase 7 implémenté ici.
-- Conservation du journal d'audit : assurée par la phase 7 selon la durée configurée. La purge métier ne touche pas au journal d'audit.
-- Widget `supervision_status` du tableau de bord : route `GET /api/integration/supervision-status`
-  (permission `equipments.view`), pagination par curseur, renvoie les équipements à l'arrêt ou
-  en alarme (`state IN ('stopped', 'alarm')`) avec calcul automatique de péremption. À intégrer
-  directement comme widget dans la grille personnalisable de la phase 7.
-- Fiche équipement et liste des équipements (IHM `static/`) :
-  - Champ « Référence Supervision » (`PATCH /api/equipments/:id/external-ref` et `/api/counters/:id/external-ref`).
-  - Bandeau d'état Supervision (`GET /api/equipments/:id/supervision-status`) et historique sur 90 jours (`GET /api/equipments/:id/supervision-history`).
-  - Source des relevés dans l'historique des compteurs (`source: "supervision"` déjà exposé).
+L’IHM expose les paramètres d’exploitation, les sauvegardes, le widget Supervision,
+les références externes et l’historique des équipements. Les échecs de sauvegarde alimentent
+l’événement SMTP `backup_failed`. La phase 7 assure la purge du journal d’audit.
 
 ## Vérifications
 

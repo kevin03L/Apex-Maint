@@ -263,7 +263,7 @@ impl Auth {
             return Err(denied());
         }
         let hash = password::token_hash(token);
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.pool.begin().await?;
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT user_id,last_seen_at FROM sessions WHERE token_hash=? AND revoked_at IS NULL",
         )
@@ -304,16 +304,17 @@ impl Auth {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
+        tx.commit().await?;
         if (Utc::now() - date(&last)?).num_seconds() >= 60 {
             sqlx::query(
-                "UPDATE sessions SET last_seen_at=? WHERE token_hash=? AND revoked_at IS NULL",
+                "UPDATE sessions SET last_seen_at=? WHERE token_hash=? AND revoked_at IS NULL AND last_seen_at=? AND EXISTS(SELECT 1 FROM users WHERE id=sessions.user_id AND active=1 AND deleted_at IS NULL)",
             )
             .bind(store::now())
             .bind(&hash)
-            .execute(&mut *tx)
+            .bind(&last)
+            .execute(&self.pool)
             .await?;
         }
-        tx.commit().await?;
         Ok(Session {
             actor: Actor::new(&uid, user.site_id.clone(), role, permissions),
             user,

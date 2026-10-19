@@ -19,7 +19,7 @@ propre dépôt.
 - **Pas de sens Maint → Supervision** pour l'instant.
 - Un **journal des échanges** pour diagnostiquer la liaison.
 
-## 1. Base de données — migration `0010_integration.sql`
+## 1. Base de données — migration `0011_integration.sql`
 
 ### `integration_keys`
 

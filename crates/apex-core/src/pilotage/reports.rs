@@ -317,7 +317,7 @@ async fn data(
             }
             q.push(" ORDER BY p.reference,p.id");
             let rows = q.build().fetch_all(pool).await?;
-            let items:Vec<_>=rows.iter().map(|r|{let qty:i64=r.get("quantity");let price:i64=r.get("unit_price_cents");let threshold:i64=r.get("threshold");json!({"part_id":r.get::<String,_>("part_id"),"reference":r.get::<String,_>("reference"),"name":r.get::<String,_>("name"),"quantity":qty,"unit_price_cents":price,"value_cents":qty*price,"threshold":threshold,"low":qty<threshold})}).collect();
+            let items:Vec<_>=rows.iter().map(|r|{let qty:i64=r.get("quantity");let price:i64=r.get("unit_price_cents");let threshold:i64=r.get("threshold");json!({"part_id":r.get::<String,_>("part_id"),"reference":r.get::<String,_>("reference"),"name":r.get::<String,_>("name"),"quantity":qty,"unit_price_cents":price,"value_cents":qty*price,"threshold":threshold,"low":qty<=threshold})}).collect();
             Ok(
                 json!({"value_cents":items.iter().map(|v|v["value_cents"].as_i64().unwrap_or(0)).sum::<i64>(),"items":items}),
             )

@@ -25,7 +25,7 @@ UTILISATION :
   apex-maint backup [--output <dossier>] [--include-files folder_only|all|none]
                     [--with-secret-key] [--password-file <fichier>]
         Sauvegarde cohérente à chaud.
-  apex-maint restore <archive> [--password-file <fichier>] [--force]
+  apex-maint restore <archive> [--password-file <fichier|->] [--force]
         Restaure une archive, moteur arrêté ; confirmation et sauvegarde préalable par défaut.
   apex-maint purge [--dry-run] [--older-than <années>]
         Purge les données supprimées anciennes (2 ans minimum).

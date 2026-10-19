@@ -131,16 +131,21 @@ pub async fn snapshot(
             .map(|s| serde_json::from_str(&s).map_err(|e| MaintError::Internal(e.to_string())))
             .collect::<Result<_, _>>()?,
     );
-    let mut technicians = Vec::new();
-    for intervention in result["interventions"].as_array().unwrap() {
-        let rows: Vec<String> = sqlx::query_scalar("SELECT json_object('intervention_id',intervention_id,'user_id',user_id,'is_lead',json(CASE is_lead WHEN 1 THEN 'true' ELSE 'false' END),'assigned_at',assigned_at,'duration_minutes',duration_minutes) FROM intervention_technicians WHERE intervention_id=?").bind(intervention["id"].as_str()).fetch_all(&mut *tx).await?;
-        for row in rows {
-            technicians.push(
-                serde_json::from_str::<Value>(&row)
-                    .map_err(|e| MaintError::Internal(e.to_string()))?,
-            );
-        }
-    }
+    let ids: Vec<&str> = result["interventions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|intervention| intervention["id"].as_str())
+        .collect();
+    let ids = serde_json::to_string(&ids).map_err(|e| MaintError::Internal(e.to_string()))?;
+    let rows: Vec<String> = sqlx::query_scalar("SELECT json_object('intervention_id',t.intervention_id,'user_id',t.user_id,'is_lead',json(CASE t.is_lead WHEN 1 THEN 'true' ELSE 'false' END),'assigned_at',t.assigned_at,'duration_minutes',t.duration_minutes) FROM intervention_technicians t JOIN interventions i ON i.id=t.intervention_id JOIN json_each(?) selected ON selected.value=i.id WHERE (? OR i.site_id=?)")
+        .bind(ids).bind(actor.is_admin()).bind(&actor.site_id).fetch_all(&mut *tx).await?;
+    let technicians = rows
+        .iter()
+        .map(|row| {
+            serde_json::from_str::<Value>(row).map_err(|e| MaintError::Internal(e.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     result["technicians"] = json!(technicians);
     let visible:Vec<String>=sqlx::query_scalar("SELECT i.id FROM interventions i WHERE i.deleted_at IS NULL AND (? OR i.site_id=?) AND (? OR EXISTS(SELECT 1 FROM intervention_technicians t WHERE t.intervention_id=i.id AND t.user_id=?)) AND (i.status IN ('open','in_progress') OR i.updated_at>=?) ORDER BY i.id")
         .bind(actor.is_admin()).bind(&actor.site_id).bind(actor.is_admin()).bind(&actor.user_id).bind((Utc::now()-Duration::days(7)).to_rfc3339()).fetch_all(&mut *tx).await?;

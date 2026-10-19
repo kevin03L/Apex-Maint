@@ -64,10 +64,6 @@ impl Frequency {
             ))),
         }
     }
-
-    pub fn is_calendar(self) -> bool {
-        self != Self::Counter
-    }
 }
 
 impl fmt::Display for Frequency {
@@ -92,98 +88,6 @@ impl<'de> Deserialize<'de> for Frequency {
     {
         let s = String::deserialize(deserializer)?;
         Self::parse(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Statuts d'une occurrence de maintenance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OccurrenceStatus {
-    Generated,
-    Done,
-    Skipped,
-    Missed,
-}
-
-impl OccurrenceStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Generated => "generated",
-            Self::Done => "done",
-            Self::Skipped => "skipped",
-            Self::Missed => "missed",
-        }
-    }
-
-    pub fn parse(s: &str) -> Result<Self, MaintError> {
-        match s.trim() {
-            "generated" => Ok(Self::Generated),
-            "done" => Ok(Self::Done),
-            "skipped" => Ok(Self::Skipped),
-            "missed" => Ok(Self::Missed),
-            other => Err(MaintError::BadRequest(format!(
-                "Statut d'occurrence invalide : « {other} »"
-            ))),
-        }
-    }
-}
-
-impl fmt::Display for OccurrenceStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl Serialize for OccurrenceStatus {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for OccurrenceStatus {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Self::parse(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Mode de génération d'une occurrence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenerationMode {
-    Auto,
-    Manual,
-}
-
-impl GenerationMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Manual => "manual",
-        }
-    }
-
-    pub fn parse(s: &str) -> Result<Self, MaintError> {
-        match s.trim() {
-            "auto" => Ok(Self::Auto),
-            "manual" => Ok(Self::Manual),
-            other => Err(MaintError::BadRequest(format!(
-                "Mode de génération invalide : « {other} »"
-            ))),
-        }
-    }
-}
-
-impl Serialize for GenerationMode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -223,6 +127,33 @@ pub fn last_day_of_month(year: i32, month: u32) -> u32 {
         .and_then(|d| d.pred_opt())
         .map(|d| d.day())
         .unwrap_or(30)
+}
+
+fn validate_calendar_date(value: &str) -> Result<String, MaintError> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .map_err(|_| MaintError::BadRequest("Date calendaire invalide (AAAA-MM-JJ attendu)".into()))
+}
+
+/// Premier pas proche de la borne, en conservant le jour d'ancrage pour les mois.
+fn calendar_step_at(
+    anchor: NaiveDate,
+    frequency: Frequency,
+    interval: Option<i64>,
+    bound: NaiveDate,
+) -> i32 {
+    let days = (bound - anchor).num_days().max(0);
+    let months =
+        ((bound.year() - anchor.year()) * 12 + bound.month() as i32 - anchor.month() as i32).max(0);
+    match frequency {
+        Frequency::Daily => days as i32,
+        Frequency::Weekly => (days / 7) as i32,
+        Frequency::IntervalDays => (days / interval.unwrap_or(1).max(1)) as i32,
+        Frequency::Monthly => months,
+        Frequency::Quarterly => months / 3,
+        Frequency::Yearly => (bound.year() - anchor.year()).max(0),
+        Frequency::Counter => 0,
+    }
 }
 
 /// Calcule la n-ième date ancrée d'un calendrier fixe (step >= 0 ou relatif).
@@ -555,7 +486,7 @@ pub struct MaintenancePlan {
 }
 
 /// Occurrence de maintenance traitée ou en cours.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MaintenanceOccurrence {
     pub id: String,
     pub site_id: String,
@@ -1541,6 +1472,9 @@ pub async fn list_plans(
     }
 
     qb.push(" ORDER BY p.created_at DESC, p.id DESC");
+    if !matches!(filter.due.as_deref(), Some("overdue" | "soon")) {
+        qb.push(" LIMIT ").push_bind(i64::from(limit) + 1);
+    }
 
     let rows: Vec<RawPlanRow> = qb.build_query_as().fetch_all(pool).await?;
     let today = Local::now().date_naive();
@@ -1717,7 +1651,9 @@ pub async fn create_plan(
                     "La date d'ancrage est obligatoire pour les plannings calendaires".into(),
                 )
             })?;
-            let next_due = input.next_due_date.unwrap_or_else(|| ad.clone());
+            let ad = validate_calendar_date(&ad)?;
+            let next_due =
+                validate_calendar_date(&input.next_due_date.unwrap_or_else(|| ad.clone()))?;
             (Some(days), None, None, Some(ad), Some(next_due), None, None)
         }
         Frequency::Daily
@@ -1730,7 +1666,9 @@ pub async fn create_plan(
                     "La date d'ancrage est obligatoire pour les plannings calendaires".into(),
                 )
             })?;
-            let next_due = input.next_due_date.unwrap_or_else(|| ad.clone());
+            let ad = validate_calendar_date(&ad)?;
+            let next_due =
+                validate_calendar_date(&input.next_due_date.unwrap_or_else(|| ad.clone()))?;
             (None, None, None, Some(ad), Some(next_due), None, None)
         }
         Frequency::Counter => {
@@ -1913,6 +1851,16 @@ pub async fn update_plan(
         return Err(MaintError::NotFound("Planning de maintenance".into()));
     }
 
+    if input
+        .equipment_id
+        .as_ref()
+        .is_some_and(|equipment| equipment != &current.equipment_id)
+    {
+        return Err(MaintError::BadRequest(
+            "Le rattachement du planning à son équipement est immuable".into(),
+        ));
+    }
+
     let schedule_params_changed = input.frequency.is_some()
         || !input.interval_days.is_absent()
         || !input.counter_id.is_absent()
@@ -2044,7 +1992,7 @@ pub async fn update_plan(
     match input.anchor_date {
         PatchField::Absent => {}
         PatchField::Null => anchor_date = None,
-        PatchField::Value(v) => anchor_date = Some(v.trim().to_string()),
+        PatchField::Value(v) => anchor_date = Some(validate_calendar_date(&v)?),
     }
 
     let mut anchor_counter = current.anchor_counter;
@@ -2309,6 +2257,41 @@ async fn do_generate_in_tx(
     generation_mode: &str,
     ip: Option<&str>,
 ) -> Result<(MaintenanceOccurrence, crate::interventions::Intervention), MaintError> {
+    let fresh;
+    let plan = if generation_mode == "auto" {
+        let query = format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.id = ? AND p.site_id = ? AND p.deleted_at IS NULL AND p.active = 1 AND p.auto_generate = 1");
+        fresh = sqlx::query_as::<_, RawPlanRow>(&query)
+            .bind(&plan.id)
+            .bind(&plan.site_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                MaintError::Conflict("Le planning automatique n'est plus actif".into())
+            })?;
+        let due = if fresh.frequency == "counter" {
+            fresh.counter_active == Some(1)
+                && fresh.counter_current_value.unwrap_or(0)
+                    >= fresh
+                        .next_due_counter
+                        .unwrap_or(0)
+                        .saturating_sub(fresh.lead_counter)
+        } else {
+            fresh
+                .next_due_date
+                .as_deref()
+                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .is_some_and(|d| d - Duration::days(fresh.lead_days) <= Local::now().date_naive())
+        };
+        if fresh.open_occ_id.is_some() || !due {
+            return Err(MaintError::Conflict(
+                "Le planning automatique n'est plus à générer".into(),
+            ));
+        }
+        &fresh
+    } else {
+        plan
+    };
+
     let now = store::now();
 
     // 1. Récupération ou génération de la référence d'intervention
@@ -2655,25 +2638,7 @@ pub async fn list_plan_occurrences(
     qb.push(" ORDER BY o.created_at DESC, o.id DESC LIMIT ")
         .push_bind((limit + 1) as i64);
 
-    #[derive(Debug, FromRow)]
-    struct RawOccurrenceRow {
-        id: String,
-        site_id: String,
-        plan_id: String,
-        due_date: Option<String>,
-        due_counter: Option<i64>,
-        status: String,
-        intervention_id: Option<String>,
-        intervention_code: Option<String>,
-        generated_at: Option<String>,
-        closed_at: Option<String>,
-        generation: Option<String>,
-        skip_reason: Option<String>,
-        created_at: String,
-        updated_at: String,
-    }
-
-    let mut rows: Vec<RawOccurrenceRow> = qb.build_query_as().fetch_all(pool).await?;
+    let mut rows: Vec<MaintenanceOccurrence> = qb.build_query_as().fetch_all(pool).await?;
 
     let next_cursor = if rows.len() > limit as usize {
         rows.truncate(limit as usize);
@@ -2683,25 +2648,7 @@ pub async fn list_plan_occurrences(
         None
     };
 
-    let items = rows
-        .into_iter()
-        .map(|r| MaintenanceOccurrence {
-            id: r.id,
-            site_id: r.site_id,
-            plan_id: r.plan_id,
-            due_date: r.due_date,
-            due_counter: r.due_counter,
-            status: r.status,
-            intervention_id: r.intervention_id,
-            intervention_code: r.intervention_code,
-            generated_at: r.generated_at,
-            closed_at: r.closed_at,
-            generation: r.generation,
-            skip_reason: r.skip_reason,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        })
-        .collect();
+    let items = rows;
 
     Ok(crate::referentiel::Page { items, next_cursor })
 }
@@ -3061,8 +3008,10 @@ pub async fn get_schedule(
                     // 3. Projections futures strictement après next_due jusqu'à `to`
                     let anchor_str = p.anchor_date.as_deref().unwrap_or(next_due_str);
                     if let Ok(anchor) = NaiveDate::parse_from_str(anchor_str, "%Y-%m-%d") {
-                        let mut step = 0;
-                        loop {
+                        let first =
+                            calendar_step_at(anchor, freq, p.interval_days, from.max(next_due));
+                        let last = calendar_step_at(anchor, freq, p.interval_days, to);
+                        for step in first..=last {
                             let projected = step_calendar_date(anchor, freq, p.interval_days, step);
                             if projected > to {
                                 break;
@@ -3080,10 +3029,6 @@ pub async fn get_schedule(
                                         intervention_id: None,
                                     });
                                 }
-                            }
-                            step += 1;
-                            if step > 2000 {
-                                break;
                             }
                         }
                     }
@@ -3275,6 +3220,46 @@ pub(crate) async fn generate_counter_in_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn generation_automatique_reverifie_le_planning_sous_verrou() {
+        let (pool, actor) = crate::audit_tests::fixture().await;
+        let plan = crate::audit_tests::plan(&pool, &actor).await;
+        sqlx::query("UPDATE maintenance_plans SET next_due_date='2000-01-01' WHERE id=?")
+            .bind(&plan.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let query = format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.id=?");
+        let stale: RawPlanRow = sqlx::query_as(&query)
+            .bind(&plan.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        for change in [
+            "active=0",
+            "auto_generate=0",
+            "deleted_at='2026'",
+            "next_due_date='2099-01-01'",
+        ] {
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            sqlx::query(&format!("UPDATE maintenance_plans SET {change} WHERE id=?"))
+                .bind(&plan.id)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert!(matches!(
+                do_generate_in_tx(&mut tx, &stale, &actor, "auto", None).await,
+                Err(MaintError::Conflict(_))
+            ));
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM maintenance_occurrences")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
+            tx.rollback().await.unwrap();
+        }
+    }
 
     #[test]
     fn test_calcul_chaque_frequence() {

@@ -2,7 +2,7 @@
 
 GMAO (gestion de la maintenance assistée par ordinateur) multi-sites écrite en Rust : un moteur métier avec une IHM web pour les équipes de maintenance et de production. Deuxième produit de la gamme **Apex**, aux côtés d'[Apex Supervision](https://github.com/kevin03L/Apex-Supervision), dont il reprend l'architecture et les conventions.
 
-> **Statut : développement, phase 7 (`0.1.0-alpha.1`).** Backend de pilotage, paramètres, exports CSV/Excel/PDF, alertes et récupération du compte : [contrat HTTP](docs/API-PHASE-7.md) ; sessions à durée réglable dans les paramètres (480 minutes par défaut).
+> **Statut au 19 octobre 2026 : phases 1 à 10 implémentées (`0.8.0-alpha.1`), corrections d’audit en cours.** Contrats HTTP et limites documentés dans `docs/API-PHASE-*.md`.
 
 ## Fonctionnalités prévues
 
@@ -14,7 +14,7 @@ GMAO (gestion de la maintenance assistée par ordinateur) multi-sites écrite en
 - **Documents** et **QR codes** d'équipement.
 - **Tableau de bord**, reporting, export CSV, journal d'audit.
 - **Contrôle d'accès** par rôles (Administrateur, Responsable, Production, Technicien) et matrice de permissions.
-- **Exploitation** : service Windows ou unité systemd, installateur, utilitaire desktop, sauvegarde et restauration, reprise des données de l'ancienne GMAO.
+- **Exploitation** : service Windows ou unité systemd, installateur, utilitaire desktop, sauvegarde et restauration ; aucune reprise des données de l’ancienne GMAO n’est prévue.
 
 ## Démarrage rapide (développement, mode portable)
 

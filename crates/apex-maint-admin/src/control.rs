@@ -64,15 +64,37 @@ pub fn engine_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
-pub fn engine_command(config: &Path, args: &[String]) -> Result<String, String> {
-    let out = hidden(
+/// Le secret transite par un tube anonyme, sans fichier temporaire ni argument sensible.
+pub fn engine_command(
+    config: &Path,
+    args: &[String],
+    password: Option<&str>,
+) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = hidden(
         Command::new(engine_path())
             .args(args)
             .arg("--config")
-            .arg(config),
+            .arg(config)
+            .stdin(if password.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
     )
-    .output()
+    .spawn()
     .map_err(|e| e.to_string())?;
+    if let Some(password) = password {
+        let result = child.stdin.take().unwrap().write_all(password.as_bytes());
+        if let Err(error) = result {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.to_string());
+        }
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
