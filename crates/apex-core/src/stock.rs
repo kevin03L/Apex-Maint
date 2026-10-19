@@ -6,6 +6,7 @@
 //! transferts, ajustements), l'association aux équipements, les alertes de stock bas
 //! et les réservations de pièces préparées pour intervention.
 
+use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query, SitePolicy};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
@@ -324,7 +325,8 @@ pub async fn list_parts(
 ) -> Result<crate::referentiel::Page<PartDetail>, MaintError> {
     actor.require_permission(Permission::PartsView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
 
@@ -407,8 +409,7 @@ pub async fn list_parts(
     };
 
     let mut items = Vec::with_capacity(parts.len());
-    for part in parts {
-        let detail = build_part_detail(pool, actor, part, global_threshold, false).await?;
+    for detail in build_part_details(pool, actor, parts, global_threshold).await? {
         if let Some(low_only) = filter.low_stock {
             if low_only && !detail.is_low_stock {
                 continue;
@@ -441,7 +442,7 @@ pub async fn create_part(
     ip: Option<&str>,
 ) -> Result<PartDetail, MaintError> {
     actor.require_permission(Permission::PartsCreate)?;
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let reference = validate_reference(&input.reference)?;
     let name = validate_name(&input.name)?;
     let unit = validate_unit(input.unit.as_deref().unwrap_or("piece"))?;
@@ -842,7 +843,8 @@ pub async fn list_stock(
     filter: StockFilter,
 ) -> Result<Vec<StockItem>, MaintError> {
     actor.require_permission(Permission::StockView)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         r#"
@@ -917,7 +919,7 @@ pub async fn list_stock_alerts(
     requested_site_id: Option<&str>,
 ) -> Result<Vec<PartDetail>, MaintError> {
     actor.require_permission(Permission::StockView)?;
-    let site_scope = resolve_site_id_for_query(actor, requested_site_id)?;
+    let site_scope = resolve_site_id_for_query(actor, requested_site_id, SitePolicy::Strict)?;
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
@@ -934,13 +936,13 @@ pub async fn list_stock_alerts(
     if let Some(sid) = site_scope {
         qb.push(" AND p.site_id = ").push_bind(sid);
     }
-    qb.push(" ORDER BY p.reference ASC");
+    qb.push(" AND COALESCE((SELECT SUM(s.quantity) FROM stock s JOIN locations l ON l.id=s.location_id AND l.deleted_at IS NULL WHERE s.part_id=p.id AND s.site_id=p.site_id),0) <= COALESCE(p.alert_threshold,")
+        .push_bind(global_threshold).push(") ORDER BY p.reference ASC");
 
     let parts: Vec<Part> = qb.build_query_as().fetch_all(pool).await?;
 
     let mut alerts = Vec::new();
-    for part in parts {
-        let detail = build_part_detail(pool, actor, part, global_threshold, false).await?;
+    for detail in build_part_details(pool, actor, parts, global_threshold).await? {
         if detail.is_low_stock {
             alerts.push(detail);
         }
@@ -960,7 +962,8 @@ pub async fn list_stock_movements(
 ) -> Result<crate::referentiel::Page<StockMovement>, MaintError> {
     actor.require_permission(Permission::StockView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         r#"
@@ -2417,6 +2420,98 @@ pub async fn disassociate_equipment_part(
 // FONCTIONS UTILITAIRES INTERNES
 // ============================================================================
 
+async fn build_part_details(
+    pool: &SqlitePool,
+    actor: &Actor,
+    parts: Vec<Part>,
+    global_threshold: i64,
+) -> Result<Vec<PartDetail>, MaintError> {
+    use std::collections::HashMap;
+
+    let mut details = Vec::with_capacity(parts.len());
+    // Les lots bornent le nombre de paramètres SQLite, y compris pour les alertes sans pagination.
+    for batch in parts.chunks(200) {
+        let mut locations: HashMap<String, Vec<PartLocationStock>> = HashMap::new();
+        let mut qb = QueryBuilder::<Sqlite>::new("SELECT s.part_id,s.location_id,l.code,l.name,s.quantity,(SELECT COALESCE(SUM(sr.quantity),0) FROM stock_reservations sr WHERE sr.part_id=s.part_id AND sr.location_id=s.location_id AND sr.status='prepared') FROM stock s JOIN locations l ON l.id=s.location_id AND l.deleted_at IS NULL JOIN parts p ON p.id=s.part_id AND p.site_id=s.site_id WHERE (");
+        qb.push_bind(actor.is_admin())
+            .push(" OR p.site_id=")
+            .push_bind(&actor.site_id)
+            .push(") AND p.id IN (");
+        let mut ids = qb.separated(",");
+        for part in batch {
+            ids.push_bind(&part.id);
+        }
+        ids.push_unseparated(") ORDER BY l.code ASC");
+        let rows: Vec<(String, String, String, String, i64, i64)> =
+            qb.build_query_as().fetch_all(pool).await?;
+        for (part_id, location_id, location_code, location_name, quantity, reserved_quantity) in
+            rows
+        {
+            locations
+                .entry(part_id)
+                .or_default()
+                .push(PartLocationStock {
+                    location_id,
+                    location_code,
+                    location_name,
+                    quantity,
+                    reserved_quantity,
+                    available_quantity: (quantity - reserved_quantity).max(0),
+                });
+        }
+        // Conserver le fournisseur de la pièce déjà lue, même si son rattachement change entre les requêtes.
+        let mut qb = QueryBuilder::<Sqlite>::new("WITH selected(id,site_id,supplier_id) AS (");
+        qb.push_values(batch, |mut row, part| {
+            row.push_bind(&part.id)
+                .push_bind(&part.site_id)
+                .push_bind(&part.supplier_id);
+        });
+        qb.push(") SELECT p.id,s.id,s.name,(SELECT count(*) FROM documents d WHERE d.entity_type='part' AND d.entity_id=p.id AND d.site_id=p.site_id AND d.deleted_at IS NULL) FROM selected p LEFT JOIN suppliers s ON s.id=p.supplier_id AND s.deleted_at IS NULL WHERE (");
+        qb.push_bind(actor.is_admin())
+            .push(" OR p.site_id=")
+            .push_bind(&actor.site_id)
+            .push(")");
+        let rows: Vec<(String, Option<String>, Option<String>, i64)> =
+            qb.build_query_as().fetch_all(pool).await?;
+        let mut metadata: HashMap<_, _> = rows
+            .into_iter()
+            .map(|(id, supplier_id, name, count)| {
+                (
+                    id,
+                    (
+                        supplier_id.zip(name).map(|(id, name)| NamedRef {
+                            id,
+                            code: name.clone(),
+                            name,
+                        }),
+                        count,
+                    ),
+                )
+            })
+            .collect();
+        for part in batch {
+            let locations = locations.remove(&part.id).unwrap_or_default();
+            let total_stock = locations.iter().map(|l| l.quantity).sum::<i64>();
+            let total_reserved = locations.iter().map(|l| l.reserved_quantity).sum::<i64>();
+            let (supplier, documents_count) = metadata.remove(&part.id).unwrap_or_default();
+            let effective_threshold = part.alert_threshold.unwrap_or(global_threshold);
+            details.push(PartDetail {
+                part: part.clone(),
+                documents_count,
+                total_stock,
+                total_reserved,
+                total_available: (total_stock - total_reserved).max(0),
+                effective_threshold,
+                is_low_stock: total_stock <= effective_threshold,
+                locations,
+                supplier,
+                equipments: None,
+            });
+        }
+    }
+    Ok(details)
+}
+
 async fn build_part_detail(
     pool: &SqlitePool,
     actor: &Actor,
@@ -2660,48 +2755,6 @@ async fn get_global_stock_alert_threshold(pool: &SqlitePool) -> Result<i64, Main
     Ok(val.and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(5))
 }
 
-fn resolve_site_id_for_create(
-    actor: &Actor,
-    requested_site_id: Option<&str>,
-) -> Result<String, MaintError> {
-    if actor.is_admin() {
-        let sid = requested_site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| MaintError::BadRequest("Le site est obligatoire".into()))?;
-        Ok(sid.to_string())
-    } else {
-        if let Some(sid) = requested_site_id {
-            if sid != actor.site_id.as_deref().unwrap_or_default() {
-                return Err(MaintError::Forbidden(
-                    "Accès refusé : vous ne pouvez pas créer de ressource sur un autre site".into(),
-                ));
-            }
-        }
-        actor
-            .site_id
-            .clone()
-            .ok_or_else(|| MaintError::Forbidden("Aucun site rattaché".into()))
-    }
-}
-
-fn resolve_site_id_for_query<'a>(
-    actor: &'a Actor,
-    requested_site_id: Option<&'a str>,
-) -> Result<Option<&'a str>, MaintError> {
-    if actor.is_admin() {
-        Ok(requested_site_id.filter(|s| !s.is_empty()))
-    } else {
-        let actor_site = actor.site_id.as_deref().unwrap_or_default();
-        if let Some(req_sid) = requested_site_id {
-            if req_sid != actor_site {
-                return Err(MaintError::NotFound("Site".into()));
-            }
-        }
-        Ok(Some(actor_site))
-    }
-}
-
 async fn ensure_supplier_exists(
     conn: &mut SqliteConnection,
     site_id: &str,
@@ -2812,6 +2865,31 @@ fn clean_opt_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn c6_lot_conserve_le_fournisseur_de_la_piece_lue() {
+        let (pool, actor) = crate::audit_tests::fixture().await;
+        sqlx::query("INSERT INTO suppliers(id,site_id,name,created_at,updated_at) VALUES('ancien','a','Ancien','2026','2026'),('nouveau','a','Nouveau','2026','2026')").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE parts SET supplier_id='ancien' WHERE id='part'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let part = scoped_part(&mut pool.acquire().await.unwrap(), &actor, "part")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE parts SET supplier_id='nouveau' WHERE id='part'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let expected = build_part_detail(&pool, &actor, part.clone(), 0, false)
+            .await
+            .unwrap();
+        let actual = build_part_details(&pool, &actor, vec![part], 0)
+            .await
+            .unwrap();
+        assert_eq!(json!(actual[0]), json!(expected));
+        assert_eq!(actual[0].supplier.as_ref().unwrap().id, "ancien");
+    }
 
     #[test]
     fn calcul_du_pmp_pondere() {

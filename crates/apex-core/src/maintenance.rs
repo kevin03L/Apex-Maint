@@ -6,6 +6,7 @@
 //! - Les occurrences d'échéances et la génération d'interventions préventives (auto et manuelle) ;
 //! - Le suivi des états (en retard, bientôt, à jour, suspendu) et la vue planning projetée.
 
+use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query, SitePolicy};
 use std::fmt;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -648,39 +649,6 @@ fn validate_name(name: &str, field_name: &str, max_len: usize) -> Result<String,
     Ok(trimmed.to_string())
 }
 
-fn resolve_site_id_for_create(actor: &Actor, site_id: Option<&str>) -> Result<String, MaintError> {
-    if actor.is_admin() {
-        site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                MaintError::BadRequest("Le site_id est requis pour un administrateur".into())
-            })
-    } else {
-        actor
-            .site_id
-            .clone()
-            .ok_or_else(|| MaintError::Forbidden("Utilisateur sans site rattaché".into()))
-    }
-}
-
-fn resolve_site_id_for_query(
-    actor: &Actor,
-    site_id: Option<&str>,
-) -> Result<Option<String>, MaintError> {
-    if actor.is_admin() {
-        Ok(site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string))
-    } else {
-        Ok(Some(actor.site_id.clone().ok_or_else(|| {
-            MaintError::Forbidden("Utilisateur sans site rattaché".into())
-        })?))
-    }
-}
-
 // ============================================================================
 // GESTION DES COMPTEURS D'ÉQUIPEMENT
 // ============================================================================
@@ -694,7 +662,7 @@ pub async fn list_equipment_counters(
     actor.require_permission(Permission::MaintenanceView)?;
 
     // Vérifier l'équipement dans le scope du site
-    let site_scope = resolve_site_id_for_query(actor, None)?;
+    let site_scope = resolve_site_id_for_query(actor, None, SitePolicy::Maintenance)?;
     let mut qb = QueryBuilder::new("SELECT site_id FROM equipments WHERE id = ");
     qb.push_bind(equipment_id).push(" AND deleted_at IS NULL");
     if let Some(sid) = site_scope {
@@ -747,7 +715,7 @@ pub async fn create_equipment_counter(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     // Récupérer et vérifier l'équipement dans le scope
-    let site_scope = resolve_site_id_for_query(actor, None)?;
+    let site_scope = resolve_site_id_for_query(actor, None, SitePolicy::Maintenance)?;
     let mut qb = QueryBuilder::new("SELECT site_id FROM equipments WHERE id = ");
     qb.push_bind(equipment_id).push(" AND deleted_at IS NULL");
     if let Some(sid) = site_scope {
@@ -1433,7 +1401,8 @@ pub async fn list_plans(
 ) -> Result<crate::referentiel::Page<MaintenancePlan>, MaintError> {
     actor.require_permission(Permission::MaintenanceView)?;
     let limit = filter.limit.clamp(1, 100);
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Maintenance)?;
 
     let mut qb = QueryBuilder::new(format!(
         "SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.deleted_at IS NULL"
@@ -1580,7 +1549,8 @@ pub async fn create_plan(
         }
         _ => None,
     };
-    let site_id = resolve_site_id_for_create(actor, requested_site.as_deref())?;
+    let site_id =
+        resolve_site_id_for_create(actor, requested_site.as_deref(), SitePolicy::Maintenance)?;
     let code = validate_code(&input.code)?;
     let title = validate_name(&input.title, "Le titre du planning", 255)?;
     let frequency = Frequency::parse(&input.frequency)?;
@@ -2885,7 +2855,7 @@ pub async fn get_schedule(
         ));
     }
 
-    let site_scope = resolve_site_id_for_query(actor, site_id_filter)?;
+    let site_scope = resolve_site_id_for_query(actor, site_id_filter, SitePolicy::Maintenance)?;
     let today = Local::now().date_naive();
 
     // 1. Récupération de tous les plannings actifs

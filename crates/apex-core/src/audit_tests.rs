@@ -2,6 +2,159 @@
 use crate::{maintenance, stock, Actor, MaintError, Role};
 use serde_json::json;
 
+#[tokio::test]
+async fn c6_lots_pieces_identiques_aux_fiches_et_alertes() {
+    let (pool, actor) = fixture().await;
+    for statement in [
+        "INSERT INTO suppliers(id,site_id,name,created_at,updated_at) VALUES('sup','a','Fournisseur','2026','2026')",
+        "UPDATE parts SET supplier_id='sup',alert_threshold=0 WHERE id='part'",
+        "INSERT INTO locations(id,site_id,code,name,kind,created_at,updated_at,deleted_at) VALUES('supprime','a','DEL','Ancien','magasin','2026','2026','2026')",
+        "INSERT INTO stock(id,site_id,part_id,location_id,quantity,updated_at) VALUES('cache','a','part','supprime',100,'2026')",
+        "INSERT INTO documents(id,site_id,entity_type,entity_id,title,created_at,updated_at) VALUES('doc','a','part','part','Notice','2026','2026')",
+    ] { sqlx::query(statement).execute(&pool).await.unwrap(); }
+    let intervention = crate::interventions::create_intervention(
+        &pool,
+        &actor,
+        serde_json::from_value(json!({"site_id":"a","title":"Travail","type":"hors_equipement"}))
+            .unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO stock_reservations(id,site_id,intervention_id,part_id,location_id,quantity,status,prepared_by_id,prepared_at,created_at,updated_at) VALUES('r','a',?,'part','loc',1,'prepared',?,'2026','2026','2026')")
+        .bind(&intervention.id).bind(&actor.user_id).execute(&pool).await.unwrap();
+    for i in 0..205 {
+        let id = format!("piece-{i:03}");
+        sqlx::query("INSERT INTO parts(id,site_id,reference,name,alert_threshold,created_at,updated_at) VALUES(?,'a',?,'Pièce',0,'2026','2026')")
+            .bind(&id).bind(&id).execute(&pool).await.unwrap();
+    }
+    let technician = Actor::new(
+        &actor.user_id,
+        Some("a".into()),
+        Role::Technicien,
+        crate::Permission::ALL.iter().copied(),
+    );
+    for actor in [&actor, &technician] {
+        let mut cursor = None;
+        let mut expected_alerts = Vec::new();
+        let mut count = 0;
+        loop {
+            let page = stock::list_parts(
+                &pool,
+                actor,
+                stock::PartFilter {
+                    limit: 200,
+                    cursor,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            for detail in page.items {
+                let mut expected = stock::get_part(&pool, actor, &detail.part.id)
+                    .await
+                    .unwrap();
+                expected.equipments = None;
+                assert_eq!(json!(detail), json!(expected));
+                if expected.is_low_stock {
+                    expected_alerts.push(json!(expected));
+                }
+                count += 1;
+            }
+            cursor = page.next_cursor.map(|c| crate::Cursor::decode(&c).unwrap());
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(count, if actor.is_admin() { 207 } else { 206 });
+        let alerts = stock::list_stock_alerts(&pool, actor, None).await.unwrap();
+        assert_eq!(
+            alerts.into_iter().map(|d| json!(d)).collect::<Vec<_>>(),
+            expected_alerts
+        );
+        // Le filtre bas conserve le découpage historique : filtrage après pagination.
+        let page = stock::list_parts(
+            &pool,
+            actor,
+            stock::PartFilter {
+                limit: 1,
+                low_stock: Some(true),
+                site_id: Some("a".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(page.items.is_empty());
+        assert!(page.next_cursor.is_some());
+    }
+}
+
+#[tokio::test]
+async fn c8_version_courante_identique_a_la_premiere_version_active() {
+    let (pool, actor) = fixture().await;
+    sqlx::query("INSERT INTO documents(id,site_id,entity_type,entity_id,title,versions_count,created_at,updated_at) VALUES('doc','a','part','part','Notice',20,'2026','2026')").execute(&pool).await.unwrap();
+    let storage: String = sqlx::query_scalar("SELECT id FROM storage_backends LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    for i in 1..=20 {
+        sqlx::query("INSERT INTO document_versions(id,site_id,document_id,version_no,storage_id,storage_key,original_name,mime_type,extension,size_bytes,sha256,uploaded_by_id,created_at,updated_at,deleted_at) VALUES(?,'a','doc',?,?,?,'notice.pdf','application/pdf','pdf',1,'empreinte',?,'2026','2026',?)")
+            .bind(format!("v{i}")).bind(i).bind(&storage).bind(format!("cle/{i}"))
+            .bind(&actor.user_id).bind(if i==20 {Some("2026")} else {None}).execute(&pool).await.unwrap();
+    }
+    // Même un pointeur ancien ne change pas la règle historique du numéro maximal actif.
+    sqlx::query("UPDATE documents SET current_version_id='v1' WHERE id='doc'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for actor in [
+        &actor,
+        &Actor::new(
+            &actor.user_id,
+            Some("a".into()),
+            Role::Technicien,
+            crate::Permission::ALL.iter().copied(),
+        ),
+    ] {
+        let history = crate::documents::versions(&pool, actor, "doc")
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 19);
+        assert_eq!(history[0].version_no, 19);
+        let expected = json!(history[0]);
+        let document = crate::documents::get_document(&pool, actor, "doc")
+            .await
+            .unwrap();
+        assert_eq!(json!(document.current_version), expected);
+        let listed = crate::documents::list_documents(&pool, actor, "part", "part")
+            .await
+            .unwrap();
+        assert_eq!(json!(listed[0].current_version), expected);
+        let searched = crate::documents::search(
+            &pool,
+            actor,
+            crate::documents::SearchFilter {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(json!(searched.items[0].current_version), expected);
+    }
+    let foreign = Actor::new(
+        &actor.user_id,
+        Some("b".into()),
+        Role::Technicien,
+        crate::Permission::ALL.iter().copied(),
+    );
+    assert!(matches!(
+        crate::documents::get_document(&pool, &foreign, "doc").await,
+        Err(MaintError::NotFound(_))
+    ));
+}
+
 pub(crate) async fn fixture() -> (sqlx::SqlitePool, Actor) {
     let pool = crate::db::open(None).await.unwrap();
     crate::services::Auth::new(pool.clone(), 24)

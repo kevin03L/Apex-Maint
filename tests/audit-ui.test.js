@@ -5,6 +5,22 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const app = fs.readFileSync(require.resolve('../static/app.js'), 'utf8');
 
+test('U6. Le résumé terrain partage une lecture et conserve les deux décomptes', async () => {
+  let reads = 0;
+  const summary = {};
+  const context = vm.createContext({
+    document: { getElementById: () => summary },
+    ApexOffline: { getUnsyncedOperations: async () => {
+      reads++;
+      return [{ status: 'pending' }, { status: 'conflict' }, { status: 'pending' }];
+    } }
+  });
+  vm.runInContext('async ' + fonction('initTerrainPageView', 'synchronisationPage'), context);
+  await vm.runInContext('initTerrainPageView()', context);
+  assert.equal(reads, 1);
+  assert.equal(summary.textContent, '2 opération(s) en attente, 1 à résoudre.');
+});
+
 function fonction(name, next) {
   return app.slice(app.indexOf(`function ${name}(`), app.indexOf(`function ${next}(`));
 }

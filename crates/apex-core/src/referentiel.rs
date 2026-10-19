@@ -4,6 +4,7 @@
 //! (renvoyant 404 pour les ressources d'un autre site aux non-admins) et consignent
 //! chaque opération dans `audit_log` au sein d'une transaction `BEGIN IMMEDIATE`.
 
+use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query, SitePolicy};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -110,7 +111,8 @@ pub async fn list_production_lines(
 ) -> Result<Page<ProductionLine>, MaintError> {
     actor.require_permission(Permission::ProductionLinesView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         r#"
@@ -220,7 +222,7 @@ pub async fn create_production_line(
     ip: Option<&str>,
 ) -> Result<ProductionLine, MaintError> {
     actor.require_permission(Permission::ProductionLinesCreate)?;
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let code = validate_code(&input.code, "Le code de ligne de production")?;
     let name = validate_name(&input.name, "Le nom de ligne de production")?;
     let description = clean_opt_string(input.description, 1024, "La description")?;
@@ -593,7 +595,8 @@ pub async fn list_equipments(
 ) -> Result<Page<Equipment>, MaintError> {
     actor.require_permission(Permission::EquipmentsView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     if let Some(st) = filter.status.as_deref() {
         validate_equipment_status(st)?;
@@ -774,7 +777,7 @@ pub async fn get_equipments_tree(
     site_id: Option<&str>,
 ) -> Result<Vec<EquipmentTreeNode>, MaintError> {
     actor.require_permission(Permission::EquipmentsView)?;
-    let site_scope = resolve_site_id_for_query(actor, site_id)?;
+    let site_scope = resolve_site_id_for_query(actor, site_id, SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         r#"
@@ -855,7 +858,7 @@ pub async fn create_equipment(
     ip: Option<&str>,
 ) -> Result<Equipment, MaintError> {
     actor.require_permission(Permission::EquipmentsCreate)?;
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let code = validate_code(&input.code, "Le code de l'équipement")?;
     let name = validate_name(&input.name, "Le nom de l'équipement")?;
     let status = match input.status.as_deref() {
@@ -1379,7 +1382,8 @@ pub async fn list_locations(
 ) -> Result<Page<Location>, MaintError> {
     actor.require_permission(Permission::LocationsView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     if let Some(k) = filter.kind.as_deref() {
         validate_location_kind(k)?;
@@ -1488,7 +1492,7 @@ pub async fn get_locations_tree(
     site_id: Option<&str>,
 ) -> Result<Vec<LocationTreeNode>, MaintError> {
     actor.require_permission(Permission::LocationsView)?;
-    let site_scope = resolve_site_id_for_query(actor, site_id)?;
+    let site_scope = resolve_site_id_for_query(actor, site_id, SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         r#"
@@ -1568,7 +1572,7 @@ pub async fn create_location(
     ip: Option<&str>,
 ) -> Result<Location, MaintError> {
     actor.require_permission(Permission::LocationsManage)?;
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let code = validate_code(&input.code, "Le code d'emplacement")?;
     let name = validate_name(&input.name, "Le nom d'emplacement")?;
     let kind = validate_location_kind(&input.kind)?.to_string();
@@ -1960,7 +1964,8 @@ pub async fn list_suppliers(
 ) -> Result<Page<Supplier>, MaintError> {
     actor.require_permission(Permission::SuppliersView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         r#"
@@ -2054,7 +2059,7 @@ pub async fn create_supplier(
     ip: Option<&str>,
 ) -> Result<Supplier, MaintError> {
     actor.require_permission(Permission::SuppliersManage)?;
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let name = validate_name(&input.name, "Le nom du fournisseur")?;
     let contact_name = clean_opt_string(input.contact_name, 128, "Le nom du contact")?;
     let email = clean_opt_string(input.email, 256, "L'adresse email")?;
@@ -2317,49 +2322,6 @@ pub async fn delete_supplier(
 // ============================================================================
 // FONCTIONS UTILITAIRES DE VALIDATION ET DE GESTION DES SITES
 // ============================================================================
-
-fn resolve_site_id_for_create(
-    actor: &Actor,
-    requested_site_id: Option<&str>,
-) -> Result<String, MaintError> {
-    if actor.is_admin() {
-        let sid = requested_site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| MaintError::BadRequest("Le site est obligatoire".into()))?;
-        Ok(sid.to_string())
-    } else {
-        if let Some(sid) = requested_site_id {
-            if sid != actor.site_id.as_deref().unwrap_or_default() {
-                return Err(MaintError::Forbidden(
-                    "Accès refusé : vous ne pouvez pas créer de ressource sur un autre site".into(),
-                ));
-            }
-        }
-        actor
-            .site_id
-            .clone()
-            .ok_or_else(|| MaintError::Forbidden("Aucun site rattaché".into()))
-    }
-}
-
-fn resolve_site_id_for_query<'a>(
-    actor: &'a Actor,
-    requested_site_id: Option<&'a str>,
-) -> Result<Option<&'a str>, MaintError> {
-    if actor.is_admin() {
-        Ok(requested_site_id.filter(|s| !s.is_empty()))
-    } else {
-        let actor_site = actor.site_id.as_deref().unwrap_or_default();
-        if let Some(req_sid) = requested_site_id {
-            if req_sid != actor_site {
-                // Règle de la spec : ressource d'un autre site répond 404
-                return Err(MaintError::NotFound("Site".into()));
-            }
-        }
-        Ok(Some(actor_site))
-    }
-}
 
 fn validate_code(code: &str, field_name: &str) -> Result<String, MaintError> {
     let trimmed = code.trim();

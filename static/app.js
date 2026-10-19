@@ -16596,8 +16596,9 @@ function terrainPage() {
 async function initTerrainPageView() {
   if (typeof ApexOffline === 'undefined') return;
   try {
-    const pending = await ApexOffline.getPendingOperations();
-    const conflicts = await ApexOffline.getConflictOperations();
+    const operations = await ApexOffline.getUnsyncedOperations();
+    const pending = operations.filter(op => op.status === 'pending');
+    const conflicts = operations.filter(op => op.status === 'conflict');
     const summary = document.getElementById('terrainSyncSummary');
     if (summary) {
       if (!pending.length && !conflicts.length) {

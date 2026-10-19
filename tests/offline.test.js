@@ -13,6 +13,29 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const offline = require('../static/offline.js');
 
+test('U6. Les lectures par statut gardent le résultat et l’ordre de la lecture complète', async () => {
+  const reads = [];
+  const db = createMockIndexedDB(kind => reads.push(kind));
+  offline.setOfflineDBInstance(null);
+  for (const [id, status, created_at] of [
+    ['p2', 'pending', '2026-10-19T12:00:00Z'],
+    ['c1', 'conflict', '2026-10-19T10:00:00Z'],
+    ['p1', 'pending', '2026-10-19T10:00:00Z'],
+    ['terminee', 'done', '2026-10-19T09:00:00Z'],
+    ['c2', 'conflict', '2026-10-19T13:00:00Z']
+  ]) {
+    const operation = await offline.enqueueOperation({ id, created_at, type: 'test', url: '/', method: 'POST' }, db);
+    const opened = await offline.openOfflineDB(db);
+    opened.transaction('outbox', 'readwrite').objectStore('outbox').put({ ...operation, status });
+  }
+  const all = await offline.getAllOperations(db);
+  reads.length = 0;
+  assert.deepEqual(await offline.getPendingOperations(db), all.filter(op => op.status === 'pending'));
+  assert.deepEqual(await offline.getConflictOperations(db), all.filter(op => op.status === 'conflict'));
+  assert.deepEqual(await offline.getUnsyncedOperations(db), all.filter(op => ['pending', 'conflict'].includes(op.status)));
+  assert.deepEqual(reads, ['by_status', 'by_status', 'all']);
+});
+
 test('M3. La déclaration a posteriori conserve tous les champs saisis', async () => {
   const db = createMockIndexedDB();
   offline.setOfflineDBInstance(null);
@@ -75,7 +98,7 @@ test('U23. La création hors ligne garde le site choisi et le parent', async () 
 });
 
 /** Mock IndexedDB en mémoire pour node:test */
-function createMockIndexedDB() {
+function createMockIndexedDB(onRead = () => {}) {
   const stores = new Map();
 
   function getStore(name) {
@@ -132,6 +155,7 @@ function createMockIndexedDB() {
               return req;
             },
             getAll() {
+              onRead('all');
               const req = { onsuccess: null, onerror: null, result: [] };
               req.result = Array.from(map.values()).map(v => JSON.parse(JSON.stringify(v)));
               queueMicrotask(() => {
@@ -160,6 +184,7 @@ function createMockIndexedDB() {
             index(idxName) {
               return {
                 getAll(query) {
+                  onRead(idxName);
                   const req = { onsuccess: null, onerror: null, result: [] };
                   const all = Array.from(map.values()).map(v => JSON.parse(JSON.stringify(v)));
                   if (query !== undefined) {

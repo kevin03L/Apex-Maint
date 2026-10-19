@@ -303,12 +303,12 @@ async function enqueueOperation(opParams, customIDB) {
 }
 
 /** Récupère toutes les opérations de l'outbox, triées chronologiquement. */
-async function getAllOperations(customIDB) {
+async function getAllOperations(customIDB, status) {
   const db = await openOfflineDB(customIDB);
   return new Promise((resolve, reject) => {
     const tx = db.transaction('outbox', 'readonly');
     const store = tx.objectStore('outbox');
-    const req = store.getAll();
+    const req = status === undefined ? store.getAll() : store.index('by_status').getAll(status);
     req.onsuccess = () => {
       const items = (req.result || []).sort((a, b) => a.created_at.localeCompare(b.created_at));
       resolve(items);
@@ -319,14 +319,12 @@ async function getAllOperations(customIDB) {
 
 /** Récupère les opérations en attente (status === 'pending'). */
 async function getPendingOperations(customIDB) {
-  const all = await getAllOperations(customIDB);
-  return all.filter(op => op.status === 'pending');
+  return getAllOperations(customIDB, 'pending');
 }
 
 /** Récupère les opérations en conflit (« À résoudre »). */
 async function getConflictOperations(customIDB) {
-  const all = await getAllOperations(customIDB);
-  return all.filter(op => op.status === 'conflict');
+  return getAllOperations(customIDB, 'conflict');
 }
 
 /** Récupère les opérations non synchronisées : en attente et « À résoudre ». */

@@ -6,6 +6,7 @@
 //! les sous-interventions à profondeur 1, l'assignation des techniciens du même site,
 //! et le suivi des temps par technicien conformément aux décisions du 2026-10-18.
 
+use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query, SitePolicy};
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -557,7 +558,8 @@ pub async fn list_interventions(
 ) -> Result<crate::referentiel::Page<Intervention>, MaintError> {
     actor.require_permission(Permission::InterventionsView)?;
     let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
 
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
         "SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.deleted_at IS NULL"
@@ -821,7 +823,7 @@ pub async fn create_intervention(
     if input.parent_id.is_some() {
         actor.require_permission(Permission::InterventionsEdit)?;
     }
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let title = validate_title(&input.title)?;
     let description = clean_opt_string(input.description, 4096, "La description")?;
     let int_type = InterventionType::parse(&input.r#type)?;
@@ -2254,48 +2256,6 @@ pub(crate) async fn resolve_or_generate_code(
             return Ok(candidate);
         }
         next_seq += 1;
-    }
-}
-
-fn resolve_site_id_for_create(
-    actor: &Actor,
-    requested_site_id: Option<&str>,
-) -> Result<String, MaintError> {
-    if actor.is_admin() {
-        let sid = requested_site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| MaintError::BadRequest("Le site est obligatoire".into()))?;
-        Ok(sid.to_string())
-    } else {
-        if let Some(sid) = requested_site_id {
-            if sid != actor.site_id.as_deref().unwrap_or_default() {
-                return Err(MaintError::Forbidden(
-                    "Accès refusé : vous ne pouvez pas créer de ressource sur un autre site".into(),
-                ));
-            }
-        }
-        actor
-            .site_id
-            .clone()
-            .ok_or_else(|| MaintError::Forbidden("Aucun site rattaché".into()))
-    }
-}
-
-fn resolve_site_id_for_query<'a>(
-    actor: &'a Actor,
-    requested_site_id: Option<&'a str>,
-) -> Result<Option<&'a str>, MaintError> {
-    if actor.is_admin() {
-        Ok(requested_site_id.filter(|s| !s.is_empty()))
-    } else {
-        let actor_site = actor.site_id.as_deref().unwrap_or_default();
-        if let Some(req_sid) = requested_site_id {
-            if req_sid != actor_site {
-                return Err(MaintError::NotFound("Site".into()));
-            }
-        }
-        Ok(Some(actor_site))
     }
 }
 
