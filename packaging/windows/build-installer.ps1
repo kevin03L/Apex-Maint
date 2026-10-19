@@ -56,8 +56,9 @@ $hasSignConfig = [bool]($env:APEX_SIGN_PFX -or $env:APEX_SIGN_THUMBPRINT -or $en
 
 $activerSignature = $false
 if ($SansSignature) {
+    # Choix explicite (CI, essais) : simple information, l'avertissement reste pour le cas implicite
     $activerSignature = $false
-    Write-Warning "Installateur NON signé : bloqué par Smart App Control."
+    Write-Host "Installateur non signé (-SansSignature) : bloqué par Smart App Control."
 } elseif ($Signer) {
     if (-not $hasSignConfig) {
         throw "Signature exigée (-Signer) mais aucune configuration de signature n'est présente (définissez APEX_SIGN_PFX, APEX_SIGN_THUMBPRINT ou APEX_SIGN_ARTIFACT_METADATA)."
