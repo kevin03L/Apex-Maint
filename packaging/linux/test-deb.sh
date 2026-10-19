@@ -5,11 +5,14 @@ cd "$(dirname "$0")/../.."
 docker build -t apex-maint-recette -f packaging/linux/recette.Dockerfile packaging/linux
 container=$(docker run -d --privileged --tmpfs /run --tmpfs /tmp -v "$(pwd)/dist:/paquets:ro" apex-maint-recette)
 trap 'docker rm -f "$container" >/dev/null' EXIT HUP INT TERM
-# Fin du démarrage de systemd : le nettoyage de /tmp ne doit pas croiser la vérification GPG d'apt
-# (« degraded » est accepté, le conteneur n'a pas tous les services d'une machine).
-docker exec "$container" systemctl is-system-running --wait || true
+# Fin du démarrage de systemd avant d'installer (« degraded » est accepté : le conteneur n'a pas
+# tous les services d'une machine).
+for attempt in $(seq 1 60); do
+  state=$(docker exec "$container" systemctl is-system-running 2>/dev/null || true)
+  case "$state" in running | degraded) break ;; esac
+  sleep 1
+done
 docker exec "$container" sh -ec '
-  apt-get update
   apt-get install -y /paquets/*.deb
   apex-maint config init --port 18110
   systemctl start apex-maint
