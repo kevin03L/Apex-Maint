@@ -119,6 +119,12 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
     ) {
         let headers = req.headers();
         let fetch = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok());
+        // HTTP/2 ne transmet pas d'en-tête Host : l'hôte arrive dans la pseudo-en-tête
+        // :authority, que hyper place dans l'URI de la requête.
+        let host = headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .or_else(|| req.uri().authority().map(|a| a.as_str()));
         let origin_ok = match headers.get(header::ORIGIN) {
             None => true,
             Some(value) => value
@@ -128,10 +134,7 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
                 .is_some_and(|uri| {
                     matches!(uri.scheme_str(), Some("http" | "https"))
                         && uri.authority().is_some_and(|a| {
-                            headers
-                                .get(header::HOST)
-                                .and_then(|h| h.to_str().ok())
-                                .is_some_and(|h| h.eq_ignore_ascii_case(a.as_str()))
+                            host.is_some_and(|h| h.eq_ignore_ascii_case(a.as_str()))
                         })
                         && uri.path() == "/"
                         && uri.query().is_none()
