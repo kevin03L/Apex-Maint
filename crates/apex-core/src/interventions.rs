@@ -735,7 +735,7 @@ pub async fn get_intervention(
 
     // Sous-interventions directes
     let sub_rows: Vec<RawInterventionRow> = sqlx::query_as(
-        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL         ORDER BY i.created_at DESC, i.id DESC"),
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL ORDER BY i.created_at DESC, i.id DESC"),
     )
     .bind(id)
     .fetch_all(pool)
@@ -787,9 +787,10 @@ pub async fn list_sub_interventions(
     let mut conn = pool.acquire().await?;
     // Vérification de l'existence et du périmètre du parent (404 si autre site)
     let _parent = scoped_intervention_raw(&mut conn, actor, parent_id).await?;
+    drop(conn);
 
     let sub_rows: Vec<RawInterventionRow> = sqlx::query_as(
-        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL         ORDER BY i.created_at DESC, i.id DESC"),
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL ORDER BY i.created_at DESC, i.id DESC"),
     )
     .bind(parent_id)
     .fetch_all(pool)

@@ -122,7 +122,7 @@ pub async fn list_production_lines(
             pl.description, 
             pl.created_at, 
             pl.updated_at,
-            (SELECT count(*) FROM equipments e WHERE e.production_line_id = pl.id AND e.deleted_at IS NULL) AS equipment_count
+            (SELECT count(*) FROM equipments e WHERE e.site_id = pl.site_id AND e.production_line_id = pl.id AND e.deleted_at IS NULL) AS equipment_count
         FROM production_lines pl
         WHERE pl.deleted_at IS NULL
         "#,
@@ -199,7 +199,7 @@ async fn scoped_production_line(
             pl.description, 
             pl.created_at, 
             pl.updated_at,
-            (SELECT count(*) FROM equipments e WHERE e.production_line_id = pl.id AND e.deleted_at IS NULL) AS equipment_count
+            (SELECT count(*) FROM equipments e WHERE e.site_id = pl.site_id AND e.production_line_id = pl.id AND e.deleted_at IS NULL) AS equipment_count
         FROM production_lines pl
         WHERE pl.id = ? AND pl.deleted_at IS NULL AND (? OR pl.site_id = ?)
         "#,
@@ -623,7 +623,7 @@ pub async fn list_equipments(
             pe.id AS pe_id,
             pe.code AS pe_code,
             pe.name AS pe_name,
-            (SELECT count(*) FROM equipments c WHERE c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count,
+            (SELECT count(*) FROM equipments c WHERE c.site_id = e.site_id AND c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count,
             (SELECT count(*) FROM documents d WHERE d.site_id=e.site_id AND d.entity_type='equipment' AND d.entity_id=e.id AND d.deleted_at IS NULL) AS documents_count
         FROM equipments e
         LEFT JOIN production_lines pl ON pl.id = e.production_line_id AND pl.deleted_at IS NULL
@@ -738,7 +738,7 @@ async fn scoped_equipment(
             pe.id AS pe_id,
             pe.code AS pe_code,
             pe.name AS pe_name,
-            (SELECT count(*) FROM equipments c WHERE c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count,
+            (SELECT count(*) FROM equipments c WHERE c.site_id = e.site_id AND c.parent_id = e.id AND c.deleted_at IS NULL) AS children_count,
             (SELECT count(*) FROM documents d WHERE d.site_id=e.site_id AND d.entity_type='equipment' AND d.entity_id=e.id AND d.deleted_at IS NULL) AS documents_count
         FROM equipments e
         LEFT JOIN production_lines pl ON pl.id = e.production_line_id AND pl.deleted_at IS NULL

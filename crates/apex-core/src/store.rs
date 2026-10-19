@@ -455,6 +455,53 @@ pub async fn update_user(
     Ok(after)
 }
 
+/// Modification par un utilisateur de sa propre adresse de récupération, sans droit de
+/// gestion des comptes.
+pub async fn update_own_email(
+    pool: &SqlitePool,
+    actor: &Actor,
+    email: Option<String>,
+) -> Result<User, MaintError> {
+    let email = email
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty());
+    if let Some(value) = &email {
+        crate::pilotage::settings::email(value)?;
+    }
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let before = scoped_user(&mut tx, actor, &actor.user_id).await?;
+    let updated_at = now();
+    sqlx::query("UPDATE users SET email=?,updated_at=? WHERE id=? AND deleted_at IS NULL")
+        .bind(&email)
+        .bind(&updated_at)
+        .bind(&actor.user_id)
+        .execute(&mut *tx)
+        .await?;
+    if email != before.email {
+        // Adresse de récupération changée : un lien envoyé à l'ancienne adresse ne vaut plus.
+        revoke_reset_tokens(&mut tx, actor, &actor.user_id).await?;
+    }
+    let mut after = before.clone();
+    after.email = email;
+    after.updated_at = updated_at;
+    audit(
+        &mut tx,
+        actor,
+        Audit {
+            action: "update",
+            entity: "user",
+            entity_id: Some(&actor.user_id),
+            site_id: before.site_id.as_deref(),
+            before: Some(json!(before)),
+            after: Some(json!(after)),
+            ip: None,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(after)
+}
+
 pub async fn reset_password(
     pool: &SqlitePool,
     actor: &Actor,

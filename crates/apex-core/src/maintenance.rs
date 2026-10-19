@@ -396,6 +396,8 @@ pub struct CounterReading {
     pub source: String,
     pub is_reset: bool,
     pub recorded_by_id: Option<String>,
+    /// Nom de l'auteur du relevé, renseigné par la liste des relevés.
+    pub recorded_by_name: Option<String>,
     pub note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -411,6 +413,7 @@ struct RawCounterReadingRow {
     source: String,
     is_reset: i64,
     recorded_by_id: Option<String>,
+    recorded_by_name: Option<String>,
     note: Option<String>,
     created_at: String,
     updated_at: String,
@@ -427,6 +430,7 @@ impl From<RawCounterReadingRow> for CounterReading {
             source: r.source,
             is_reset: r.is_reset == 1,
             recorded_by_id: r.recorded_by_id,
+            recorded_by_name: r.recorded_by_name,
             note: r.note,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -477,6 +481,7 @@ pub struct MaintenancePlan {
     pub active: bool,
     pub estimated_minutes: Option<i64>,
     pub default_technician_id: Option<String>,
+    pub default_technician_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub equipment: NamedRef,
@@ -1039,28 +1044,30 @@ pub async fn list_counter_readings(
 
     let mut qb = QueryBuilder::new(
         r#"
-        SELECT id, site_id, counter_id, value, read_at, source, is_reset, recorded_by_id, note, created_at, updated_at
-        FROM counter_readings
-        WHERE counter_id = 
+        SELECT r.id, r.site_id, r.counter_id, r.value, r.read_at, r.source, r.is_reset,
+            r.recorded_by_id, u.display_name AS recorded_by_name, r.note, r.created_at, r.updated_at
+        FROM counter_readings r
+        LEFT JOIN users u ON u.id = r.recorded_by_id
+        WHERE r.counter_id = 
         "#,
     );
-    qb.push_bind(counter_id).push(" AND deleted_at IS NULL");
+    qb.push_bind(counter_id).push(" AND r.deleted_at IS NULL");
 
     if let Some(c) = cursor {
         if let Some(ts) = c.timestamp {
-            qb.push(" AND (read_at < ")
+            qb.push(" AND (r.read_at < ")
                 .push_bind(ts.clone())
-                .push(" OR (read_at = ")
+                .push(" OR (r.read_at = ")
                 .push_bind(ts)
-                .push(" AND id < ")
+                .push(" AND r.id < ")
                 .push_bind(c.id)
                 .push("))");
         } else {
-            qb.push(" AND id < ").push_bind(c.id);
+            qb.push(" AND r.id < ").push_bind(c.id);
         }
     }
 
-    qb.push(" ORDER BY read_at DESC, id DESC LIMIT ")
+    qb.push(" ORDER BY r.read_at DESC, r.id DESC LIMIT ")
         .push_bind((limit + 1) as i64);
 
     let mut rows: Vec<RawCounterReadingRow> = qb.build_query_as().fetch_all(pool).await?;
@@ -1222,6 +1229,7 @@ pub async fn record_counter_reading(
         source: "manual".into(),
         is_reset,
         recorded_by_id,
+        recorded_by_name: None,
         note,
         created_at: now,
         updated_at: store::now(),
@@ -1279,6 +1287,7 @@ pub struct RawPlanRow {
     pub active: i64,
     pub estimated_minutes: Option<i64>,
     pub default_technician_id: Option<String>,
+    pub default_technician_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub equipment_code: String,
@@ -1381,6 +1390,7 @@ fn raw_plan_to_plan(r: RawPlanRow, today: NaiveDate) -> MaintenancePlan {
         active: r.active == 1,
         estimated_minutes: r.estimated_minutes,
         default_technician_id: r.default_technician_id,
+        default_technician_name: r.default_technician_name,
         created_at: r.created_at,
         updated_at: r.updated_at,
         equipment: NamedRef {
@@ -1399,7 +1409,7 @@ const PLAN_SELECT_FIELDS: &str = r#"
     p.priority, p.frequency, p.interval_days, p.counter_id, p.counter_interval,
     p.anchor_date, p.next_due_date, p.anchor_counter, p.next_due_counter,
     p.lead_days, p.lead_counter, p.auto_generate, p.active, p.estimated_minutes,
-    p.default_technician_id, p.created_at, p.updated_at,
+    p.default_technician_id, dt.display_name AS default_technician_name, p.created_at, p.updated_at,
     (SELECT count(*) FROM documents d WHERE d.site_id=p.site_id AND d.entity_type='maintenance_plan' AND d.entity_id=p.id AND d.deleted_at IS NULL) AS documents_count,
     eq.code AS equipment_code, eq.name AS equipment_name,
     c.name AS counter_name, c.unit AS counter_unit, c.current_value AS counter_current_value, c.active AS counter_active,
@@ -1412,6 +1422,7 @@ const PLAN_FROM_JOINS: &str = r#"
     LEFT JOIN equipment_counters c ON c.id = p.counter_id
     LEFT JOIN maintenance_occurrences occ ON occ.plan_id = p.id AND occ.status = 'generated' AND occ.deleted_at IS NULL
     LEFT JOIN interventions intv ON intv.id = occ.intervention_id
+    LEFT JOIN users dt ON dt.id = p.default_technician_id
 "#;
 
 /// Liste paginée et filtrable des plannings de maintenance.

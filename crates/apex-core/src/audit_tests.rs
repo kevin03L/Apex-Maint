@@ -99,6 +99,44 @@ async fn annulation_refuse_emplacement_supprime_et_piece_autre_site() {
             .await
             .unwrap();
     assert!(deleted.is_none());
+
+    // Emplacement rétabli, mais pièce supprimée entre-temps : refus explicite également.
+    sqlx::query("UPDATE locations SET deleted_at=NULL WHERE id='loc'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE parts SET deleted_at='2026-10-19' WHERE id='part'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let error =
+        stock::delete_intervention_part(&pool, &actor, &intervention.id, &consumed.id, None)
+            .await
+            .unwrap_err();
+    assert!(matches!(error, MaintError::Conflict(ref message) if message.contains("pièce")));
+}
+
+#[tokio::test]
+async fn adresse_personnelle_modifiable_sans_gestion_des_comptes() {
+    let (pool, _) = fixture().await;
+    sqlx::query("INSERT INTO users(id,site_id,username,display_name,role,password_hash,created_at,updated_at) VALUES('tech','a','tech','Technicien','technicien','x','2026','2026')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let tech = Actor::new("tech", Some("a".into()), Role::Technicien, []);
+    let user = crate::store::update_own_email(&pool, &tech, Some(" tech@exemple.fr ".into()))
+        .await
+        .unwrap();
+    assert_eq!(user.email.as_deref(), Some("tech@exemple.fr"));
+    assert!(
+        crate::store::update_own_email(&pool, &tech, Some("pas une adresse".into()))
+            .await
+            .is_err()
+    );
+    let cleared = crate::store::update_own_email(&pool, &tech, Some(String::new()))
+        .await
+        .unwrap();
+    assert!(cleared.email.is_none());
 }
 
 #[tokio::test]

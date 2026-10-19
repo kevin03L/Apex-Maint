@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .route("/auth/password", post(change_password))
+        .route("/auth/email", put(change_email))
         .route("/sites", get(sites).post(create_site))
         .route(
             "/sites/:id",
@@ -215,6 +216,21 @@ async fn change_password(
         .change_password(&session, input.current_password, input.new_password)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmailChange {
+    email: Option<String>,
+}
+async fn change_email(
+    State(state): State<AppState>,
+    Extension(session): Extension<Session>,
+    input: Body<EmailChange>,
+) -> Result<Json<Value>> {
+    let input = body(input)?;
+    Ok(Json(json!(
+        store::update_own_email(&state.pool, &session.actor, input.email).await?
+    )))
 }
 async fn sites(
     State(state): State<AppState>,

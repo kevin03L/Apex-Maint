@@ -45,6 +45,35 @@ test('M2. La progression locale conserve la prise en charge, le temps et la clô
   assert.equal((await offline.getAllOperations(db)).length, 5);
 });
 
+test('U22. Les intervenants de l’instantané sont rattachés et le temps est remplacé', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  await offline.saveSnapshot({
+    full: true,
+    interventions: [{ id: 'I1', site_id: 'site', duration_minutes: 20, updated_at: '2026-10-18T10:00:00.000Z' }],
+    technicians: [{ intervention_id: 'I1', user_id: 'tech', is_lead: true, duration_minutes: 20 }],
+    users: [{ id: 'tech', display_name: 'Technicien' }]
+  }, 'tech', 'site', db);
+  const local = await offline.getLocalIntervention('I1', db);
+  assert.equal(local.technicians[0].display_name, 'Technicien');
+  await offline.localRecordTime('I1', 45, 'tech', 'site', db);
+  const saved = await offline.getSnapshotItem('interventions', 'I1', db);
+  assert.equal(saved.duration_minutes, 45);
+});
+
+test('U23. La création hors ligne garde le site choisi et le parent', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  const item = await offline.localCreateIntervention(
+    { title: 'Sous-tâche', site_id: 'site-b', parent_id: 'temp_parent' }, 'admin', null, db
+  );
+  const [operation] = await offline.getAllOperations(db);
+  assert.equal(item.site_id, 'site-b');
+  assert.equal(operation.body.site_id, 'site-b');
+  assert.equal(operation.url, '/api/interventions/temp_parent/sub-interventions');
+  assert.equal(operation.depends_on, 'temp_parent');
+});
+
 /** Mock IndexedDB en mémoire pour node:test */
 function createMockIndexedDB() {
   const stores = new Map();

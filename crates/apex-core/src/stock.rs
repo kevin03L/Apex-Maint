@@ -152,6 +152,8 @@ pub struct StockItem {
     pub part_name: String,
     pub location_code: String,
     pub location_name: String,
+    /// Seuil d'alerte de la pièce, ou seuil global à défaut.
+    pub effective_threshold: i64,
 }
 
 /// Filtres pour l'état des stocks par emplacement.
@@ -426,6 +428,8 @@ pub async fn get_part(
     actor.require_permission(Permission::PartsView)?;
     let mut conn = pool.acquire().await?;
     let part = scoped_part(&mut conn, actor, id).await?;
+    // Libère la connexion avant les lectures suivantes sur le pool.
+    drop(conn);
     let global_threshold: i64 = get_global_stock_alert_threshold(pool).await?;
     build_part_detail(pool, actor, part, global_threshold, true).await
 }
@@ -844,7 +848,7 @@ pub async fn list_stock(
         r#"
         SELECT 
             s.id, s.site_id, s.part_id, s.location_id, s.quantity, s.updated_at,
-            p.reference AS part_reference, p.name AS part_name,
+            p.reference AS part_reference, p.name AS part_name, p.alert_threshold,
             l.code AS location_code, l.name AS location_name,
             (SELECT COALESCE(SUM(sr.quantity), 0) 
              FROM stock_reservations sr 
@@ -881,9 +885,11 @@ pub async fn list_stock(
         location_code: String,
         location_name: String,
         reserved_quantity: i64,
+        alert_threshold: Option<i64>,
     }
 
     let rows: Vec<RawStockRow> = qb.build_query_as().fetch_all(pool).await?;
+    let global_threshold = get_global_stock_alert_threshold(pool).await?;
 
     Ok(rows
         .into_iter()
@@ -900,6 +906,7 @@ pub async fn list_stock(
             part_name: r.part_name,
             location_code: r.location_code,
             location_name: r.location_name,
+            effective_threshold: r.alert_threshold.unwrap_or(global_threshold),
         })
         .collect())
 }
@@ -1730,6 +1737,18 @@ pub async fn delete_intervention_part(
             "Impossible d'annuler la consommation : l'emplacement d'origine a été supprimé".into(),
         ));
     }
+    let part_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM parts WHERE id = ? AND site_id = ? AND deleted_at IS NULL)",
+    )
+    .bind(&item.part_id)
+    .bind(&int.site_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !part_active {
+        return Err(MaintError::Conflict(
+            "Impossible d'annuler la consommation : la pièce a été supprimée".into(),
+        ));
+    }
 
     let now = store::now();
 
@@ -1842,7 +1861,7 @@ pub async fn list_intervention_reservations(
         "#,
     )
     .bind(intervention_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows)
@@ -1968,10 +1987,8 @@ pub async fn consume_stock_reservation(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     #[derive(FromRow)]
-    #[allow(dead_code)]
     struct RawReservation {
         id: String,
-        site_id: String,
         intervention_id: String,
         part_id: String,
         location_id: String,
@@ -1983,7 +2000,7 @@ pub async fn consume_stock_reservation(
 
     let res: Option<RawReservation> = sqlx::query_as(
         r#"
-        SELECT id, site_id, intervention_id, part_id, location_id, quantity, status, prepared_by_id, prepared_at
+        SELECT id, intervention_id, part_id, location_id, quantity, status, prepared_by_id, prepared_at
         FROM stock_reservations
         WHERE id = ? AND (? OR site_id = ?)
         "#,

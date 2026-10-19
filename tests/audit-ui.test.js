@@ -41,7 +41,7 @@ test('M2. Les actions hors ligne utilisent les fonctions locales et refusent le 
     ensureOfflineCacheOwner: async () => {}, hasPermission: () => true,
     api: async () => { throw Error('Appel réseau inattendu'); },
     ApexOffline: {
-      getSnapshotItem: async () => ({ site_id: 'site' }),
+      getLocalIntervention: async () => ({ site_id: 'site' }),
       localTakeIntervention: async (...args) => calls.push(['take', ...args]),
       localRecordTime: async (...args) => calls.push(['time', ...args]),
       localCompleteIntervention: async (...args) => calls.push(['complete', ...args])

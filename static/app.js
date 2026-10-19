@@ -299,18 +299,6 @@ function partStockBadge(part) {
   return `<span class="badge badge-stock-ok"><span>En stock (${esc(part.total_stock)})</span></span>`;
 }
 
-/** Groupe de pastilles détaillant En stock / Réservé / Disponible. */
-function stockLevelsPill(part) {
-  const availCls = part.available_stock === 0 ? 'avail-zero' : (part.is_low_stock ? 'avail-low' : '');
-  return `
-    <div class="stock-pill-group" title="Physique : ${esc(part.total_stock)} — Réservé : ${esc(part.reserved_stock)} — Disponible : ${esc(part.available_stock)}">
-      <span class="stock-pill">Stock: <b>${esc(part.total_stock)}</b></span>
-      ${part.reserved_stock > 0 ? `<span class="stock-pill" title="Pièces réservées préparées pour interventions">Réservé: <b>${esc(part.reserved_stock)}</b></span>` : ''}
-      <span class="stock-pill pill-avail ${availCls}">Dispo: <b>${esc(part.available_stock)}</b></span>
-    </div>
-  `;
-}
-
 /** Libellé convivial pour un statut d'intervention. */
 function formatInterventionStatus(status) {
   switch (status) {
@@ -625,24 +613,27 @@ async function handleRunExport(args) {
     return;
   }
 
+  // Site sélectionné dans l'en-tête, comme pour l'affichage des listes (le journal a le sien).
+  if (list !== 'audit' && state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+
   if (list === 'interventions') {
-    if (state.interventionsSearchQuery) params.set('q', state.interventionsSearchQuery);
-    if (state.interventionsStatusFilter) params.set('status', state.interventionsStatusFilter);
-    if (state.interventionsPriorityFilter) params.set('priority', state.interventionsPriorityFilter);
-    if (state.interventionsTypeFilter) params.set('type', state.interventionsTypeFilter);
-    if (state.interventionsEquipmentFilter) params.set('equipment_id', state.interventionsEquipmentFilter);
+    setInterventionFilterParams(params);
   } else if (list === 'equipments') {
     if (state.equipmentsSearchQuery) params.set('q', state.equipmentsSearchQuery);
     if (state.equipmentsStatusFilter) params.set('status', state.equipmentsStatusFilter);
-    if (state.equipmentsLineFilter) params.set('line_id', state.equipmentsLineFilter);
+    if (state.equipmentsLineFilter) params.set('production_line_id', state.equipmentsLineFilter);
   } else if (list === 'parts') {
     if (state.partsSearchQuery) params.set('q', state.partsSearchQuery);
+    if (state.partsCategoryFilter) params.set('category', state.partsCategoryFilter);
+    if (state.partsSupplierFilter) params.set('supplier_id', state.partsSupplierFilter);
+    if (state.partsLowStockFilter) params.set('low_stock', 'true');
   } else if (list === 'stock') {
     if (state.stockLevelsLocationFilter) params.set('location_id', state.stockLevelsLocationFilter);
   } else if (list === 'movements') {
-    if (state.stockMovementsTypeFilter) params.set('type', state.stockMovementsTypeFilter);
+    if (state.stockMovementsTypeFilter) params.set('movement_type', state.stockMovementsTypeFilter);
   } else if (list === 'maintenance_plans') {
     if (state.maintenancePlansSearchQuery) params.set('q', state.maintenancePlansSearchQuery);
+    if (state.maintenancePlansFrequencyFilter) params.set('frequency', state.maintenancePlansFrequencyFilter);
     if (state.maintenancePlansEquipmentFilter) params.set('equipment_id', state.maintenancePlansEquipmentFilter);
     if (state.maintenancePlansDueFilter && state.maintenancePlansDueFilter !== 'all') params.set('due', state.maintenancePlansDueFilter);
   } else if (list === 'audit') {
@@ -655,6 +646,25 @@ async function handleRunExport(args) {
   }
 
   await downloadFile(`/api/exports/${encodeURIComponent(list)}?${params.toString()}`);
+}
+
+/**
+ * Charge toutes les pages d'une liste pour alimenter un sélecteur de formulaire : une liste
+ * tronquée ferait disparaître le rattachement actuel et l'effacerait à l'enregistrement.
+ * Renvoie { items } comme une page simple.
+ */
+async function apiAllItems(path, siteId = null) {
+  const items = [];
+  let cursor = null;
+  do {
+    const query = new URLSearchParams({ limit: '200' });
+    if (siteId) query.set('site_id', siteId);
+    if (cursor) query.set('cursor', cursor);
+    const res = await api(`${path}?${query.toString()}`);
+    items.push(...(Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : [])));
+    cursor = res && !Array.isArray(res) ? res.next_cursor : null;
+  } while (cursor && items.length < 5000);
+  return { items };
 }
 
 /**
@@ -892,13 +902,20 @@ function adaptDocument(o) {
 }
 
 /** Formate une taille en octets en chaîne lisible en français (ex: "1,2 Mo"). */
+/** Entier saisi, ou valeur par défaut si le champ est vide ou invalide (zéro est conservé). */
+function parseIntOr(value, fallback) {
+  const n = parseInt(value, 10);
+  return Number.isNaN(n) ? fallback : n;
+}
+
+/** Taille en octets lisible (o, Ko, Mo, Go, To), décimale à la française. */
 function formatBytes(bytes) {
   if (bytes === null || bytes === undefined || isNaN(bytes)) return '—';
   const num = Number(bytes);
   if (num === 0) return '0 o';
   const k = 1024;
-  const sizes = ['o', 'Ko', 'Mo', 'Go'];
-  const i = Math.floor(Math.log(num) / Math.log(k));
+  const sizes = ['o', 'Ko', 'Mo', 'Go', 'To'];
+  const i = Math.min(Math.floor(Math.log(num) / Math.log(k)), sizes.length - 1);
   const val = (num / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1).replace('.', ',');
   return `${val} ${sizes[i]}`;
 }
@@ -947,7 +964,7 @@ function isDocInline(doc) {
 async function fetchInterventionFull(id) {
   if (navigator.onLine === false) {
     await ensureOfflineCacheOwner();
-    const item = await ApexOffline.getSnapshotItem('interventions', id);
+    const item = await ApexOffline.getLocalIntervention(id);
     if (!item) throw new Error('Intervention absente de l’instantané local.');
     return item;
   }
@@ -1027,6 +1044,7 @@ function openModal(title, bodyHtml, footerHtml = '') {
  * Ferme la modale générique de l'application.
  */
 function closeModal() {
+  stopQrScanner();
   const overlay = document.getElementById('modalOverlay');
   if (overlay) overlay.hidden = true;
   if (currentConfirmResolve) {
@@ -1796,6 +1814,15 @@ async function handleLoginSubmit(form) {
 /**
  * Soumission du changement de mot de passe imposé.
  */
+/** Contrôles locaux d'un nouveau mot de passe ; renvoie le message d'erreur, ou null. */
+function newPasswordError(current, next, confirm) {
+  if (next.length < 8) return 'Le nouveau mot de passe doit comporter au moins 8 caractères.';
+  if (next === current) return 'Le nouveau mot de passe doit être différent de votre mot de passe actuel.';
+  if (next === 'admin123') return 'Le mot de passe d\'usine « admin123 » ne peut pas être réutilisé.';
+  if (next !== confirm) return 'La confirmation ne correspond pas au nouveau mot de passe.';
+  return null;
+}
+
 async function handleForcePasswordSubmit(form) {
   const btn = document.getElementById('forcePwdBtn');
   const errorBox = document.getElementById('authErrorBox');
@@ -1805,24 +1832,10 @@ async function handleForcePasswordSubmit(form) {
   const new_password = form.new_password.value;
   const confirm_password = form.confirm_password.value;
 
-  if (new_password.length < 8) {
+  const invalid = newPasswordError(current_password, new_password, confirm_password);
+  if (invalid) {
     errorBox.hidden = false;
-    errorText.textContent = 'Le nouveau mot de passe doit comporter au moins 8 caractères.';
-    return;
-  }
-  if (new_password === current_password) {
-    errorBox.hidden = false;
-    errorText.textContent = 'Le nouveau mot de passe doit être différent de votre mot de passe actuel.';
-    return;
-  }
-  if (new_password === 'admin123') {
-    errorBox.hidden = false;
-    errorText.textContent = 'Le mot de passe d\'usine « admin123 » ne peut pas être réutilisé.';
-    return;
-  }
-  if (new_password !== confirm_password) {
-    errorBox.hidden = false;
-    errorText.textContent = 'La confirmation ne correspond pas au nouveau mot de passe.';
+    errorText.textContent = invalid;
     return;
   }
 
@@ -2031,6 +2044,8 @@ function currentRouteInfo() {
   const queryStr = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
   if (path === 'profil') return { route: 'profil', id: null, query: queryStr };
   if (path === 'etiquettes') return { route: 'etiquettes', id: null, query: queryStr };
+  if (path === 'synchronisation') return { route: 'synchronisation', id: null, query: queryStr };
+  if (path === 'reinitialiser') return { route: 'reinitialiser', id: null, query: queryStr };
   const parts = path.split('/');
   let root = parts[0];
   if (root === 'pieces') root = 'stock';
@@ -2065,6 +2080,12 @@ async function render() {
 
   const view = document.getElementById('view');
   if (MOBILE_QUERY.matches) setMobileNav(false);
+
+  // Lien de réinitialisation ouvert avec une session active : le profil permet le changement.
+  if (route === 'reinitialiser') {
+    location.hash = '#/profil';
+    return;
+  }
 
   // Route spéciale : Mon profil
   if (route === 'profil') {
@@ -2879,7 +2900,7 @@ function renderWidgetContent(w, data) {
     case 'machines_down': {
       const items = Array.isArray(data.items) ? data.items : [];
       if (!items.length) {
-        return '<p class="hint text-ok">Aucun équipement à l\'arrêt actuellement.</p>';
+        return '<p class="hint text-ok">Aucun équipement à l\'arrêt ou dégradé actuellement.</p>';
       }
       return `
         <div class="table-container">
@@ -2890,7 +2911,9 @@ function renderWidgetContent(w, data) {
                 <tr>
                   <td><a href="#/equipements" class="mono font-bold link">${esc(it.code)}</a></td>
                   <td>${esc(it.name)}</td>
-                  <td><span class="badge badge-state-ko">À l'arrêt</span></td>
+                  <td>${it.status === 'degraded'
+                    ? '<span class="badge badge-state-warn">Dégradé</span>'
+                    : '<span class="badge badge-state-ko">Hors service</span>'}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2902,7 +2925,7 @@ function renderWidgetContent(w, data) {
     case 'maintenance_overdue': {
       const items = Array.isArray(data.items) ? data.items : [];
       if (!items.length) {
-        return '<p class="hint text-ok">Aucune maintenance préventive en retard.</p>';
+        return '<p class="hint text-ok">Aucune maintenance préventive en retard ou proche.</p>';
       }
       return `
         <div class="table-container">
@@ -2913,7 +2936,7 @@ function renderWidgetContent(w, data) {
                 <tr>
                   <td><a href="#/maintenance-preventive/${esc(it.id)}" class="mono font-bold link">${esc(it.code)}</a></td>
                   <td>${esc(it.title)}</td>
-                  <td class="mono text-danger">${it.next_due_date ? esc(formatDate(it.next_due_date)) : '—'}</td>
+                  <td class="mono ${it.overdue ? 'text-danger' : ''}">${it.next_due_date ? esc(formatDate(it.next_due_date)) : '—'}${it.overdue ? ' (en retard)' : ''}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2990,6 +3013,8 @@ function cycleDashboardWidgetSize(widgetId) {
   const allowed = [4, 6, 8, 12];
   const curIdx = allowed.indexOf(w.w || 6);
   w.w = allowed[(curIdx + 1) % allowed.length];
+  // Le serveur impose x + w <= 12 : le widget est décalé vers la gauche si besoin.
+  w.x = Math.max(0, Math.min(w.x || 0, 12 - w.w));
 
   renderDashboardGrid();
 }
@@ -3596,24 +3621,50 @@ function formatAuditAction(action) {
   }
 }
 
+/** Libellés des entités telles qu'enregistrées par le serveur dans le journal d'audit. */
+const AUDIT_ENTITIES = {
+  user: 'Utilisateur',
+  site: 'Site',
+  session: 'Session',
+  production_line: 'Ligne de prod.',
+  equipment: 'Équipement',
+  equipment_counter: 'Compteur',
+  counter_reading: 'Relevé de compteur',
+  location: 'Emplacement',
+  supplier: 'Fournisseur',
+  part: 'Pièce',
+  equipment_part: 'Pièce préconisée',
+  stock: 'Stock',
+  stock_movement: 'Mvt stock',
+  stock_reservation: 'Réservation',
+  intervention: 'Intervention',
+  intervention_part: 'Pièce consommée',
+  maintenance_plan: 'Plan maint.',
+  maintenance_occurrence: 'Occurrence maint.',
+  document: 'Document',
+  document_version: 'Version de document',
+  settings: 'Paramètre',
+  app_setting: 'Paramètre',
+  dashboard_layout: 'Tableau de bord',
+  role_permissions: 'Permissions',
+  export: 'Export',
+};
+
 function formatAuditEntity(entity) {
-  switch (entity) {
-    case 'users': return 'Utilisateur';
-    case 'sites': return 'Site';
-    case 'production_lines': return 'Ligne de prod.';
-    case 'equipments': return 'Équipement';
-    case 'locations': return 'Emplacement';
-    case 'suppliers': return 'Fournisseur';
-    case 'parts': return 'Pièce';
-    case 'stock_movements': return 'Mvt stock';
-    case 'interventions': return 'Intervention';
-    case 'maintenance_plans': return 'Plan maint.';
-    case 'documents': return 'Document';
-    case 'settings': return 'Paramètre';
-    case 'dashboard': return 'Tableau de bord';
-    default: return entity || '—';
-  }
+  return AUDIT_ENTITIES[entity] || entity || '—';
 }
+
+/** Entités proposées dans le filtre du journal. */
+const AUDIT_ENTITY_FILTERS = [
+  ['user', 'Utilisateurs'],
+  ['equipment', 'Équipements'],
+  ['intervention', 'Interventions'],
+  ['part', 'Pièces détachées'],
+  ['stock_movement', 'Mouvements de stock'],
+  ['maintenance_plan', 'Maintenance préventive'],
+  ['document', 'Documents'],
+  ['settings', 'Paramètres'],
+];
 
 function auditPage() {
   if (!hasPermission('audit.view')) {
@@ -3656,13 +3707,7 @@ function auditPage() {
 
         <select data-action="filter-audit-entity" aria-label="Filtrer par entité">
           <option value="">Toutes les entités</option>
-          <option value="users" ${state.auditEntity === 'users' ? 'selected' : ''}>Utilisateurs</option>
-          <option value="equipments" ${state.auditEntity === 'equipments' ? 'selected' : ''}>Équipements</option>
-          <option value="interventions" ${state.auditEntity === 'interventions' ? 'selected' : ''}>Interventions</option>
-          <option value="parts" ${state.auditEntity === 'parts' ? 'selected' : ''}>Pièces détachées</option>
-          <option value="maintenance_plans" ${state.auditEntity === 'maintenance_plans' ? 'selected' : ''}>Maintenance préventive</option>
-          <option value="documents" ${state.auditEntity === 'documents' ? 'selected' : ''}>Documents</option>
-          <option value="settings" ${state.auditEntity === 'settings' ? 'selected' : ''}>Paramètres</option>
+          ${AUDIT_ENTITY_FILTERS.map(([v, l]) => `<option value="${esc(v)}" ${state.auditEntity === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
         </select>
 
         ${isAdm ? `
@@ -3722,6 +3767,8 @@ async function loadAuditList(reset = false) {
       state.auditItems = [...state.auditItems, ...items];
     }
 
+    // Fin du chargement avant le rendu, pour réactiver « Charger plus ».
+    state.auditLoading = false;
     renderAuditTable();
   } catch (err) {
     container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement de l'audit : ${esc(err.message)}</p>`;
@@ -4007,8 +4054,8 @@ async function handleProfileEmailSubmit(form) {
   if (errorBox) errorBox.hidden = true;
 
   try {
-    const res = await api(`/api/users/${encodeURIComponent(state.currentUser.id)}`, {
-      method: 'PATCH',
+    const res = await api('/api/auth/email', {
+      method: 'PUT',
       body: { email },
     });
     if (res) {
@@ -4062,20 +4109,9 @@ async function handleOwnPasswordSubmit(form, errorBoxId, errorTextId, submitBtnI
   const new_password = form.new_password.value;
   const confirm_password = form.confirm_password.value;
 
-  if (new_password.length < 8) {
-    if (errorBox) { errorBox.hidden = false; errorText.textContent = 'Le mot de passe doit comporter au moins 8 caractères.'; }
-    return;
-  }
-  if (new_password === current_password) {
-    if (errorBox) { errorBox.hidden = false; errorText.textContent = 'Le nouveau mot de passe doit être différent du mot de passe actuel.'; }
-    return;
-  }
-  if (new_password === 'admin123') {
-    if (errorBox) { errorBox.hidden = false; errorText.textContent = 'Le mot de passe d\'usine « admin123 » ne peut pas être réutilisé.'; }
-    return;
-  }
-  if (new_password !== confirm_password) {
-    if (errorBox) { errorBox.hidden = false; errorText.textContent = 'Les deux nouveaux mots de passe ne correspondent pas.'; }
+  const invalid = newPasswordError(current_password, new_password, confirm_password);
+  if (invalid) {
+    if (errorBox) { errorBox.hidden = false; errorText.textContent = invalid; }
     return;
   }
 
@@ -5321,6 +5357,25 @@ async function deleteProductionLine(lineId) {
 // 14C. PAGE ÉQUIPEMENTS (PHASE 2)
 // ============================================================================
 
+/** Commandes d'impression de la sélection d'équipements. */
+function equipmentsSelectionActionsHtml() {
+  const size = state.selectedEquipmentIds.size;
+  if (!size) return '';
+  return `
+    <button type="button" class="btn primary sm" data-action="open-print-selected-labels">
+      ${icon('i-print')} <span>Imprimer les étiquettes (${size})</span>
+    </button>
+    <button type="button" class="btn sm" data-action="clear-selected-equipments">Désélectionner</button>
+  `;
+}
+
+/** Actualise la liste et les commandes après un changement de sélection. */
+function refreshEquipmentsSelection() {
+  const box = document.getElementById('equipmentsSelectionActions');
+  if (box) box.innerHTML = equipmentsSelectionActionsHtml();
+  renderEquipmentsListView();
+}
+
 function equipmentsPage() {
   const canCreate = hasPermission('equipments.create');
   const isTree = state.equipmentsViewMode === 'tree';
@@ -5340,12 +5395,7 @@ function equipmentsPage() {
       <input type="checkbox" data-action="toggle-filter-supervision-stopped" ${state.filterSupervisionStopped ? 'checked' : ''} />
       <span>À l'arrêt selon Supervision</span>
     </label>
-    ${state.selectedEquipmentIds && state.selectedEquipmentIds.size > 0 ? `
-      <button type="button" class="btn primary sm" data-action="open-print-selected-labels">
-        ${icon('i-print')} <span>Imprimer les étiquettes (${state.selectedEquipmentIds.size})</span>
-      </button>
-      <button type="button" class="btn sm" data-action="clear-selected-equipments">Désélectionner</button>
-    ` : ''}
+    <span id="equipmentsSelectionActions">${equipmentsSelectionActionsHtml()}</span>
   `;
 
   const viewSwitcherHtml = `
@@ -5428,10 +5478,9 @@ async function loadEquipmentsList(reset = true) {
     if (reset) {
       state.equipments = items;
       try {
-        const supRes = await api('/api/integration/statuses?limit=200');
-        if (supRes && Array.isArray(supRes.items)) {
-          state.equipmentSupervisionStatuses = new Map(supRes.items.map(s => [s.equipment_id, s]));
-        }
+        // Tous les états, et pas seulement la première page : le filtre « à l'arrêt » s'y fie.
+        const supRes = await apiAllItems('/api/integration/statuses');
+        state.equipmentSupervisionStatuses = new Map(supRes.items.map(s => [s.equipment_id, s]));
       } catch (_) {}
     } else {
       state.equipments = state.equipments.concat(items);
@@ -5491,10 +5540,11 @@ function renderEquipmentsListView() {
       <div class="table-container">
         <table class="data-table">
           <tbody>
-            <tr><td class="empty-cell">${state.filterSupervisionStopped ? "Aucun équipement à l'arrêt selon Supervision." : "Aucun équipement correspondant aux critères."}</td></tr>
+            <tr><td class="empty-cell">${state.filterSupervisionStopped ? "Aucun équipement à l'arrêt selon Supervision parmi ceux chargés." : "Aucun équipement correspondant aux critères."}</td></tr>
           </tbody>
         </table>
       </div>
+      ${renderLoadMore(state.equipmentsNextCursor, 'load-more-equipments', state.equipmentsLoading)}
     `;
     return;
   }
@@ -6079,10 +6129,9 @@ async function openCreateEquipmentModal(preselected = {}) {
   let lines = [];
   let candidateParents = [];
   try {
-    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
     const [lRes, eRes] = await Promise.all([
-      api(`/api/production-lines${siteParam}`),
-      api(`/api/equipments${siteParam}`)
+      apiAllItems('/api/production-lines', currentSiteId),
+      apiAllItems('/api/equipments', currentSiteId)
     ]);
     lines = lRes && Array.isArray(lRes.items) ? lRes.items : [];
     candidateParents = eRes && Array.isArray(eRes.items) ? eRes.items : [];
@@ -6226,10 +6275,9 @@ async function openEditEquipmentModal(equipmentId) {
     if (!eq) throw new Error('Équipement introuvable.');
 
     const currentSiteId = eq.site_id;
-    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
     const [lRes, eRes] = await Promise.all([
-      api(`/api/production-lines${siteParam}`),
-      api(`/api/equipments${siteParam}`)
+      apiAllItems('/api/production-lines', currentSiteId),
+      apiAllItems('/api/equipments', currentSiteId)
     ]);
     const lines = lRes && Array.isArray(lRes.items) ? lRes.items : [];
     const candidateParents = (eRes && Array.isArray(eRes.items) ? eRes.items : []).filter(e => e.id !== eq.id);
@@ -7185,6 +7233,34 @@ async function initInterventionsPageView() {
   await loadInterventionsList(true);
 }
 
+/** Filtres affichés de la liste des interventions, partagés avec l'export. */
+function setInterventionFilterParams(params) {
+  if (state.interventionsSearchQuery) params.set('q', state.interventionsSearchQuery.trim());
+  if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
+  if (state.interventionsTypeFilter) params.set('type', state.interventionsTypeFilter);
+  if (state.interventionsEquipmentFilter) params.set('equipment_id', state.interventionsEquipmentFilter);
+
+  if (state.interventionsQuickTab === 'active') {
+    params.set('status', 'active');
+  } else if (state.interventionsStatusFilter) {
+    params.set('status', state.interventionsStatusFilter);
+  }
+
+  if (state.interventionsQuickTab === 'critical') {
+    params.set('priority', 'critical');
+  } else if (state.interventionsPriorityFilter) {
+    params.set('priority', state.interventionsPriorityFilter);
+  }
+
+  if (state.interventionsQuickTab === 'arret') {
+    params.set('machine_state', 'ARRET');
+  }
+
+  if (state.interventionsQuickTab === 'mine' && state.currentUser) {
+    params.set('assigned_to', state.currentUser.id);
+  }
+}
+
 async function loadInterventionsList(reset = true) {
   const container = document.getElementById('interventionsContainer');
   if (!container && reset) return;
@@ -7200,30 +7276,7 @@ async function loadInterventionsList(reset = true) {
   try {
     const params = new URLSearchParams();
     params.set('limit', '50');
-    if (state.interventionsSearchQuery) params.set('q', state.interventionsSearchQuery.trim());
-    if (state.selectedSiteId) params.set('site_id', state.selectedSiteId);
-    if (state.interventionsTypeFilter) params.set('type', state.interventionsTypeFilter);
-    if (state.interventionsEquipmentFilter) params.set('equipment_id', state.interventionsEquipmentFilter);
-
-    if (state.interventionsQuickTab === 'active') {
-      params.set('status', 'active');
-    } else if (state.interventionsStatusFilter) {
-      params.set('status', state.interventionsStatusFilter);
-    }
-
-    if (state.interventionsQuickTab === 'critical') {
-      params.set('priority', 'critical');
-    } else if (state.interventionsPriorityFilter) {
-      params.set('priority', state.interventionsPriorityFilter);
-    }
-
-    if (state.interventionsQuickTab === 'arret') {
-      params.set('machine_state', 'ARRET');
-    }
-
-    if (state.interventionsQuickTab === 'mine' && state.currentUser) {
-      params.set('assigned_to', state.currentUser.id);
-    }
+    setInterventionFilterParams(params);
 
     if (!reset && state.interventionsNextCursor) {
       params.set('cursor', state.interventionsNextCursor);
@@ -8034,7 +8087,7 @@ async function handleCreateInterventionSubmit(form) {
     try {
       const currentUserId = state.currentUser ? state.currentUser.id : null;
       const currentSiteId = (state.site && state.site.id) || (state.currentUser && state.currentUser.site_id) || null;
-      await ApexOffline.localCreateIntervention(payload, currentUserId, currentSiteId);
+      await ApexOffline.localCreateIntervention({ ...payload, parent_id: parentId }, currentUserId, currentSiteId);
       closeModal();
       notify('Intervention enregistrée localement (mode hors-ligne, référence provisoire).', 'info');
       location.hash = '#/terrain';
@@ -8169,7 +8222,7 @@ async function interventionProgress(path, options) {
   await ensureOfflineCacheOwner();
   const id = decodeURIComponent(match[1]);
   const userId = state.currentUser.id;
-  const item = await ApexOffline.getSnapshotItem('interventions', id);
+  const item = await ApexOffline.getLocalIntervention(id);
   if (!item) throw new Error('Intervention absente de l’instantané local.');
   if (!hasPermission('interventions.edit')) throw new Error('Modification non autorisée.');
   if (match[2] === 'take') return ApexOffline.localTakeIntervention(id, userId, item.site_id);
@@ -8188,7 +8241,7 @@ async function takeIntervention(id) {
     if (state.currentInterventionDetail && state.currentInterventionDetail.id === id) {
       await loadInterventionDetail(id);
     } else {
-      await loadInterventionsList(false);
+      await loadInterventionsList(true);
     }
   } catch (err) {
     notify(err.message || 'Prise en charge refusée.', 'error');
@@ -8680,7 +8733,10 @@ function renderPartDetailView(part) {
   const container = document.getElementById('partDetailContainer');
   if (!container) return;
 
-  const canMgParts = hasPermission('parts.manage');
+  const canEditPart = hasPermission('parts.edit');
+  const canDeletePart = hasPermission('parts.delete');
+  // Le serveur exige les deux droits pour associer ou dissocier une pièce et un équipement.
+  const canLinkPart = canEditPart && hasPermission('equipments.edit');
   const canMvStock = hasPermission('stock.movements');
   const canAdjStock = hasPermission('stock.adjust');
 
@@ -8704,11 +8760,15 @@ function renderPartDetailView(part) {
       </button>
     `);
   }
-  if (canMgParts) {
+  if (canEditPart) {
     quickActions.push(`
       <button type="button" class="btn" data-action="open-edit-part" data-args="${jsArg(part.id)}">
         ${icon('i-edit')} <span>Modifier</span>
       </button>
+    `);
+  }
+  if (canDeletePart) {
+    quickActions.push(`
       <button type="button" class="btn danger" data-action="delete-part" data-args="${jsArg(part.id)}">
         ${icon('i-trash')} <span>Supprimer</span>
       </button>
@@ -8761,7 +8821,7 @@ function renderPartDetailView(part) {
       <td>
         <div class="cell-actions">
           <button type="button" class="btn sm" data-action="open-detail-equipment" data-args="${jsArg(eq.equipment_id)}" title="Voir l'équipement">${icon('i-eye')}</button>
-          ${canMgParts ? `
+          ${canLinkPart ? `
             <button type="button" class="btn sm danger" data-action="delete-part-equipment" data-args="${jsArg({ partId: part.id, equipmentId: eq.equipment_id })}" title="Dissocier cet équipement">${icon('i-trash')}</button>
           ` : ''}
         </div>
@@ -8909,7 +8969,7 @@ function renderPartDetailView(part) {
     <section class="card">
       <div class="detail-nav-bar">
         <h2>${icon('i-gear')} Équipements compatibles préconisés (${esc(eqList.length)})</h2>
-        ${canMgParts ? `
+        ${canLinkPart ? `
           <button type="button" class="btn sm" data-action="open-add-part-equipment" data-args="${jsArg(part.id)}">
             ${icon('i-plus')} <span>Associer un équipement</span>
           </button>
@@ -9011,7 +9071,9 @@ function renderPartsListView() {
   const container = document.getElementById('stockTabContent');
   if (!container) return;
 
-  const canMgParts = hasPermission('parts.manage');
+  const canCreatePart = hasPermission('parts.create');
+  const canEditPart = hasPermission('parts.edit');
+  const canDeletePart = hasPermission('parts.delete');
   const items = state.parts;
 
   let rows = items.map(p => {
@@ -9041,8 +9103,10 @@ function renderPartsListView() {
         <td>
           <div class="cell-actions">
             <a href="#/pieces/${esc(p.id)}" class="btn sm" title="Consulter la fiche">${icon('i-eye')} <span>Voir</span></a>
-            ${canMgParts ? `
+            ${canEditPart ? `
               <button type="button" class="btn sm" data-action="open-edit-part" data-args="${jsArg(p.id)}" title="Modifier la référence">${icon('i-edit')}</button>
+            ` : ''}
+            ${canDeletePart ? `
               <button type="button" class="btn sm danger" data-action="delete-part" data-args="${jsArg(p.id)}" title="Supprimer la référence">${icon('i-trash')}</button>
             ` : ''}
           </div>
@@ -9079,7 +9143,7 @@ function renderPartsListView() {
         </label>
       </div>
       <div class="toolbar-actions">
-        ${canMgParts ? `
+        ${canCreatePart ? `
           <button type="button" class="btn primary" data-action="open-create-part">
             ${icon('i-plus')} <span>Nouvelle pièce</span>
           </button>
@@ -9521,9 +9585,7 @@ async function openCreatePartModal() {
   const siteId = state.selectedSiteId || (state.site ? state.site.id : '');
 
   try {
-    const siteParam = siteId ? `?site_id=${encodeURIComponent(siteId)}&limit=100` : '?limit=100';
-    const supRes = await api(`/api/suppliers${siteParam}`);
-    suppliers = Array.isArray(supRes) ? supRes : (supRes && Array.isArray(supRes.items) ? supRes.items : []);
+    suppliers = (await apiAllItems('/api/suppliers', siteId)).items;
   } catch (_) {}
 
   const fieldsHtml = `
@@ -9698,9 +9760,7 @@ async function openEditPartModal(partId) {
 
   let suppliers = [];
   try {
-    const siteParam = part.site_id ? `?site_id=${encodeURIComponent(part.site_id)}&limit=100` : '?limit=100';
-    const supRes = await api(`/api/suppliers${siteParam}`);
-    suppliers = Array.isArray(supRes) ? supRes : (supRes && Array.isArray(supRes.items) ? supRes.items : []);
+    suppliers = (await apiAllItems('/api/suppliers', part.site_id)).items;
   } catch (_) {}
 
   const fieldsHtml = `
@@ -9882,22 +9942,25 @@ async function handleDeletePart(partId) {
   }
 }
 
-async function openMovementInModal(prefill = {}) {
+/**
+ * Pièces et emplacements proposés par les fenêtres de mouvement de stock. Les listes
+ * complètes du site sont chargées : les listes affichées peuvent être filtrées ou paginées.
+ */
+async function loadMovementChoices() {
   const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
-  let partsList = state.parts || [];
-  let locationsList = state.locations || [];
-
+  let partsList = [];
+  let locationsList = [];
   try {
-    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
-    if (!partsList.length) {
-      const pRes = await api(`/api/parts${siteParam}`);
-      partsList = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
-    }
-    if (!locationsList.length) {
-      const lRes = await api(`/api/locations${siteParam}`);
-      locationsList = Array.isArray(lRes) ? lRes : (lRes && Array.isArray(lRes.items) ? lRes.items : []);
-    }
+    [partsList, locationsList] = (await Promise.all([
+      apiAllItems('/api/parts', currentSiteId),
+      apiAllItems('/api/locations', currentSiteId),
+    ])).map(r => r.items);
   } catch (_) {}
+  return { currentSiteId, partsList, locationsList };
+}
+
+async function openMovementInModal(prefill = {}) {
+  const { currentSiteId, partsList, locationsList } = await loadMovementChoices();
 
   const targetPartId = prefill.partId || '';
   const targetLocId = prefill.locationId || '';
@@ -10002,21 +10065,7 @@ async function handleMovementInSubmit(form) {
 }
 
 async function openMovementTransferModal(prefill = {}) {
-  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
-  let partsList = state.parts || [];
-  let locationsList = state.locations || [];
-
-  try {
-    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
-    if (!partsList.length) {
-      const pRes = await api(`/api/parts${siteParam}`);
-      partsList = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
-    }
-    if (!locationsList.length) {
-      const lRes = await api(`/api/locations${siteParam}`);
-      locationsList = Array.isArray(lRes) ? lRes : (lRes && Array.isArray(lRes.items) ? lRes.items : []);
-    }
-  } catch (_) {}
+  const { currentSiteId, partsList, locationsList } = await loadMovementChoices();
 
   const targetPartId = prefill.partId || '';
   const targetFromLocId = prefill.fromLocationId || '';
@@ -10119,21 +10168,7 @@ async function handleMovementTransferSubmit(form) {
 }
 
 async function openMovementAdjustModal(prefill = {}) {
-  const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
-  let partsList = state.parts || [];
-  let locationsList = state.locations || [];
-
-  try {
-    const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
-    if (!partsList.length) {
-      const pRes = await api(`/api/parts${siteParam}`);
-      partsList = Array.isArray(pRes) ? pRes : (pRes && Array.isArray(pRes.items) ? pRes.items : []);
-    }
-    if (!locationsList.length) {
-      const lRes = await api(`/api/locations${siteParam}`);
-      locationsList = Array.isArray(lRes) ? lRes : (lRes && Array.isArray(lRes.items) ? lRes.items : []);
-    }
-  } catch (_) {}
+  const { currentSiteId, partsList, locationsList } = await loadMovementChoices();
 
   const targetPartId = prefill.partId || '';
   const targetLocId = prefill.locationId || '';
@@ -10924,6 +10959,7 @@ async function loadMaintenancePlans(reset = true) {
       state.maintenancePlans = state.maintenancePlans.concat(items);
     }
 
+    state.maintenancePlansLoading = false;
     renderMaintenancePlansTable();
   } catch (err) {
     container.innerHTML = `<p class="hint state-ko">${icon('i-alert')} Erreur lors du chargement des plannings : ${esc(err.message)}</p>`;
@@ -11638,7 +11674,7 @@ function renderPlanDetailView(plan) {
             ` : '—'}
           </dd>
           <dt>Priorité</dt><dd>${interventionPriorityBadge(plan.priority)}</dd>
-          <dt>Technicien par défaut</dt><dd>${plan.default_technician ? `<b>${esc(plan.default_technician.display_name)}</b>` : '<span class="hint">Non assigné</span>'}</dd>
+          <dt>Technicien par défaut</dt><dd>${plan.default_technician_name ? `<b>${esc(plan.default_technician_name)}</b>` : '<span class="hint">Non assigné</span>'}</dd>
           <dt>Durée estimée</dt><dd><b class="mono">${formatDurationMinutes(plan.estimated_minutes)}</b></dd>
           <dt>Génération automatique</dt><dd>${plan.auto_generate ? '<span class="state-ok">Activée (moteur automatique)</span>' : '<span class="hint">Désactivée (génération manuelle)</span>'}</dd>
           <dt>Description</dt><dd>${esc(plan.description || 'Aucune description.')}</dd>
@@ -11704,6 +11740,7 @@ async function loadMorePlanOccurrences(planId) {
     const newItems = res && Array.isArray(res.items) ? res.items : [];
     state.currentPlanOccurrencesNextCursor = res ? res.next_cursor : null;
     state.currentPlanOccurrences = state.currentPlanOccurrences.concat(newItems);
+    state.currentPlanOccurrencesLoading = false;
     renderPlanDetailView(state.currentPlanDetail);
   } catch (err) {
     notify(err.message || 'Erreur chargement occurrences.', 'error');
@@ -11913,7 +11950,7 @@ async function handleCreateMaintenancePlanSubmit(form) {
     }
     payload.interval_days = iv;
     payload.anchor_date = form.anchor_date.value || null;
-    payload.lead_days = parseInt(form.lead_days.value, 10) || 7;
+    payload.lead_days = parseIntOr(form.lead_days.value, 7);
   } else if (frequency === 'counter') {
     const cid = form.counter_id ? form.counter_id.value : '';
     if (!cid) {
@@ -11932,7 +11969,7 @@ async function handleCreateMaintenancePlanSubmit(form) {
     payload.lead_counter = parseInt(form.lead_counter.value, 10) || 0;
   } else {
     payload.anchor_date = form.anchor_date.value || null;
-    payload.lead_days = parseInt(form.lead_days.value, 10) || 7;
+    payload.lead_days = parseIntOr(form.lead_days.value, 7);
   }
 
   btn.disabled = true;
@@ -12214,7 +12251,7 @@ async function togglePlanActive(planId) {
     if (state.currentPlanDetail && state.currentPlanDetail.id === planId) {
       await loadMaintenancePlanDetail(planId);
     } else {
-      await loadMaintenancePlans(false);
+      await loadMaintenancePlans(true);
     }
   } catch (err) {
     notify(err.message || 'Action impossible.', 'error');
@@ -12576,7 +12613,7 @@ async function openCounterHistoryModal(arg) {
         <td class="mono"><b>${esc(r.value)}</b></td>
         <td>${r.is_reset ? '<span class="badge badge-state-warn">Remise à zéro</span>' : '<span class="badge">Relevé normal</span>'}</td>
         <td>${sourceBadge}</td>
-        <td>${esc(r.recorded_by ? r.recorded_by.display_name : '—')}</td>
+        <td>${esc(r.recorded_by_name || (r.source === 'supervision' ? 'Supervision' : '—'))}</td>
         <td>${esc(r.note || '—')}</td>
       </tr>
     `;
@@ -13723,10 +13760,10 @@ function renderLabelsSheet() {
   container.querySelectorAll('.label-sheet-page').forEach(page => {
     page.style.setProperty('--sheet-cols', cols);
     page.style.setProperty('--sheet-rows', rows);
-    page.style.setProperty('--margin-top', `${fmt.margin_top_mm || 10}mm`);
-    page.style.setProperty('--margin-left', `${fmt.margin_left_mm || 7}mm`);
-    page.style.setProperty('--spacing-h', `${fmt.spacing_h_mm || 2}mm`);
-    page.style.setProperty('--spacing-v', `${fmt.spacing_v_mm || 0}mm`);
+    page.style.setProperty('--margin-top', `${fmt.margin_top_mm ?? 10}mm`);
+    page.style.setProperty('--margin-left', `${fmt.margin_left_mm ?? 7}mm`);
+    page.style.setProperty('--spacing-h', `${fmt.spacing_h_mm ?? 2}mm`);
+    page.style.setProperty('--spacing-v', `${fmt.spacing_v_mm ?? 0}mm`);
     page.style.setProperty('--sticker-w', `${fmt.width_mm || 64}mm`);
     page.style.setProperty('--sticker-h', `${fmt.height_mm || 34}mm`);
   });
@@ -14486,19 +14523,19 @@ function renderSettingsLabelsView() {
             <div class="form-row">
               <div class="form-group">
                 <label for="labelMarginTop">Marge haute (mm)</label>
-                <input type="number" id="labelMarginTop" name="margin_top_mm" min="0" max="100" value="${esc(fmt.margin_top_mm || 10)}" ${!canEdit ? 'disabled' : ''} />
+                <input type="number" id="labelMarginTop" name="margin_top_mm" min="0" max="100" value="${esc(fmt.margin_top_mm ?? 10)}" ${!canEdit ? 'disabled' : ''} />
               </div>
               <div class="form-group">
                 <label for="labelMarginLeft">Marge gauche (mm)</label>
-                <input type="number" id="labelMarginLeft" name="margin_left_mm" min="0" max="100" value="${esc(fmt.margin_left_mm || 7)}" ${!canEdit ? 'disabled' : ''} />
+                <input type="number" id="labelMarginLeft" name="margin_left_mm" min="0" max="100" value="${esc(fmt.margin_left_mm ?? 7)}" ${!canEdit ? 'disabled' : ''} />
               </div>
               <div class="form-group">
                 <label for="labelSpacingH">Espacement horizontal (mm)</label>
-                <input type="number" id="labelSpacingH" name="spacing_h_mm" min="0" max="50" value="${esc(fmt.spacing_h_mm || 2)}" ${!canEdit ? 'disabled' : ''} />
+                <input type="number" id="labelSpacingH" name="spacing_h_mm" min="0" max="50" value="${esc(fmt.spacing_h_mm ?? 2)}" ${!canEdit ? 'disabled' : ''} />
               </div>
               <div class="form-group">
                 <label for="labelSpacingV">Espacement vertical (mm)</label>
-                <input type="number" id="labelSpacingV" name="spacing_v_mm" min="0" max="50" value="${esc(fmt.spacing_v_mm || 0)}" ${!canEdit ? 'disabled' : ''} />
+                <input type="number" id="labelSpacingV" name="spacing_v_mm" min="0" max="50" value="${esc(fmt.spacing_v_mm ?? 0)}" ${!canEdit ? 'disabled' : ''} />
               </div>
             </div>
           </div>
@@ -14805,7 +14842,7 @@ async function handleSettingsGeneralSubmit(form) {
       state.branding.app_name = res.app_name;
       state.branding.app_subtitle = res.app_subtitle;
     }
-    applyBranding();
+    applyBranding({ app_name: res.app_name, app_subtitle: res.app_subtitle });
     notify('Paramètres généraux enregistrés avec succès.', 'success');
   } catch (err) {
     if (errorBox) {
@@ -14916,7 +14953,7 @@ async function loadSettingsStock() {
 
           <div class="form-group">
             <label for="setStockAlertThresh">Seuil d'alerte global par défaut *</label>
-            <input type="number" id="setStockAlertThresh" name="stock_alert_threshold" min="0" max="100000" value="${esc(s.stock_alert_threshold || 5)}" required ${!canEdit ? 'disabled' : ''} />
+            <input type="number" id="setStockAlertThresh" name="stock_alert_threshold" min="0" max="100000" value="${esc(s.stock_alert_threshold ?? 5)}" required ${!canEdit ? 'disabled' : ''} />
             <span class="form-help">Seuil utilisé lorsqu'une pièce n'a pas de seuil d'alerte spécifique défini.</span>
           </div>
 
@@ -15358,16 +15395,24 @@ async function handleSettingsAuditSubmit(form) {
   }
 }
 
-async function loadSettingsDashboardDefaults(role = 'responsable') {
+/**
+ * Affiche la disposition par défaut d'un rôle. Avec fetch = false, le rendu reprend la
+ * disposition locale en cours de modification au lieu de la relire sur le serveur.
+ */
+async function loadSettingsDashboardDefaults(role = 'responsable', fetch = true) {
   const container = document.getElementById('settingsTabContent');
   if (!container) return;
 
   state.settingsDashboardRole = role;
   const canEdit = hasPermission('dashboard.manage_defaults');
-  container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement de la disposition par défaut du rôle…</p>`;
+  if (fetch) {
+    container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement de la disposition par défaut du rôle…</p>`;
+  }
 
   try {
-    const layout = await api(`/api/dashboard/defaults/${encodeURIComponent(role)}`);
+    const layout = fetch
+      ? await api(`/api/dashboard/defaults/${encodeURIComponent(role)}`)
+      : state.settingsDashboardRoleLayout;
     state.settingsDashboardRoleLayout = layout;
 
     const roles = ['admin', 'responsable', 'technicien', 'production'];
@@ -15463,13 +15508,13 @@ function handleRoleDefaultMove(idx, dir) {
   widgets[idx] = widgets[target];
   widgets[target] = tmp;
 
-  loadSettingsDashboardDefaults(state.settingsDashboardRole);
+  loadSettingsDashboardDefaults(state.settingsDashboardRole, false);
 }
 
 function handleRoleDefaultRemove(idx) {
   const widgets = (state.settingsDashboardRoleLayout && state.settingsDashboardRoleLayout.widgets) || [];
   widgets.splice(idx, 1);
-  loadSettingsDashboardDefaults(state.settingsDashboardRole);
+  loadSettingsDashboardDefaults(state.settingsDashboardRole, false);
 }
 
 async function openAddRoleWidgetModal() {
@@ -15512,23 +15557,12 @@ function addWidgetToRoleLayout(widgetKey) {
     params: { period: '30d' },
   });
   closeModal();
-  loadSettingsDashboardDefaults(state.settingsDashboardRole);
+  loadSettingsDashboardDefaults(state.settingsDashboardRole, false);
 }
 
 // ============================================================================
 // 14K. MODULE PARAMÈTRES — SAUVEGARDES ET EXPLOITATION (PHASE 8)
 // ============================================================================
-
-/** Formate une taille en octets en chaîne lisible (Ko, Mo, Go). */
-function formatBytes(bytes) {
-  if (bytes === null || bytes === undefined || isNaN(bytes)) return '—';
-  const b = parseInt(bytes, 10);
-  if (b === 0) return '0 o';
-  const k = 1024;
-  const sizes = ['o', 'Ko', 'Mo', 'Go', 'To'];
-  const i = Math.floor(Math.log(b) / Math.log(k));
-  return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
 
 async function loadSettingsBackups() {
   const container = document.getElementById('settingsTabContent');
@@ -16797,12 +16831,17 @@ async function handleRetryOfflineOp(opId) {
     const all = await ApexOffline.getAllOperations();
     const op = all.find(o => o.id === opId);
     if (op) {
-      op.status = 'pending';
-      op.error_message = null;
-      op.error_status = null;
-      await ApexOffline.enqueueOperation(op);
+      // Le serveur mémorise le refus sous la clé d'idempotence (l'identifiant de l'opération) :
+      // la nouvelle tentative repart donc sous un nouvel identifiant.
+      const { id: _ancien, ...copie } = op;
+      copie.status = 'pending';
+      copie.error_message = null;
+      copie.error_status = null;
+      await ApexOffline.removeOperation(opId);
+      await ApexOffline.enqueueOperation(copie);
       notify('Opération remise en attente de synchronisation.', 'success');
       await renderSyncPageContent();
+      triggerSyncNow();
     }
   } catch (err) {
     notify(`Erreur : ${err.message}`, 'error');
@@ -16887,6 +16926,11 @@ async function openQrScannerModal() {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     });
+    // Autorisation accordée après la fermeture de la modale : la caméra est libérée aussitôt.
+    if (!video.isConnected) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
     scannerActiveStream = stream;
     video.srcObject = stream;
     await video.play();
@@ -16900,7 +16944,8 @@ async function openQrScannerModal() {
   }
 }
 
-function closeQrScannerModal() {
+/** Arrête la caméra et la boucle de détection ; appelé à chaque fermeture de modale. */
+function stopQrScanner() {
   if (scannerActiveStream) {
     scannerActiveStream.getTracks().forEach(t => t.stop());
     scannerActiveStream = null;
@@ -16909,6 +16954,9 @@ function closeQrScannerModal() {
     cancelAnimationFrame(scannerAnimFrameId);
     scannerAnimFrameId = null;
   }
+}
+
+function closeQrScannerModal() {
   closeModal();
 }
 
@@ -16953,7 +17001,9 @@ async function startQrCodeDetectionLoop(video) {
   }
 
   async function checkFrame() {
-    if (!scannerActiveStream || video.readyState < 2) {
+    // Scanner arrêté (modale fermée) : la boucle s'interrompt.
+    if (!scannerActiveStream) return;
+    if (video.readyState < 2) {
       scannerAnimFrameId = requestAnimationFrame(checkFrame);
       return;
     }
@@ -17191,12 +17241,6 @@ async function checkHealth() {
   }
   state.checkedAt = new Date();
   renderServerState();
-  if (state.currentUser && currentRoute() === 'tableau-de-bord') {
-    const view = document.getElementById('view');
-    if (view && currentRoute() === 'tableau-de-bord') {
-      view.innerHTML = dashboardPage();
-    }
-  }
 }
 
 function renderServerState() {
@@ -17554,7 +17598,7 @@ function handleGlobalClick(e) {
       loadMaintenanceSchedule();
       break;
     case 'open-create-maintenance-plan':
-      openCreateMaintenancePlanModal(args || {});
+      openCreateMaintenancePlanModal(typeof args === 'string' ? { equipment_id: args } : (args || {}));
       break;
     case 'open-edit-maintenance-plan':
       openEditMaintenancePlanModal(args);
@@ -17617,6 +17661,13 @@ function handleGlobalClick(e) {
       break;
     case 'load-more-documents':
       loadMoreDocuments();
+      break;
+    case 'open-print-selected-labels':
+      location.hash = `#/etiquettes?ids=${encodeURIComponent(Array.from(state.selectedEquipmentIds).join(','))}`;
+      break;
+    case 'clear-selected-equipments':
+      state.selectedEquipmentIds.clear();
+      refreshEquipmentsSelection();
       break;
     case 'print-equipment-label':
       closeModal();
@@ -17772,12 +17823,10 @@ function handleGlobalClick(e) {
       triggerSyncNow();
       break;
     case 'abandon-offline-op':
-      if (typeof ApexOffline !== 'undefined') {
-        ApexOffline.removeOperation(args).then(() => renderSyncPageContent());
-      }
+      handleAbandonOfflineOp(args);
       break;
     case 'retry-offline-op':
-      triggerSyncNow();
+      handleRetryOfflineOp(args);
       break;
     case 'export-outbox-json':
       handleExportOutboxJson();
@@ -18137,11 +18186,44 @@ function handleGlobalChange(e) {
       loadPartsListView(true);
       return;
     }
+    if (chkAction === 'toggle-select-equipment') {
+      const id = JSON.parse(chk.dataset.args);
+      if (chk.checked) state.selectedEquipmentIds.add(id);
+      else state.selectedEquipmentIds.delete(id);
+      refreshEquipmentsSelection();
+      return;
+    }
+    if (chkAction === 'toggle-select-all-equipments') {
+      for (const eq of state.equipments || []) {
+        if (chk.checked) state.selectedEquipmentIds.add(eq.id);
+        else state.selectedEquipmentIds.delete(eq.id);
+      }
+      refreshEquipmentsSelection();
+      return;
+    }
     if (chkAction === 'toggle-filter-supervision-stopped') {
       state.filterSupervisionStopped = chk.checked;
       renderEquipmentsListView();
       return;
     }
+  }
+
+  // Événements de changement sur inputs de type date
+  const dateInput = e.target.closest('input[type="date"][data-action]');
+  if (dateInput) {
+    const dAction = dateInput.dataset.action;
+    if (dAction === 'filter-reporting-from') {
+      state.reportingFrom = dateInput.value;
+      if (state.reportingPeriod === 'custom' && state.reportingFrom && state.reportingTo) {
+        loadReportingData();
+      }
+    } else if (dAction === 'filter-reporting-to') {
+      state.reportingTo = dateInput.value;
+      if (state.reportingPeriod === 'custom' && state.reportingFrom && state.reportingTo) {
+        loadReportingData();
+      }
+    }
+    return;
   }
 
   const sel = e.target.closest('select[data-action]');
@@ -18337,23 +18419,6 @@ function handleGlobalChange(e) {
     state.auditSiteId = sel.value;
     loadAuditList(true);
   }
-
-  // Événements de changement sur inputs de type date
-  const dateInput = e.target.closest('input[type="date"][data-action]');
-  if (dateInput) {
-    const dAction = dateInput.dataset.action;
-    if (dAction === 'filter-reporting-from') {
-      state.reportingFrom = dateInput.value;
-      if (state.reportingPeriod === 'custom' && state.reportingFrom && state.reportingTo) {
-        loadReportingData();
-      }
-    } else if (dAction === 'filter-reporting-to') {
-      state.reportingTo = dateInput.value;
-      if (state.reportingPeriod === 'custom' && state.reportingFrom && state.reportingTo) {
-        loadReportingData();
-      }
-    }
-  }
 }
 
 function handleGlobalKeydown(e) {
@@ -18439,7 +18504,14 @@ async function init() {
   // Synchronisation du thème si changement externe (OS)
   new MutationObserver(renderThemeToggle).observe(document.documentElement, { attributeFilter: ['data-theme'] });
   MOBILE_QUERY.addEventListener('change', () => setMobileNav(false));
-  window.addEventListener('hashchange', render);
+  window.addEventListener('hashchange', () => {
+    // La réinitialisation du mot de passe s'ouvre aussi sans session (lien « Mot de passe oublié »).
+    if (currentRoute() === 'reinitialiser' && !state.currentUser) {
+      showResetPasswordScreen();
+      return;
+    }
+    render();
+  });
 
   tickClock();
   setInterval(tickClock, 15000);

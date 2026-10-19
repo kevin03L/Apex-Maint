@@ -5,6 +5,11 @@
    fidèlement les étiquettes et planches selon le format paramétré.
    ============================================================================ */
 
+/* Les marges de la planche sont portées par .label-sheet-page. */
+@page {
+  margin: 0;
+}
+
 @media print {
   /* Masquage de tous les composants de l'IHM web */
   header.top,
@@ -61,7 +66,28 @@
     box-sizing: border-box !important;
   }
 
-  .label-sticker-empty {
+  .sticker-empty {
     visibility: hidden !important;
+  }
+
+  .label-sheet-page {
+    break-after: page;
+  }
+
+  .label-sheet-page .label-sticker {
+    border: none !important;
+  }
+
+  .label-sheet-page:last-child {
+    break-after: auto;
+  }
+
+  .labels-single-container {
+    gap: 0 !important;
+  }
+
+  .labels-single-container .label-sticker {
+    border: none !important;
+    break-after: page;
   }
 }

@@ -215,6 +215,25 @@ async function getSnapshotItem(collection, id, customIDB) {
   });
 }
 
+/**
+ * Lit une intervention locale avec ses intervenants. Le serveur livre les affectations dans la
+ * collection séparée « technicians » : elles sont rattachées ici à l'intervention, avec le nom
+ * de l'intervenant tiré de la collection « users ».
+ */
+async function getLocalIntervention(id, customIDB) {
+  const item = await getSnapshotItem('interventions', id, customIDB);
+  if (!item || Array.isArray(item.technicians)) return item;
+  const [technicians, users] = await Promise.all([
+    getSnapshotCollection('technicians', customIDB),
+    getSnapshotCollection('users', customIDB)
+  ]);
+  const names = new Map(users.map(u => [u.id, u.display_name]));
+  item.technicians = technicians
+    .filter(t => t.intervention_id === id)
+    .map(t => ({ ...t, display_name: names.get(t.user_id) || t.user_id }));
+  return item;
+}
+
 /** Met à jour un élément dans l'instantané local. */
 async function putSnapshotItem(collection, id, data, customIDB) {
   const db = await openOfflineDB(customIDB);
@@ -577,10 +596,14 @@ async function syncOutbox(fetchFn, currentUserId, currentSiteId, customIDB) {
 async function localCreateIntervention(params, currentUserId, currentSiteId, customIDB) {
   const tempId = 'temp_' + generateUuid();
   const occurredAt = params.occurred_at || new Date().toISOString();
+  // Le site choisi dans le formulaire (administrateur) prime sur celui de l'utilisateur.
+  const siteId = params.site_id || currentSiteId;
+  const parentId = params.parent_id || null;
 
   const newIntervention = {
     id: tempId,
-    site_id: currentSiteId,
+    site_id: siteId,
+    parent_id: parentId,
     code: 'Référence provisoire',
     title: params.title || 'Intervention',
     description: params.description || '',
@@ -603,10 +626,13 @@ async function localCreateIntervention(params, currentUserId, currentSiteId, cus
 
   await enqueueOperation({
     type: 'create_intervention',
-    url: '/api/interventions',
+    // Une sous-intervention passe par la route de son parent, éventuellement encore provisoire :
+    // l'identifiant temporaire de l'URL est réécrit après la synchronisation du parent.
+    url: parentId ? `/api/interventions/${parentId}/sub-interventions` : '/api/interventions',
     method: 'POST',
+    depends_on: parentId && parentId.startsWith('temp_') ? parentId : null,
     body: {
-      site_id: currentSiteId,
+      site_id: siteId,
       equipment_id: params.equipment_id || null,
       title: params.title,
       description: params.description || null,
@@ -663,9 +689,9 @@ async function localTakeIntervention(interventionId, currentUserId, currentSiteI
  */
 async function localRecordTime(interventionId, durationMinutes, currentUserId, currentSiteId, customIDB) {
   const occurredAt = new Date().toISOString();
-  const item = await getSnapshotItem('interventions', interventionId, customIDB);
+  const item = await getLocalIntervention(interventionId, customIDB);
   if (item) {
-    const technicians = item.technicians || [];
+    const technicians = item.technicians;
     const technician = technicians.find(t => t.user_id === currentUserId);
     const previous = technician ? technician.duration_minutes || 0 : 0;
     item.duration_minutes = (item.duration_minutes || 0) - previous + (durationMinutes || 0);
@@ -763,6 +789,7 @@ if (typeof module !== 'undefined' && module.exports) {
     saveSnapshot,
     getSnapshotCollection,
     getSnapshotItem,
+    getLocalIntervention,
     putSnapshotItem,
     enqueueOperation,
     getAllOperations,
@@ -791,6 +818,7 @@ if (typeof window !== 'undefined') {
     saveSnapshot,
     getSnapshotCollection,
     getSnapshotItem,
+    getLocalIntervention,
     putSnapshotItem,
     enqueueOperation,
     getAllOperations,
