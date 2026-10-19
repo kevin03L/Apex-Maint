@@ -3,7 +3,7 @@
 set -e
 if [ "$1" = configure ]; then
     getent group apex-maint >/dev/null || addgroup --system apex-maint
-    getent passwd apex-maint >/dev/null || adduser --system --ingroup apex-maint --no-create-home --home /var/lib/apex-maint --shell /usr/sbin/nologin apex-maint
+    getent passwd apex-maint >/dev/null || adduser --system --ingroup apex-maint --home /var/lib/apex-maint --shell /usr/sbin/nologin apex-maint
     install -d -m2750 -o root -g apex-maint /etc/apex-maint
     install -d -m0700 -o apex-maint -g apex-maint /var/lib/apex-maint /run/apex-maint
     install -d -m0750 -o apex-maint -g apex-maint /var/log/apex-maint
