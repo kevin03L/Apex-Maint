@@ -10,6 +10,7 @@ use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query,
 use std::fmt;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::json;
 use sqlx::{FromRow, QueryBuilder, SqliteConnection, SqlitePool};
@@ -1456,28 +1457,27 @@ pub async fn list_plans(
         qb.push(" LIMIT ").push_bind(i64::from(limit) + 1);
     }
 
-    let rows: Vec<RawPlanRow> = qb.build_query_as().fetch_all(pool).await?;
     let today = Local::now().date_naive();
-
-    // Filtre applicatif sur `due` si spécifié
-    let filtered_rows: Vec<RawPlanRow> = if let Some(due) = filter.due.as_deref() {
-        match due {
-            "overdue" => rows
-                .into_iter()
-                .filter(|r| compute_plan_state(r, today) == PlanState::Overdue)
-                .collect(),
-            "soon" => rows
-                .into_iter()
-                .filter(|r| compute_plan_state(r, today) == PlanState::DueSoon)
-                .collect(),
-            _ => rows,
-        }
-    } else {
-        rows
+    let expected_state = match filter.due.as_deref() {
+        Some("overdue") => Some(PlanState::Overdue),
+        Some("soon") => Some(PlanState::DueSoon),
+        _ => None,
     };
+    // Le filtre Rust reste exact, y compris pour les années étendues et les compteurs
+    // suspendus. Seule la page utile est conservée ; la lecture s'arrête au témoin suivant.
+    let mut rows = qb.build_query_as::<RawPlanRow>().fetch(pool);
+    let mut page_rows = Vec::with_capacity(limit as usize + 1);
+    while let Some(row) = rows.try_next().await? {
+        if expected_state.is_none_or(|state| compute_plan_state(&row, today) == state) {
+            page_rows.push(row);
+            if page_rows.len() > limit as usize {
+                break;
+            }
+        }
+    }
+    drop(rows);
 
-    let has_more = filtered_rows.len() > limit as usize;
-    let mut page_rows = filtered_rows;
+    let has_more = page_rows.len() > limit as usize;
     if has_more {
         page_rows.truncate(limit as usize);
     }
@@ -2277,7 +2277,8 @@ async fn do_generate_in_tx(
 
     // 1. Récupération ou génération de la référence d'intervention
     let int_code =
-        crate::interventions::resolve_or_generate_code(&mut *tx, &plan.site_id, None, &now).await?;
+        crate::interventions::resolve_or_generate_code(&mut *tx, actor, &plan.site_id, None, &now)
+            .await?;
 
     // Demandeur de l'intervention
     let reported_by_id = if actor.user_id.is_empty() {
@@ -3201,6 +3202,113 @@ pub(crate) async fn generate_counter_in_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn c12_u7_pages_identiques_au_filtrage_integral() {
+        let (pool, admin) = crate::audit_tests::fixture().await;
+        let today = Local::now().date_naive();
+        let dates = [
+            Some((today - Duration::days(1)).to_string()),
+            Some(today.to_string()),
+            Some((today + Duration::days(1)).to_string()),
+            Some((today + Duration::days(30)).to_string()),
+            Some((today + Duration::days(31)).to_string()),
+            Some("+10000-01-01".into()),
+            Some("-0001-01-01".into()),
+            Some("2026-02-30".into()),
+            None,
+        ];
+        sqlx::query("INSERT INTO equipments(id,site_id,code,name,created_at,updated_at) VALUES('eq-b','b','EQ','Autre','2026','2026')")
+            .execute(&pool).await.unwrap();
+        for i in 0..180 {
+            let site = if i % 7 == 0 { "b" } else { "a" };
+            let equipment = if site == "b" { "eq-b" } else { "eq" };
+            let id = format!("plan-{i:03}");
+            let counter = i % 3 == 0;
+            if counter {
+                sqlx::query("INSERT INTO equipment_counters(id,site_id,equipment_id,name,unit,current_value,active,created_at,updated_at,deleted_at) VALUES(?,?,?,?,'h',?,?, '2026','2026',?)")
+                    .bind(&id).bind(site).bind(equipment).bind(&id)
+                    .bind([80,90,100][i % 4 % 3]).bind(i64::from(i % 5 != 0))
+                    .bind((i % 11 == 0).then_some("2026")).execute(&pool).await.unwrap();
+            }
+            sqlx::query("INSERT INTO maintenance_plans(id,site_id,code,title,equipment_id,frequency,counter_id,counter_interval,next_due_counter,lead_counter,next_due_date,active,created_at,updated_at,deleted_at) VALUES(?,?,?,'Plan',?,?,?,?,100,10,?,?,?,'2026',?)")
+                .bind(&id).bind(site).bind(&id).bind(equipment)
+                .bind(if counter {"counter"} else {"daily"})
+                .bind(counter.then_some(&id)).bind(counter.then_some(100))
+                .bind(&dates[(i / 3) % dates.len()]).bind(i64::from(i % 13 != 0))
+                .bind(format!("2026-{:02}", i % 4))
+                .bind((i % 17 == 0).then_some("2026")).execute(&pool).await.unwrap();
+        }
+        let technician = Actor::new(
+            &admin.user_id,
+            Some("a".into()),
+            crate::Role::Technicien,
+            [Permission::MaintenanceView],
+        );
+        for actor in [&admin, &technician] {
+            for due in ["overdue", "soon", "inconnu"] {
+                for limit in [1, 25, 100] {
+                    // Ancien calcul : chargement intégral, état Rust, puis pagination.
+                    let query = format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.deleted_at IS NULL AND (? OR p.site_id=?) ORDER BY p.created_at DESC,p.id DESC");
+                    let all: Vec<RawPlanRow> = sqlx::query_as(&query)
+                        .bind(actor.is_admin())
+                        .bind(&actor.site_id)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                    let expected: Vec<_> = all
+                        .into_iter()
+                        .filter(|r| match due {
+                            "overdue" => compute_plan_state(r, today) == PlanState::Overdue,
+                            "soon" => compute_plan_state(r, today) == PlanState::DueSoon,
+                            _ => true,
+                        })
+                        .map(|r| {
+                            let eq_id = r.equipment_id.clone();
+                            let mut plan = raw_plan_to_plan(r, today);
+                            plan.equipment.id = eq_id;
+                            plan
+                        })
+                        .collect();
+                    let mut cursor = None;
+                    let mut offset = 0;
+                    loop {
+                        let page = list_plans(
+                            &pool,
+                            actor,
+                            PlanFilter {
+                                due: Some(due.into()),
+                                limit,
+                                cursor,
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        let end = (offset + limit as usize).min(expected.len());
+                        assert_eq!(
+                            json!(page.items),
+                            json!(expected[offset..end]),
+                            "{due}, limite {limit}"
+                        );
+                        let expected_cursor = (end < expected.len()).then(|| {
+                            Cursor::with_timestamp(
+                                &expected[end - 1].id,
+                                &expected[end - 1].created_at,
+                            )
+                            .encode()
+                        });
+                        assert_eq!(page.next_cursor, expected_cursor);
+                        offset = end;
+                        cursor = page.next_cursor.map(|c| Cursor::decode(&c).unwrap());
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn generation_automatique_reverifie_le_planning_sous_verrou() {

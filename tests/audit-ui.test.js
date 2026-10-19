@@ -25,6 +25,46 @@ function fonction(name, next) {
   return app.slice(app.indexOf(`function ${name}(`), app.indexOf(`function ${next}(`));
 }
 
+test('U7. Les échéances conservent les pages de 25, leur ordre et leurs curseurs dans l’IHM', async () => {
+  for (const due of ['overdue', 'soon']) {
+    const expected = Array.from({ length: 57 }, (_, i) => ({ id: `plan-${i}`, state: due === 'soon' ? 'due_soon' : due }));
+    const renders = [];
+    let offset = 0;
+    const state = {
+      maintenancePlans: [], maintenancePlansNextCursor: null,
+      selectedSiteId: 'a', maintenancePlansSearchQuery: ' Entretien ',
+      maintenancePlansEquipmentFilter: 'eq', maintenancePlansFrequencyFilter: 'daily',
+      maintenancePlansDueFilter: due, maintenancePlansActiveFilter: 'true'
+    };
+    const context = vm.createContext({
+      state, URLSearchParams, document: { getElementById: () => ({}) }, icon: () => '',
+      renderMaintenancePlansTable: () => {
+        assert.equal(state.maintenancePlansLoading, false);
+        renders.push(Array.from(state.maintenancePlans));
+      },
+      api: async path => {
+        const params = new URL(path, 'http://localhost').searchParams;
+        assert.equal(params.get('due'), due);
+        assert.equal(params.get('limit'), '25');
+        assert.equal(params.get('site_id'), 'a');
+        assert.equal(params.get('q'), 'Entretien');
+        assert.equal(params.get('equipment_id'), 'eq');
+        assert.equal(params.get('frequency'), 'daily');
+        assert.equal(params.get('active'), 'true');
+        assert.equal(params.get('cursor'), offset ? `curseur-${offset}` : null);
+        const items = expected.slice(offset, offset + 25);
+        offset += items.length;
+        return { items, next_cursor: offset < expected.length ? `curseur-${offset}` : null };
+      }
+    });
+    vm.runInContext('async ' + fonction('loadMaintenancePlans', 'renderMaintenancePlansTable'), context);
+    await vm.runInContext('loadMaintenancePlans(true)', context);
+    while (state.maintenancePlansNextCursor) await vm.runInContext('loadMaintenancePlans(false)', context);
+    assert.deepEqual(renders, [expected.slice(0, 25), expected.slice(0, 50), expected]);
+    assert.deepEqual(Array.from(state.maintenancePlans), expected);
+  }
+});
+
 test('B1. Le rechargement attend le nouveau contrôleur et le worker accepte le message', () => {
   let reloads = 0;
   let controllerchange;

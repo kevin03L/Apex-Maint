@@ -881,8 +881,14 @@ pub async fn create_intervention(
         .await?
         .or(normalize_date(input.reported_at, "reported_at")?)
         .unwrap_or_else(|| now.clone());
-    let code =
-        resolve_or_generate_code(&mut tx, &site_id, input.code.as_deref(), &reported_at).await?;
+    let code = resolve_or_generate_code(
+        &mut tx,
+        actor,
+        &site_id,
+        input.code.as_deref(),
+        &reported_at,
+    )
+    .await?;
     let intervention_id = store::id();
     let reported_by_id = if actor.user_id.is_empty() {
         // En mode administrateur sans utilisateur rattaché, cherche l'admin principal
@@ -2182,10 +2188,14 @@ fn assemble_intervention(
 /// Génère ou valide la référence unique d'intervention (format `INT-AAAA-XXXX`).
 pub(crate) async fn resolve_or_generate_code(
     conn: &mut SqliteConnection,
+    actor: &Actor,
     site_id: &str,
     provided_code: Option<&str>,
     reported_at: &str,
 ) -> Result<String, MaintError> {
+    if !actor.is_admin() && actor.site_id.as_deref() != Some(site_id) {
+        return Err(MaintError::NotFound("Site".into()));
+    }
     if let Some(c) = provided_code {
         let trimmed = c.trim();
         if trimmed.is_empty()
@@ -2220,26 +2230,27 @@ pub(crate) async fn resolve_or_generate_code(
         .unwrap_or_else(|| chrono::Utc::now().format("%Y").to_string());
 
     let prefix = format!("INT-{year}-");
-    let pattern = format!("{prefix}%");
-
-    // Les références des interventions supprimées comptent aussi : un numéro n'est jamais réattribué.
-    let existing_codes: Vec<String> =
-        sqlx::query_scalar("SELECT code FROM interventions WHERE site_id = ? AND code LIKE ?")
-            .bind(site_id)
-            .bind(&pattern)
-            .fetch_all(&mut *conn)
-            .await?;
-
-    let mut max_seq = 0u32;
-    for c in &existing_codes {
-        if let Some(suffix) = c.strip_prefix(&prefix) {
-            if let Ok(seq) = suffix.parse::<u32>() {
-                if seq > max_seq {
-                    max_seq = seq;
-                }
-            }
-        }
-    }
+    // Même ensemble que strip_prefix puis parse::<u32>() : casse exacte, signe +
+    // facultatif, chiffres ASCII, zéros initiaux et exclusion des dépassements.
+    // L'index inclut les suppressions logiques, mais suit naturellement les purges.
+    let max_seq: i64 = sqlx::query_scalar(
+        "WITH suffixes AS (
+            SELECT substr(code, length(?) + 1) AS suffix FROM interventions
+            WHERE site_id = ? AND code >= ? AND code < ? AND instr(code, char(0)) = 0
+        ), digits AS (
+            SELECT CASE WHEN substr(suffix,1,1) = '+' THEN substr(suffix,2) ELSE suffix END AS value FROM suffixes
+        )
+        SELECT COALESCE(MAX(CAST(value AS INTEGER)),0) FROM digits
+        WHERE value <> '' AND value NOT GLOB '*[^0-9]*'
+          AND CAST(value AS INTEGER) <= 4294967295",
+    )
+    .bind(&prefix)
+    .bind(site_id)
+    .bind(&prefix)
+    .bind(format!("INT-{year}."))
+    .fetch_one(&mut *conn)
+    .await?;
+    let max_seq = max_seq as u32;
 
     let mut next_seq = max_seq + 1;
     loop {

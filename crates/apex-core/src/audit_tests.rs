@@ -3,6 +3,93 @@ use crate::{maintenance, stock, Actor, MaintError, Role};
 use serde_json::json;
 
 #[tokio::test]
+async fn c10_numerotation_identique_au_maximum_rust_apres_retention() {
+    let (mut pool, mut actor) = fixture().await;
+    let mut codes = vec![
+        "INT-2026-0009".to_string(),
+        "INT-2026-+0020".into(),
+        "INT-2026-0000000000000000000000000000000000000000000000000000000000021".into(),
+        "INT-2026-4294967296".into(),
+        "INT-2026-99999999999999999999999999999".into(),
+        "INT-2026--1".into(),
+        "INT-2026-+".into(),
+        "INT-2026-".into(),
+        "INT-2026-25x".into(),
+        "INT-2026- 80".into(),
+        "INT-2026-80 ".into(),
+        "INT-2026-８０".into(),
+        "int-2026-900".into(),
+        "INT-2025-900".into(),
+        "INT-2026-90\0invalide".into(),
+        "INT-2026-\0".into(),
+        "INT-2026-1.5".into(),
+        "INT-2026-1e3".into(),
+        "INT-2026-++90".into(),
+    ];
+    codes.extend((0..200).map(|i| format!("INT-2026-{i:04}")));
+    for (i, code) in codes.iter().enumerate() {
+        sqlx::query("INSERT INTO interventions(id,site_id,code,title,type,reported_by_id,reported_at,created_at,updated_at,deleted_at) VALUES(?,'a',?,'Travail','hors_equipement',?,'2026','2026','2026','2026')")
+            .bind(format!("numero-{i}")).bind(code).bind(&actor.user_id).execute(&pool).await.unwrap();
+    }
+    // Collision active en casse différente, exclue du maximum mais vérifiée ensuite.
+    sqlx::query("INSERT INTO interventions(id,site_id,code,title,type,reported_by_id,reported_at,created_at,updated_at) VALUES('collision','a','int-2026-0200','Travail','hors_equipement',?,'2026','2026','2026'),('autre-site','b','INT-2026-9000','Travail','hors_equipement',?,'2026','2026','2026')")
+        .bind(&actor.user_id).bind(&actor.user_id).execute(&pool).await.unwrap();
+    for phase in 0..3 {
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT code FROM interventions WHERE site_id='a' AND code LIKE 'INT-2026-%'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let maximum = remaining
+            .iter()
+            .filter_map(|c| c.strip_prefix("INT-2026-"))
+            .filter_map(|s| s.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        let mut sequence = maximum + 1;
+        let expected = loop {
+            let candidate = format!("INT-2026-{sequence:04}");
+            let collision: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM interventions WHERE site_id='a' AND code=? COLLATE NOCASE AND deleted_at IS NULL)").bind(&candidate).fetch_one(&pool).await.unwrap();
+            if !collision {
+                break candidate;
+            }
+            sequence += 1;
+        };
+        let mut conn = pool.acquire().await.unwrap();
+        let actual = crate::interventions::resolve_or_generate_code(
+            &mut conn,
+            &actor,
+            "a",
+            None,
+            "2026-10-20",
+        )
+        .await
+        .unwrap();
+        assert_eq!(actual, expected);
+        drop(conn);
+        // Nouvelle base représentant l'historique restant après purge.
+        if phase == 0 {
+            (pool, actor) = fixture().await;
+            sqlx::query("INSERT INTO interventions(id,site_id,code,title,type,reported_by_id,reported_at,created_at,updated_at) VALUES('collision','a','int-2026-0200','Travail','hors_equipement',?,'2026','2026','2026')")
+                .bind(&actor.user_id).execute(&pool).await.unwrap();
+        } else if phase == 1 {
+            sqlx::query("UPDATE interventions SET code='INT-2026-4294967294' WHERE id='collision'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    let foreign = Actor::new(&actor.user_id, Some("b".into()), Role::Technicien, []);
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(matches!(
+        crate::interventions::resolve_or_generate_code(&mut conn, &foreign, "a", None, "2026")
+            .await,
+        Err(MaintError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
 async fn c6_lots_pieces_identiques_aux_fiches_et_alertes() {
     let (pool, actor) = fixture().await;
     for statement in [
