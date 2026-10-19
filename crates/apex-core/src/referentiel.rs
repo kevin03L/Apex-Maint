@@ -11,6 +11,7 @@ use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
 
 use crate::{
     domain::pagination::Cursor,
+    domain::sql::{ensure_site_exists, like_pattern, validate_limit},
     store::{self, Audit},
     Actor, MaintError, Permission,
 };
@@ -32,22 +33,6 @@ pub enum PatchField<T> {
 impl<T> PatchField<T> {
     pub fn is_absent(&self) -> bool {
         matches!(self, Self::Absent)
-    }
-
-    pub fn to_option(self) -> Option<Option<T>> {
-        match self {
-            Self::Absent => None,
-            Self::Null => Some(None),
-            Self::Value(v) => Some(Some(v)),
-        }
-    }
-
-    pub fn apply_to(self, target: &mut Option<T>) {
-        match self {
-            Self::Absent => {}
-            Self::Null => *target = None,
-            Self::Value(v) => *target = Some(v),
-        }
     }
 }
 
@@ -2333,16 +2318,6 @@ pub async fn delete_supplier(
 // FONCTIONS UTILITAIRES DE VALIDATION ET DE GESTION DES SITES
 // ============================================================================
 
-fn validate_limit(limit: u32) -> Result<u32, MaintError> {
-    if (1..=200).contains(&limit) {
-        Ok(limit)
-    } else {
-        Err(MaintError::BadRequest(
-            "La limite de pagination doit être comprise entre 1 et 200".into(),
-        ))
-    }
-}
-
 fn resolve_site_id_for_create(
     actor: &Actor,
     requested_site_id: Option<&str>,
@@ -2386,19 +2361,6 @@ fn resolve_site_id_for_query<'a>(
     }
 }
 
-async fn ensure_site_exists(conn: &mut SqliteConnection, site_id: &str) -> Result<(), MaintError> {
-    let exists: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sites WHERE id = ? AND deleted_at IS NULL")
-            .bind(site_id)
-            .fetch_one(conn)
-            .await?;
-
-    if exists == 0 {
-        return Err(MaintError::BadRequest("Site introuvable".into()));
-    }
-    Ok(())
-}
-
 fn validate_code(code: &str, field_name: &str) -> Result<String, MaintError> {
     let trimmed = code.trim();
     if trimmed.is_empty() || trimmed.chars().count() > 64 || trimmed.chars().any(char::is_control) {
@@ -2418,16 +2380,6 @@ fn validate_name(name: &str, field_name: &str) -> Result<String, MaintError> {
         )));
     }
     Ok(trimmed.to_string())
-}
-
-/// Motif `LIKE` « contient » où `%`, `_` et `\` saisis sont pris littéralement
-/// (à utiliser avec `ESCAPE '\'`).
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
 }
 
 fn clean_opt_id(id: Option<String>) -> Option<String> {

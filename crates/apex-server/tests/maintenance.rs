@@ -20,56 +20,8 @@
 #[allow(dead_code)]
 mod common;
 
-use common::{Server, Settings};
-use serde_json::{json, Value};
-
-fn login(srv: &Server, name: &str, password: &str) -> (String, Value) {
-    let r = srv.session_call(
-        "POST",
-        "/api/auth/login",
-        None,
-        Some(&json!({"username": name, "password": password})),
-    );
-    assert_eq!(r.status, 200, "Connexion de {name} : {}", r.text());
-    let cookie = r.header("set-cookie").expect("cookie de connexion");
-    (
-        cookie.split(';').next().unwrap().to_owned(),
-        r.json()["user"].clone(),
-    )
-}
-
-fn admin(srv: &Server) -> (String, Value) {
-    let (cookie, user) = login(srv, "admin", "admin123");
-    let r = srv.session_call(
-        "POST",
-        "/api/auth/password",
-        Some(&cookie),
-        Some(&json!({"current_password": "admin123", "new_password": "Admin-renouvele1"})),
-    );
-    assert_eq!(r.status, 204, "{}", r.text());
-    (cookie, user)
-}
-
-fn demo(name: &str) -> Server {
-    let mut cfg = Settings::new();
-    cfg.demo = true;
-    Server::start_with(name, cfg)
-}
-
-fn create_equipment(srv: &Server, cookie: &str, code: &str, name: &str) -> String {
-    let r = srv.session_call(
-        "POST",
-        "/api/equipments",
-        Some(cookie),
-        Some(&json!({
-            "code": code,
-            "name": name,
-            "status": "operational"
-        })),
-    );
-    assert_eq!(r.status, 201, "création équipement {code} : {}", r.text());
-    r.json()["id"].as_str().unwrap().to_string()
-}
+use common::{admin, create_equipment, demo, login, Server, Settings};
+use serde_json::json;
 
 #[test]
 fn crud_plannings_et_compteurs() {

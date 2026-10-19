@@ -1105,19 +1105,6 @@ impl AdminApp {
                         ui.label("Processus");
                         ui.label(format!("PID {} — mode {}", rt.pid, if rt.run_mode == "service" { "service" } else { "manuel" }));
                         ui.end_row();
-
-                        if !rt.env_overrides.is_empty() {
-                            ui.label("Surcharges");
-                            ui.colored_label(
-                                form::warn_color(ui),
-                                format!(
-                                    "variables d'environnement actives : {}",
-                                    rt.env_overrides.join(", ")
-                                ),
-                            );
-                            ui.end_row();
-                        }
-
                     } else {
                         ui.label("Détails");
                         form::hint(ui, if cfg!(windows) {
@@ -1308,7 +1295,6 @@ impl AdminApp {
                         ui.end_row();
                     });
                     form::hint(ui, "Les comptes et mots de passe se gèrent dans l'IHM web.");
-                    form::show_issues(ui, &issues, "history.retention_days");
                     form::show_issues(ui, &issues, "security.session_ttl_hours");
                 });
 

@@ -165,9 +165,14 @@ pub async fn synchronize(State(state): State<AppState>, req: Request, next: Next
     {
         return ApiError::from(e).into_response();
     }
-    // Une seule instance détient la base ; le verrou évite deux prélectures concurrentes.
+    // Une seule instance détient la base ; le verrou évite deux prélectures concurrentes
+    // lorsqu'une clé d'idempotence est fournie.
     // La réponse réussie est persistée par le dépôt AVANT le commit métier.
-    let _guard = state.terrain_lock.lock().await;
+    let _guard = if context.key.is_some() {
+        Some(state.terrain_lock.lock().await)
+    } else {
+        None
+    };
     if let Some(key) = &context.key {
         let cached = sqlx::query_as::<_, (String, Option<String>, String, i64, String)>(
             "SELECT user_id,site_id,route,response_code,response_body FROM idempotency_keys WHERE key=?",

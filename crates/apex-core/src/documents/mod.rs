@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sqlx::{FromRow, QueryBuilder, SqliteConnection, SqlitePool};
 
 use crate::{
+    domain::sql::like_pattern,
     referentiel::Page,
     store::{self, Audit},
     Actor, Cursor, MaintError, Permission,
@@ -241,14 +242,7 @@ pub struct SearchFilter {
     pub cursor: Option<Cursor>,
     pub limit: u32,
 }
-fn like_pattern(q: &str) -> String {
-    format!(
-        "%{}%",
-        q.replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    )
-}
+
 pub async fn search(
     pool: &SqlitePool,
     actor: &Actor,

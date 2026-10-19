@@ -9,9 +9,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Nom du binaire moteur + serveur web.
 pub const ENGINE_BIN: &str = "apex-maint";
 
-/// Nom du binaire de l'utilitaire desktop.
-pub const ADMIN_BIN: &str = "apex-maint-admin";
-
 /// Nom du service Windows / de l'unité systemd (`apex-maint.service`).
 #[cfg(windows)]
 pub const SERVICE_NAME: &str = "ApexMaint";

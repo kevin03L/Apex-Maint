@@ -15,6 +15,7 @@ use sqlx::{FromRow, QueryBuilder, SqliteConnection, SqlitePool};
 
 use crate::{
     domain::pagination::Cursor,
+    domain::sql::like_pattern,
     referentiel::{NamedRef, PatchField},
     store::{self, Audit},
     Actor, MaintError, Permission,
@@ -709,14 +710,6 @@ fn validate_name(name: &str, field_name: &str, max_len: usize) -> Result<String,
         )));
     }
     Ok(trimmed.to_string())
-}
-
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
 }
 
 fn resolve_site_id_for_create(actor: &Actor, site_id: Option<&str>) -> Result<String, MaintError> {

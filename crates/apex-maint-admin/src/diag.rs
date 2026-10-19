@@ -60,11 +60,10 @@ pub fn run(layout: &Layout, service: Option<&ServiceInfo>) -> Vec<Check> {
                     format!("Le moteur refusera de démarrer :\n{}", errors.join("\n")),
                 ));
             }
-            // Le mode sûr fait l'objet d'un constat dédié (état réel du moteur)
             for w in loaded
                 .issues
                 .iter()
-                .filter(|i| i.severity == Severity::Warning && i.field != "safety.safe_mode")
+                .filter(|i| i.severity == Severity::Warning)
             {
                 out.push(check(Level::Warning, "Configuration", w.to_string()));
             }

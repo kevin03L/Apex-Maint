@@ -75,9 +75,7 @@ purge de l'audit est déjà assurée par la phase 7. Restent les écrans de l'IH
   GET `/api/exploitation/status` pour les réglages, la liste et le bandeau d'échec.
 - Événement e-mail `backup_failed` : raccorder les échecs persistés à l'expéditeur SMTP et
   aux destinataires ayant `settings.edit` ; aucun module d'e-mails de phase 7 implémenté ici.
-- Conservation du journal d'audit : fonction autonome
-  `apex_core::exploitation::purge_audit(pool, actor, years)`, minimum un an, à appeler avec
-  la durée de la phase 7. La purge métier ne touche pas au journal d'audit.
+- Conservation du journal d'audit : assurée par la phase 7 selon la durée configurée. La purge métier ne touche pas au journal d'audit.
 - Widget `supervision_status` du tableau de bord : route `GET /api/integration/supervision-status`
   (permission `equipments.view`), pagination par curseur, renvoie les équipements à l'arrêt ou
   en alarme (`state IN ('stopped', 'alarm')`) avec calcul automatique de péremption. À intégrer

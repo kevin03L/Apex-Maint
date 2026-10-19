@@ -473,6 +473,7 @@ mod tests {
                 control_token: "controle-test".into(),
                 shutdown_notify: Default::default(),
                 started_at: chrono::Utc::now(),
+                files_max_size_mb: 50,
             };
             let app = super::super::router(state, dir.path());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

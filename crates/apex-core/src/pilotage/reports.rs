@@ -278,7 +278,7 @@ async fn data(
             )
         }
         "costs" => {
-            let mut q=QueryBuilder::new("SELECT i.equipment_id,COALESCE(sum(ip.quantity*ip.unit_price_cents),0) AS cost_cents FROM intervention_parts ip JOIN interventions i ON i.id=ip.intervention_id WHERE i.deleted_at IS NULL AND i.status<>'cancelled'");
+            let mut q=QueryBuilder::new("SELECT i.equipment_id,COALESCE(sum(ip.quantity*ip.unit_price_cents),0) AS cost_cents FROM intervention_parts ip JOIN interventions i ON i.id=ip.intervention_id WHERE i.deleted_at IS NULL AND ip.deleted_at IS NULL AND i.status<>'cancelled'");
             scope(&mut q, actor, f, "ip");
             equipment_scope(&mut q, f, "i.equipment_id");
             if let Some(kind) = &f.kind {

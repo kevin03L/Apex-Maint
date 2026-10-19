@@ -14,6 +14,7 @@ use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
 
 use crate::{
     domain::pagination::Cursor,
+    domain::sql::{ensure_site_exists, like_pattern, validate_limit},
     referentiel::{NamedRef, PatchField},
     store::{self, Audit},
     Actor, MaintError, Permission, Role,
@@ -1168,6 +1169,14 @@ pub async fn take_intervention(
     // Assignation des techniciens fournis ou de l'utilisateur courant si aucun technicien existant
     if let Some(tech_ids) = input.technician_ids {
         if !tech_ids.is_empty() {
+            // Un seul référent principal : remise à 0 de is_lead pour les autres techniciens
+            sqlx::query(
+                "UPDATE intervention_technicians SET is_lead = 0 WHERE intervention_id = ?",
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
             for (idx, uid) in tech_ids.iter().enumerate() {
                 validate_user_for_assignment(&mut tx, &current.site_id, uid).await?;
                 let is_lead = if idx == 0 { 1 } else { 0 };
@@ -1668,6 +1677,12 @@ pub async fn assign_technician(
     .execute(&mut *tx)
     .await?;
 
+    sqlx::query("UPDATE interventions SET updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(intervention_id)
+        .execute(&mut *tx)
+        .await?;
+
     let tech =
         fetch_assigned_technician_with_conn(&mut tx, intervention_id, &input.user_id).await?;
 
@@ -1710,9 +1725,16 @@ pub async fn remove_technician(
         ));
     }
 
+    let now = store::now();
     sqlx::query("DELETE FROM intervention_technicians WHERE intervention_id = ? AND user_id = ?")
         .bind(intervention_id)
         .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("UPDATE interventions SET updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(intervention_id)
         .execute(&mut *tx)
         .await?;
 
@@ -2390,16 +2412,6 @@ pub(crate) async fn resolve_or_generate_code(
     }
 }
 
-fn validate_limit(limit: u32) -> Result<u32, MaintError> {
-    if (1..=200).contains(&limit) {
-        Ok(limit)
-    } else {
-        Err(MaintError::BadRequest(
-            "La limite de pagination doit être comprise entre 1 et 200".into(),
-        ))
-    }
-}
-
 fn resolve_site_id_for_create(
     actor: &Actor,
     requested_site_id: Option<&str>,
@@ -2442,19 +2454,6 @@ fn resolve_site_id_for_query<'a>(
     }
 }
 
-async fn ensure_site_exists(conn: &mut SqliteConnection, site_id: &str) -> Result<(), MaintError> {
-    let exists: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sites WHERE id = ? AND deleted_at IS NULL")
-            .bind(site_id)
-            .fetch_one(conn)
-            .await?;
-
-    if exists == 0 {
-        return Err(MaintError::BadRequest("Site introuvable".into()));
-    }
-    Ok(())
-}
-
 fn validate_title(title: &str) -> Result<String, MaintError> {
     let trimmed = title.trim();
     if trimmed.is_empty() || trimmed.chars().count() > 128 || trimmed.chars().any(char::is_control)
@@ -2464,14 +2463,6 @@ fn validate_title(title: &str) -> Result<String, MaintError> {
         ));
     }
     Ok(trimmed.to_string())
-}
-
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
 }
 
 fn clean_opt_id(id: Option<String>) -> Option<String> {

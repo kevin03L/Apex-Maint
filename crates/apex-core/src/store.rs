@@ -391,7 +391,7 @@ pub async fn update_user(
     if let Some(value) = &edit.email {
         crate::pilotage::settings::email(value)?;
     }
-    text(&edit.username)?;
+    username(&edit.username)?;
     text(&edit.display_name)?;
     if !actor.is_admin() {
         check_assignment(&mut tx, actor, edit.role, edit.site_id.as_deref()).await?;

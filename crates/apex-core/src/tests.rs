@@ -108,13 +108,45 @@ async fn identifiant_de_connexion_valide() {
             "identifiant accepté à tort : {bad}"
         );
     }
-    store::create_user(
+    let valid_user = store::create_user(
         &pool,
         &admin.actor,
         input("j.dupont-2_b", Role::Admin, None),
     )
     .await
     .unwrap();
+
+    // Régression C1 : update_user doit également rejeter les identifiants invalides
+    for bad in [
+        "ab",
+        "<img src=x>",
+        "avec espace",
+        "accentué",
+        &"x".repeat(33),
+    ] {
+        let result = store::update_user(
+            &pool,
+            &admin.actor,
+            &valid_user.id,
+            json!({ "username": bad }),
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(MaintError::BadRequest(_))),
+            "identifiant invalide accepté à tort lors de la mise à jour : {bad}"
+        );
+    }
+    let updated = store::update_user(
+        &pool,
+        &admin.actor,
+        &valid_user.id,
+        json!({ "username": "j.dupont-2_b_bis" }),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.username, "j.dupont-2_b_bis");
 }
 
 #[tokio::test]

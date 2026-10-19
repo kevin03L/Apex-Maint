@@ -12,6 +12,7 @@ use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
 
 use crate::{
     domain::pagination::Cursor,
+    domain::sql::{ensure_site_exists, like_pattern, validate_limit},
     interventions,
     referentiel::{NamedRef, PatchField},
     store::{self, Audit},
@@ -1558,7 +1559,7 @@ pub async fn list_intervention_parts(
         FROM intervention_parts ip
         JOIN parts p ON p.id = ip.part_id
         JOIN locations l ON l.id = ip.location_id
-        WHERE ip.intervention_id = ?
+        WHERE ip.intervention_id = ? AND ip.deleted_at IS NULL
         ORDER BY ip.created_at ASC
         "#,
     )
@@ -1760,7 +1761,7 @@ pub async fn delete_intervention_part(
     }
 
     let item: Option<RawItem> = sqlx::query_as(
-        "SELECT id, site_id, part_id, location_id, quantity, unit_price_cents FROM intervention_parts WHERE id = ? AND intervention_id = ?",
+        "SELECT id, site_id, part_id, location_id, quantity, unit_price_cents FROM intervention_parts WHERE id = ? AND intervention_id = ? AND deleted_at IS NULL",
     )
     .bind(item_id)
     .bind(intervention_id)
@@ -1817,8 +1818,9 @@ pub async fn delete_intervention_part(
     .execute(&mut *tx)
     .await?;
 
-    // Suppression de la ligne intervention_parts
-    sqlx::query("DELETE FROM intervention_parts WHERE id = ?")
+    // Suppression logique de la ligne intervention_parts (§C12)
+    sqlx::query("UPDATE intervention_parts SET deleted_at = ? WHERE id = ?")
+        .bind(&now)
         .bind(item_id)
         .execute(&mut *tx)
         .await?;
@@ -2678,7 +2680,7 @@ async fn fetch_intervention_part_by_id(
         FROM intervention_parts ip
         JOIN parts p ON p.id = ip.part_id
         JOIN locations l ON l.id = ip.location_id
-        WHERE ip.id = ?
+        WHERE ip.id = ? AND ip.deleted_at IS NULL
         "#,
     )
     .bind(id)
@@ -2724,16 +2726,6 @@ async fn get_global_stock_alert_threshold(pool: &SqlitePool) -> Result<i64, Main
     Ok(val.and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(5))
 }
 
-fn validate_limit(limit: u32) -> Result<u32, MaintError> {
-    if (1..=200).contains(&limit) {
-        Ok(limit)
-    } else {
-        Err(MaintError::BadRequest(
-            "La limite de pagination doit être comprise entre 1 et 200".into(),
-        ))
-    }
-}
-
 fn resolve_site_id_for_create(
     actor: &Actor,
     requested_site_id: Option<&str>,
@@ -2774,19 +2766,6 @@ fn resolve_site_id_for_query<'a>(
         }
         Ok(Some(actor_site))
     }
-}
-
-async fn ensure_site_exists(conn: &mut SqliteConnection, site_id: &str) -> Result<(), MaintError> {
-    let exists: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sites WHERE id = ? AND deleted_at IS NULL")
-            .bind(site_id)
-            .fetch_one(conn)
-            .await?;
-
-    if exists == 0 {
-        return Err(MaintError::BadRequest("Site introuvable".into()));
-    }
-    Ok(())
 }
 
 async fn ensure_supplier_exists(
@@ -2890,14 +2869,6 @@ fn clean_opt_string(
         }
         None => Ok(None),
     }
-}
-
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
 }
 
 // ============================================================================

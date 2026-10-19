@@ -85,7 +85,8 @@ pub async fn upload_limit(
             Ok(s) => s,
             Err(e) => return ApiError::from(e).into_response(),
         };
-        let max = settings.max_size_mb as usize * 1024 * 1024 + 64 * 1024;
+        let effective_max_mb = settings.max_size_mb.min(state.files_max_size_mb);
+        let max = effective_max_mb as usize * 1024 * 1024 + 64 * 1024;
         if req
             .headers()
             .get(header::CONTENT_LENGTH)
@@ -219,12 +220,9 @@ async fn receive(
     session
         .actor
         .require_permission(Permission::DocumentsCreate)?;
-    let max = u64::from(
-        documents::settings_internal(&s.pool, &session.actor)
-            .await?
-            .max_size_mb,
-    ) * 1024
-        * 1024;
+    let settings = documents::settings_internal(&s.pool, &session.actor).await?;
+    let effective_max_mb = settings.max_size_mb.min(s.files_max_size_mb);
+    let max = u64::from(effective_max_mb) * 1024 * 1024;
     let mut fields = HashMap::new();
     let mut received = None;
     while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
