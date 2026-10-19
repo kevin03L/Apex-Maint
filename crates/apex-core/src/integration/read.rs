@@ -200,23 +200,26 @@ pub async fn purge_history(pool: &SqlitePool, actor: &Actor) -> Result<Value, Ma
         .execute(&mut *tx)
         .await?
         .rows_affected();
-    // Suppression physique autorisée par la conservation : elle reste tracée dans le journal.
-    store::audit(
-        &mut tx,
-        actor,
-        store::Audit {
-            action: "purge",
-            entity: "integration_history",
-            entity_id: None,
-            site_id: None,
-            before: None,
-            after: Some(
-                json!({"history_deleted":history,"events_deleted":events,"history_days":days}),
-            ),
-            ip: None,
-        },
-    )
-    .await?;
+    // Suppression physique autorisée par la conservation : elle reste tracée dans le journal,
+    // seulement quand des lignes ont été supprimées (la purge planifiée tourne souvent).
+    if history + events > 0 {
+        store::audit(
+            &mut tx,
+            actor,
+            store::Audit {
+                action: "purge",
+                entity: "integration_history",
+                entity_id: None,
+                site_id: None,
+                before: None,
+                after: Some(
+                    json!({"history_deleted":history,"events_deleted":events,"history_days":days}),
+                ),
+                ip: None,
+            },
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(json!({"history_deleted":history,"events_deleted":events}))
 }

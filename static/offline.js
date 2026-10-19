@@ -310,6 +310,29 @@ async function getConflictOperations(customIDB) {
   return all.filter(op => op.status === 'conflict');
 }
 
+/** Récupère les opérations non synchronisées : en attente et « À résoudre ». */
+async function getUnsyncedOperations(customIDB) {
+  const all = await getAllOperations(customIDB);
+  return all.filter(op => op.status === 'pending' || op.status === 'conflict');
+}
+
+/**
+ * Vérifie que le cache local appartient bien à l'identité connectée (utilisateur et site).
+ * Retourne { changed, foreignOperations } : changed vaut true si l'instantané ou la file
+ * proviennent d'une autre identité ; foreignOperations liste les opérations non synchronisées
+ * d'un autre utilisateur, à proposer à l'export avant effacement. Un cache vierge n'est pas
+ * un changement.
+ */
+async function checkCacheOwner(currentUserId, currentSiteId, customIDB) {
+  const storedUserId = await getMeta('user_id', customIDB);
+  const storedSiteId = await getMeta('site_id', customIDB);
+  const unsynced = await getUnsyncedOperations(customIDB);
+  const foreignOperations = unsynced.filter(op => op.user_id && op.user_id !== currentUserId);
+  const ownerChanged = storedUserId !== null && storedUserId !== undefined
+    && (storedUserId !== currentUserId || (storedSiteId || null) !== (currentSiteId || null));
+  return { changed: ownerChanged || foreignOperations.length > 0, foreignOperations };
+}
+
 /** Supprime une opération de l'outbox. */
 async function removeOperation(opId, customIDB) {
   const db = await openOfflineDB(customIDB);
@@ -563,14 +586,15 @@ async function localCreateIntervention(params, currentUserId, currentSiteId, cus
     description: params.description || '',
     type: params.type || 'corrective',
     priority: params.priority || 'medium',
-    status: 'reported',
+    status: params.type === 'a_posteriori' ? 'completed' : 'open',
     machine_state: params.machine_state || 'unknown',
     equipment_id: params.equipment_id || null,
-    reported_at: occurredAt,
-    started_at: null,
-    completed_at: null,
-    solution_report: null,
-    duration_minutes: 0,
+    reported_at: params.reported_at || occurredAt,
+    started_at: params.started_at || null,
+    completed_at: params.completed_at || null,
+    solution_report: params.solution_report ?? null,
+    duration_minutes: params.duration_minutes ?? 0,
+    technician_ids: params.technician_ids || [],
     updated_at: occurredAt,
     deleted_at: null
   };
@@ -588,7 +612,13 @@ async function localCreateIntervention(params, currentUserId, currentSiteId, cus
       description: params.description || null,
       type: params.type || 'corrective',
       priority: params.priority || 'medium',
-      machine_state: params.machine_state || null
+      machine_state: params.machine_state || null,
+      reported_at: params.reported_at || occurredAt,
+      started_at: params.started_at || null,
+      completed_at: params.completed_at || null,
+      solution_report: params.solution_report ?? null,
+      duration_minutes: params.duration_minutes ?? null,
+      technician_ids: params.technician_ids || []
     },
     temp_id: tempId,
     user_id: currentUserId,
@@ -635,7 +665,13 @@ async function localRecordTime(interventionId, durationMinutes, currentUserId, c
   const occurredAt = new Date().toISOString();
   const item = await getSnapshotItem('interventions', interventionId, customIDB);
   if (item) {
-    item.duration_minutes = (item.duration_minutes || 0) + durationMinutes;
+    const technicians = item.technicians || [];
+    const technician = technicians.find(t => t.user_id === currentUserId);
+    const previous = technician ? technician.duration_minutes || 0 : 0;
+    item.duration_minutes = (item.duration_minutes || 0) - previous + (durationMinutes || 0);
+    if (technician) technician.duration_minutes = durationMinutes;
+    else technicians.push({ user_id: currentUserId, duration_minutes: durationMinutes });
+    item.technicians = technicians;
     item.updated_at = occurredAt;
     await putSnapshotItem('interventions', interventionId, item, customIDB);
   }
@@ -732,6 +768,8 @@ if (typeof module !== 'undefined' && module.exports) {
     getAllOperations,
     getPendingOperations,
     getConflictOperations,
+    getUnsyncedOperations,
+    checkCacheOwner,
     removeOperation,
     markOperationConflict,
     rewriteTemporaryId,
@@ -758,6 +796,8 @@ if (typeof window !== 'undefined') {
     getAllOperations,
     getPendingOperations,
     getConflictOperations,
+    getUnsyncedOperations,
+    checkCacheOwner,
     removeOperation,
     markOperationConflict,
     rewriteTemporaryId,

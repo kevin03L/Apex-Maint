@@ -93,6 +93,31 @@ async fn depot_filtre_par_site_et_permissions_par_defaut() {
 }
 
 #[tokio::test]
+async fn identifiant_de_connexion_valide() {
+    let (pool, _auth, admin) = setup().await;
+    for bad in [
+        "ab",
+        "<img src=x>",
+        "avec espace",
+        "accentué",
+        &"x".repeat(33),
+    ] {
+        let result = store::create_user(&pool, &admin.actor, input(bad, Role::Admin, None)).await;
+        assert!(
+            matches!(result, Err(MaintError::BadRequest(_))),
+            "identifiant accepté à tort : {bad}"
+        );
+    }
+    store::create_user(
+        &pool,
+        &admin.actor,
+        input("j.dupont-2_b", Role::Admin, None),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn audit_atomique_et_sans_secrets() {
     let (pool, _auth, admin) = setup().await;
     let user = store::create_user(&pool, &admin.actor, input("cible", Role::Admin, None))

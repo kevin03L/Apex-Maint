@@ -200,6 +200,11 @@ begin
   if CurStep = ssPostInstall then
   begin
     AppExe := ExpandConstant('{app}\{#EngineExe}');
+    { Première installation : répertoires de %ProgramData% et leurs permissions, requis par
+      « config init ». Jamais sur une mise à jour : un service existant peut tourner sous un
+      compte dédié dont les droits seraient retirés par la réinitialisation des ACL. }
+    if not ServiceExistedBefore then
+      RunRequired(AppExe, 'service permissions');
     if not ConfigExists then
     begin
       Bind := '127.0.0.1';

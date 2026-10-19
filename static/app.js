@@ -59,7 +59,8 @@ function formatDate(d) {
   if (civil) return `${civil[3]}/${civil[2]}/${civil[1]}`;
   try {
     const dt = new Date(d);
-    if (isNaN(dt.getTime())) return String(d);
+    // Valeur non analysable : jamais restituée telle quelle, elle pourrait contenir du HTML.
+    if (isNaN(dt.getTime())) return 'Date invalide';
     return dt.toLocaleString('fr-FR', {
       day: '2-digit',
       month: '2-digit',
@@ -68,7 +69,7 @@ function formatDate(d) {
       minute: '2-digit',
     });
   } catch (_) {
-    return String(d);
+    return 'Date invalide';
   }
 }
 
@@ -844,6 +845,8 @@ function adaptStock(o) {
   if (r.reserved === undefined && o.reserved_quantity !== undefined) r.reserved = o.reserved_quantity;
   if (r.available === undefined && o.available_quantity !== undefined) r.available = o.available_quantity;
   if (r.available_stock === undefined && o.total_available !== undefined) r.available_stock = o.total_available;
+  if (r.reserved_stock === undefined && o.total_reserved !== undefined) r.reserved_stock = o.total_reserved;
+  if (!r.stock_by_location && Array.isArray(o.locations)) r.stock_by_location = o.locations;
   if (r.total_price_cents === undefined && o.movement_id && Number.isInteger(o.unit_price_cents)) {
     r.total_price_cents = o.quantity * o.unit_price_cents;
   }
@@ -942,6 +945,12 @@ function isDocInline(doc) {
  * serveur sur des routes dédiées (absentes sans la permission stock.view).
  */
 async function fetchInterventionFull(id) {
+  if (navigator.onLine === false) {
+    await ensureOfflineCacheOwner();
+    const item = await ApexOffline.getSnapshotItem('interventions', id);
+    if (!item) throw new Error('Intervention absente de l’instantané local.');
+    return item;
+  }
   const base = `/api/interventions/${encodeURIComponent(id)}`;
   const inter = await api(base);
   if (hasPermission('stock.view')) {
@@ -1738,6 +1747,7 @@ function hideAuthOverlay() {
 
 /** Gère l'expiration ou la révocation de la session courante. */
 function handleSessionExpired() {
+  state.staleSession = true;
   state.currentUser = null;
   state.permissions.clear();
   state.sites = [];
@@ -1767,6 +1777,12 @@ async function handleLoginSubmit(form) {
       method: 'POST',
       body: { username, password },
     });
+    // Après une déconnexion, les listes en mémoire appartiennent au compte précédent
+    // (autres sites, autres droits) : la page est rechargée pour repartir d'un état vierge.
+    if (state.staleSession) {
+      location.reload();
+      return;
+    }
     // Récupération du profil complet après pose du cookie
     await checkAuth();
   } catch (err) {
@@ -1835,11 +1851,12 @@ async function handleForcePasswordSubmit(form) {
 async function handleLogout() {
   if (typeof ApexOffline !== 'undefined') {
     try {
-      const pending = await ApexOffline.getPendingOperations();
-      if (pending && pending.length > 0) {
+      // En attente et « À résoudre » : toutes deux sont effacées avec la file.
+      const unsynced = await ApexOffline.getUnsyncedOperations();
+      if (unsynced && unsynced.length > 0) {
         const ok = await confirmDialog(
           'Opérations hors-ligne non envoyées',
-          `Vous avez ${pending.length} opération(s) en attente dans la file hors-ligne. La déconnexion effacera définitivement ces données locales non synchronisées. Voulez-vous vraiment vous déconnecter ?`,
+          `Vous avez ${unsynced.length} opération(s) non synchronisée(s), en attente ou à résoudre, dans la file hors-ligne (exportables depuis la page Synchronisation). La déconnexion effacera définitivement ces données locales non synchronisées. Voulez-vous vraiment vous déconnecter ?`,
           'Déconnexion et effacement',
           'danger'
         );
@@ -1854,6 +1871,7 @@ async function handleLogout() {
   } catch (_) {
     // Si l'appel échoue, on continue la déconnexion locale
   }
+  state.staleSession = true;
   state.currentUser = null;
   state.permissions.clear();
   state.sites = [];
@@ -3224,6 +3242,7 @@ function reportingPage() {
 }
 
 async function initReportingPageView() {
+  await loadReportingFilterOptions();
   await switchReportingTab(state.reportingTab || 'activity');
 }
 
@@ -3233,6 +3252,34 @@ async function switchReportingTab(tab) {
     btn.classList.toggle('on', btn.dataset.args === tab);
   });
   await loadReportingData();
+}
+
+/**
+ * Remplit les filtres « ligne » et « équipement » du reporting avec les listes du site filtré.
+ * Chargées ici, et non reprises des autres vues, pour fonctionner aussi au premier affichage.
+ */
+async function loadReportingFilterOptions() {
+  const lineSel = document.querySelector('select[data-action="filter-reporting-line"]');
+  const eqSel = document.querySelector('select[data-action="filter-reporting-equipment"]');
+  if (!lineSel || !eqSel) return;
+  const params = new URLSearchParams({ limit: '200' });
+  if (state.reportingSiteId) params.set('site_id', state.reportingSiteId);
+  try {
+    const [lines, eqs] = await Promise.all([
+      api(`/api/production-lines?${params.toString()}`),
+      api(`/api/equipments?${params.toString()}`),
+    ]);
+    const lineItems = lines && Array.isArray(lines.items) ? lines.items : [];
+    const eqItems = eqs && Array.isArray(eqs.items) ? eqs.items : [];
+    if (!lineItems.some(l => l.id === state.reportingLineId)) state.reportingLineId = '';
+    if (!eqItems.some(e => e.id === state.reportingEquipmentId)) state.reportingEquipmentId = '';
+    lineSel.innerHTML = `<option value="">Toutes les lignes</option>` + lineItems.map(l =>
+      `<option value="${esc(l.id)}" ${state.reportingLineId === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
+    eqSel.innerHTML = `<option value="">Tous les équipements</option>` + eqItems.map(e =>
+      `<option value="${esc(e.id)}" ${state.reportingEquipmentId === e.id ? 'selected' : ''}>${esc(e.code)} — ${esc(e.name)}</option>`).join('');
+  } catch (_) {
+    // Filtres facultatifs : le rapport reste calculé sur l'ensemble du périmètre.
+  }
 }
 
 async function loadReportingData() {
@@ -3434,7 +3481,7 @@ function renderReportingContent() {
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Main d'œuvre cumulée</span>
-          <span class="kpi-val">${Math.round(totalLaborMin / 60)} <small class="hint">h</small></span>
+          <span class="kpi-val">${esc(formatDurationMinutes(totalLaborMin))}</span>
           <span class="kpi-sub">${totalLaborMin} minutes</span>
         </div>
       </div>
@@ -4284,7 +4331,7 @@ function openCreateUserModal() {
       <div class="form-row">
         <div class="form-group">
           <label for="uLogin">Identifiant (login)</label>
-          <input type="text" id="uLogin" name="username" required pattern="[A-Za-z0-9_.-]{3,32}" autocomplete="off" autofocus />
+          <input type="text" id="uLogin" name="username" required pattern="[A-Za-z0-9_.\-]{3,32}" autocomplete="off" autofocus />
           <span class="form-help">3 à 32 caractères alphanumériques.</span>
         </div>
         <div class="form-group">
@@ -8115,9 +8162,25 @@ async function handleEditInterventionSubmit(form) {
   }
 }
 
+async function interventionProgress(path, options) {
+  if (navigator.onLine !== false) return api(path, options);
+  const match = path.match(/^\/api\/interventions\/([^/]+)\/(take|complete|technicians\/([^/]+)\/time)$/);
+  if (!match) throw new Error('Action indisponible hors ligne.');
+  await ensureOfflineCacheOwner();
+  const id = decodeURIComponent(match[1]);
+  const userId = state.currentUser.id;
+  const item = await ApexOffline.getSnapshotItem('interventions', id);
+  if (!item) throw new Error('Intervention absente de l’instantané local.');
+  if (!hasPermission('interventions.edit')) throw new Error('Modification non autorisée.');
+  if (match[2] === 'take') return ApexOffline.localTakeIntervention(id, userId, item.site_id);
+  if (match[2] === 'complete') return ApexOffline.localCompleteIntervention(id, options.body, userId, item.site_id);
+  if (decodeURIComponent(match[3]) !== userId) throw new Error('Hors ligne, seuls vos propres temps peuvent être saisis.');
+  return ApexOffline.localRecordTime(id, options.body.duration_minutes, userId, item.site_id);
+}
+
 async function takeIntervention(id) {
   try {
-    const res = await api(`/api/interventions/${encodeURIComponent(id)}/take`, {
+    const res = await interventionProgress(`/api/interventions/${encodeURIComponent(id)}/take`, {
       method: 'POST',
       body: {},
     });
@@ -8228,7 +8291,7 @@ async function handleCompleteInterventionSubmit(form) {
         throw new Error('La durée passée doit être un entier positif.');
       }
       // S'assurer qu'il est assigné et enregistrer le temps
-      await api(`/api/interventions/${encodeURIComponent(id)}/technicians/${encodeURIComponent(state.currentUser.id)}/time`, {
+      await interventionProgress(`/api/interventions/${encodeURIComponent(id)}/technicians/${encodeURIComponent(state.currentUser.id)}/time`, {
         method: 'PUT',
         body: { duration_minutes: minutes },
       });
@@ -8240,7 +8303,7 @@ async function handleCompleteInterventionSubmit(form) {
     const payload = { solution_report };
     if (final_equipment_status) payload.final_equipment_status = final_equipment_status;
 
-    await api(`/api/interventions/${encodeURIComponent(id)}/complete`, {
+    await interventionProgress(`/api/interventions/${encodeURIComponent(id)}/complete`, {
       method: 'POST',
       body: payload,
     });
@@ -8359,7 +8422,7 @@ async function handleTechnicianTimeSubmit(form) {
   errBox.hidden = true;
 
   try {
-    await api(`/api/interventions/${encodeURIComponent(args.interventionId)}/technicians/${encodeURIComponent(args.userId)}/time`, {
+    await interventionProgress(`/api/interventions/${encodeURIComponent(args.interventionId)}/technicians/${encodeURIComponent(args.userId)}/time`, {
       method: 'PUT',
       body: { duration_minutes: minutes },
     });
@@ -8591,7 +8654,13 @@ async function loadPartDetail(id) {
   container.innerHTML = `<p class="hint">${icon('i-clock')} Chargement des détails de la pièce…</p>`;
 
   try {
-    const part = await api(`/api/parts/${encodeURIComponent(id)}`);
+    const [raw, mvRes] = await Promise.all([
+      api(`/api/parts/${encodeURIComponent(id)}`),
+      api(`/api/stock/movements?part_id=${encodeURIComponent(id)}&limit=10`).catch(() => null),
+    ]);
+    const part = adaptStock(raw);
+    const mvItems = Array.isArray(mvRes) ? mvRes : (mvRes && Array.isArray(mvRes.items) ? mvRes.items : []);
+    part.recent_movements = mvItems.map(adaptStock);
     state.currentPartDetail = part;
     renderPartDetailView(part);
     loadAndRenderEntityDocuments('part', part.id, 'partDocumentsContainer');
@@ -8654,7 +8723,7 @@ function renderPartDetailView(part) {
       <tr>
         <td>
           <b>${esc(loc.location_name)}</b>
-          <div class="hint mono">${esc(loc.location_code)} (${esc(loc.location_kind)})</div>
+          <div class="hint mono">${esc(loc.location_code)}${loc.location_kind ? ` (${esc(loc.location_kind)})` : ''}</div>
         </td>
         <td class="mono font-bold">${esc(loc.quantity)}</td>
         <td class="mono">${esc(loc.reserved_quantity)}</td>
@@ -8761,7 +8830,7 @@ function renderPartDetailView(part) {
           <div class="detail-badges-row">
             <span class="badge">${esc(formatPartCategory(part.category))}</span>
             ${part.barcode ? `<span class="badge mono">${icon('i-barcode')} ${esc(part.barcode)}</span>` : ''}
-            ${partStockBadge(part.total_stock, part.effective_threshold)}
+            ${partStockBadge(part)}
           </div>
         </div>
       </div>
@@ -9815,8 +9884,8 @@ async function handleDeletePart(partId) {
 
 async function openMovementInModal(prefill = {}) {
   const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
-  let partsList = state.parts;
-  let locationsList = state.locations;
+  let partsList = state.parts || [];
+  let locationsList = state.locations || [];
 
   try {
     const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
@@ -9934,8 +10003,8 @@ async function handleMovementInSubmit(form) {
 
 async function openMovementTransferModal(prefill = {}) {
   const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
-  let partsList = state.parts;
-  let locationsList = state.locations;
+  let partsList = state.parts || [];
+  let locationsList = state.locations || [];
 
   try {
     const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
@@ -10051,8 +10120,8 @@ async function handleMovementTransferSubmit(form) {
 
 async function openMovementAdjustModal(prefill = {}) {
   const currentSiteId = state.selectedSiteId || (state.site ? state.site.id : '');
-  let partsList = state.parts;
-  let locationsList = state.locations;
+  let partsList = state.parts || [];
+  let locationsList = state.locations || [];
 
   try {
     const siteParam = currentSiteId ? `?site_id=${encodeURIComponent(currentSiteId)}&limit=100` : '?limit=100';
@@ -10672,7 +10741,7 @@ async function updateInterventionPartLocations(partId, siteId) {
   try {
     const siteParam = siteId ? `&site_id=${encodeURIComponent(siteId)}` : '';
     const res = await api(`/api/stock?part_id=${encodeURIComponent(partId)}${siteParam}`);
-    const items = Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
+    const items = (Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : [])).map(adaptStock);
 
     if (!items.length) {
       locSelect.innerHTML = `<option value="" disabled selected>Aucun stock disponible pour cette pièce</option>`;
@@ -12226,7 +12295,7 @@ async function handleCreateCounterSubmit(form) {
   try {
     await api(`/api/equipments/${encodeURIComponent(equipmentId)}/counters`, {
       method: 'POST',
-      body: { name, unit, initial_value: initialValue },
+      body: { name, unit, current_value: initialValue },
     });
     closeModal();
     notify('Compteur créé avec succès.', 'success');
@@ -16358,7 +16427,9 @@ function hideGlobalBanner() {
 
 function applyAppUpdate() {
   if (state._pendingServiceWorker) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload(), { once: true });
     state._pendingServiceWorker.postMessage({ type: 'SKIP_WAITING' });
+    return;
   }
   window.location.reload();
 }
@@ -16369,12 +16440,34 @@ function goToBackupsSettings() {
   switchSettingsTab('backups');
 }
 
+/**
+ * Efface le cache hors ligne s'il appartient à un autre utilisateur ou à un autre site : son
+ * instantané et son curseur ne sont jamais réutilisés. La file non synchronisée d'un autre
+ * compte n'est pas envoyée sous l'identité courante ; elle est proposée à l'export, puis effacée.
+ */
+async function ensureOfflineCacheOwner() {
+  if (!state.currentUser || typeof ApexOffline === 'undefined') return;
+  const check = await ApexOffline.checkCacheOwner(state.currentUser.id, state.site ? state.site.id : null);
+  if (!check.changed) return;
+  const foreign = check.foreignOperations;
+  if (foreign.length > 0) {
+    const exportFirst = await confirmDialog(
+      'Opérations d\'un autre compte',
+      `${foreign.length} opération(s) non synchronisée(s) d'un autre compte sont restées sur cet appareil. Elles ne seront pas envoyées sous votre identité et vont être effacées. Voulez-vous d'abord les exporter (fichier JSON) ?`,
+      'Exporter puis effacer'
+    );
+    if (exportFirst) downloadOutboxJson(foreign);
+  }
+  await ApexOffline.clearAllOfflineData();
+}
+
 /** Rafraîchit l'instantané hors-ligne pour le technicien connecté. */
 async function refreshOfflineSnapshot() {
   if (!navigator.onLine || !state.currentUser || !hasPermission('interventions.view')) return;
   if (typeof ApexOffline === 'undefined') return;
 
   try {
+    await ensureOfflineCacheOwner();
     const lastSync = await ApexOffline.getMeta('last_sync_at');
     const qs = lastSync ? `?since=${encodeURIComponent(lastSync)}` : '';
     const snap = await api(`/api/offline/snapshot${qs}`);
@@ -16651,6 +16744,7 @@ async function triggerSyncNow() {
   }
 
   try {
+    await ensureOfflineCacheOwner();
     const report = await ApexOffline.syncOutbox(
       fetch,
       state.currentUser ? state.currentUser.id : null,
@@ -16715,18 +16809,22 @@ async function handleRetryOfflineOp(opId) {
   }
 }
 
+/** Télécharge des opérations de la file au format JSON. */
+function downloadOutboxJson(ops) {
+  const blob = new Blob([JSON.stringify(ops, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `apex-maint-outbox-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function handleExportOutboxJson() {
   try {
-    const ops = await ApexOffline.getAllOperations();
-    const blob = new Blob([JSON.stringify(ops, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `apex-maint-outbox-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadOutboxJson(await ApexOffline.getAllOperations());
     notify('Export terminé.', 'success');
   } catch (err) {
     notify(`Erreur lors de l'export : ${err.message}`, 'error');
@@ -18222,7 +18320,7 @@ function handleGlobalChange(e) {
     loadReportingData();
   } else if (action === 'filter-reporting-site') {
     state.reportingSiteId = sel.value;
-    loadReportingData();
+    loadReportingFilterOptions().then(loadReportingData);
   } else if (action === 'filter-reporting-line') {
     state.reportingLineId = sel.value;
     loadReportingData();

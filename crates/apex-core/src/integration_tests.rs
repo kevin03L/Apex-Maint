@@ -253,7 +253,8 @@ async fn ingestion_compteurs_seuil_reset_espacement_et_idempotence() {
         &pool,
         &admin,
         CreateMaintenancePlan {
-            site_id: Some("site-a".into()),
+            // Administrateur sans site précisé : site déduit de l'équipement.
+            site_id: None,
             code: "PLN-SUP-1".into(),
             title: "Vidange 100h".into(),
             equipment_id: eq.id.clone(),
@@ -279,6 +280,7 @@ async fn ingestion_compteurs_seuil_reset_espacement_et_idempotence() {
     )
     .await
     .unwrap();
+    assert_eq!(plan.site_id, "site-a");
 
     // Créer une clé pour le site-a
     let key_res = create_key(
@@ -621,6 +623,33 @@ async fn ingestion_statuts_rapprochement_historique_html_et_peremption() {
     let hist = history(&pool, &admin, &eq1.id, None, 10).await.unwrap();
     assert_eq!(hist.items.len(), 1); // Toujours 1 seul changement historisé !
 
+    // Un ancien changement arrivé après la répétition du même état reste ignoré.
+    ingest_statuses(
+        &pool,
+        &principal.actor,
+        &principal.key_id,
+        vec![StatusInput {
+            equipment_ref: "EXT-EQ-STAT".into(),
+            state: "stopped".into(),
+            since: (now + Duration::minutes(1)).to_rfc3339(),
+            message: None,
+        }],
+    )
+    .await
+    .unwrap();
+    let current = statuses(&pool, &admin, Some(&eq1.id), None, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(current.items[0].state, "alarm");
+    assert_eq!(
+        history(&pool, &admin, &eq1.id, None, 10)
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+
     // Changement d'état vers running
     ingest_statuses(
         &pool,
@@ -688,6 +717,16 @@ async fn ingestion_statuts_rapprochement_historique_html_et_peremption() {
     let purge_res = purge_history(&pool, &admin).await.unwrap();
     assert_eq!(purge_res["history_deleted"], 1);
     assert_eq!(purge_res["events_deleted"], 1);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action='purge' AND entity='integration_history'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+
+    // Purge planifiée sans rien à supprimer : pas de ligne de journal supplémentaire.
+    purge_history(&pool, &admin).await.unwrap();
     let audited: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE action='purge' AND entity='integration_history'",
     )

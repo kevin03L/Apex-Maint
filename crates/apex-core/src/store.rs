@@ -224,6 +224,23 @@ fn enabled() -> bool {
     true
 }
 
+/// Identifiant de connexion : 3 à 32 caractères parmi lettres ASCII, chiffres, `_`, `.` et `-`.
+fn username(value: &str) -> Result<(), MaintError> {
+    let value = value.trim();
+    let valid = (3..=32).contains(&value.len())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(MaintError::BadRequest(
+            "L'identifiant doit contenir de 3 à 32 caractères (lettres, chiffres, « _ », « . » ou « - »)"
+                .into(),
+        ))
+    }
+}
+
 fn text(value: &str) -> Result<(), MaintError> {
     if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     {
@@ -272,7 +289,7 @@ pub async fn create_user(
     if let Some(value) = &input.email {
         crate::pilotage::settings::email(value)?;
     }
-    text(&input.username)?;
+    username(&input.username)?;
     text(&input.display_name)?;
     password::validate_new_password(&input.password, None)?;
     let hash = password::hash(input.password).await?;
@@ -308,7 +325,20 @@ pub(crate) async fn revoke(
 ) -> Result<(), MaintError> {
     // Le filtre est répété ici : une révocation ne traverse jamais la frontière de site.
     sqlx::query("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL AND (? IS NULL OR token_hash<>?) AND EXISTS(SELECT 1 FROM users WHERE id=sessions.user_id AND (? OR site_id=?))")
-        .bind(now()).bind(uid).bind(except).bind(except).bind(actor.is_admin()).bind(&actor.site_id).execute(conn).await?;
+        .bind(now()).bind(uid).bind(except).bind(except).bind(actor.is_admin()).bind(&actor.site_id).execute(&mut *conn).await?;
+    // Toute révocation des sessions (mot de passe changé ou réinitialisé, compte désactivé,
+    // rôle ou site modifié) invalide aussi les liens de réinitialisation déjà émis.
+    revoke_reset_tokens(conn, actor, uid).await
+}
+
+/// Invalide les jetons de réinitialisation non utilisés du compte, dans la transaction appelante.
+pub(crate) async fn revoke_reset_tokens(
+    conn: &mut SqliteConnection,
+    actor: &Actor,
+    uid: &str,
+) -> Result<(), MaintError> {
+    sqlx::query("UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=password_reset_tokens.user_id AND (? OR site_id=?))")
+        .bind(now()).bind(uid).bind(actor.is_admin()).bind(&actor.site_id).execute(conn).await?;
     Ok(())
 }
 
@@ -395,6 +425,9 @@ pub async fn update_user(
     if delete || !edit.active || edit.role.as_str() != before.role || edit.site_id != before.site_id
     {
         revoke(&mut tx, actor, uid, None).await?;
+    } else if edit.email != before.email {
+        // Adresse de récupération changée : un lien envoyé à l'ancienne adresse ne vaut plus.
+        revoke_reset_tokens(&mut tx, actor, uid).await?;
     }
     let mut after = before.clone();
     after.email = edit.email;

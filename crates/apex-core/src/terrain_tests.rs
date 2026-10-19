@@ -34,6 +34,115 @@ async fn fixture() -> (sqlx::SqlitePool, Actor) {
 }
 
 #[tokio::test]
+async fn sous_intervention_exige_modification() {
+    let (pool, mut actor) = fixture().await;
+    let input = |parent: Option<&str>| {
+        serde_json::from_value(json!({
+            "title":"Incident", "type":"hors_equipement", "parent_id":parent
+        }))
+        .unwrap()
+    };
+    let parent = crate::interventions::create_intervention(&pool, &actor, input(None), None)
+        .await
+        .unwrap();
+    actor.permissions.remove(&Permission::InterventionsEdit);
+    let error =
+        crate::interventions::create_intervention(&pool, &actor, input(Some(&parent.id)), None)
+            .await
+            .unwrap_err();
+    assert_eq!(error.http_status(), 403);
+    assert!(
+        crate::interventions::create_intervention(&pool, &actor, input(None), None)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn consommation_ordinaire_refuse_les_pieces_preparees() {
+    let (pool, actor) = fixture().await;
+    let item = crate::interventions::create_intervention(
+        &pool,
+        &actor,
+        serde_json::from_value(json!({"title":"Panne", "type":"hors_equipement"})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    for sql in [
+        "INSERT INTO parts(id,site_id,reference,name,created_at,updated_at) VALUES('p','s','P','Pièce','2026','2026')",
+        "INSERT INTO locations(id,site_id,code,name,kind,created_at,updated_at) VALUES('l','s','L','Magasin','magasin','2026','2026')",
+        "INSERT INTO stock(id,site_id,part_id,location_id,quantity,updated_at) VALUES('stock','s','p','l',5,'2026')",
+    ] { sqlx::query(sql).execute(&pool).await.unwrap(); }
+    sqlx::query("INSERT INTO stock_reservations(id,site_id,intervention_id,part_id,location_id,quantity,status,prepared_by_id,prepared_at,created_at,updated_at) VALUES('r','s',?,'p','l',5,'prepared',?,'2026','2026','2026')")
+        .bind(&item.id).bind(&actor.user_id).execute(&pool).await.unwrap();
+    let error = crate::stock::consume_part_on_intervention(
+        &pool,
+        &actor,
+        &item.id,
+        serde_json::from_value(json!({"part_id":"p","location_id":"l","quantity":5})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.http_status(), 409);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT quantity FROM stock WHERE id='stock'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM stock_reservations WHERE id='r'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "prepared"
+    );
+}
+
+#[tokio::test]
+async fn occurrences_compteur_distinctes_apres_remise_a_zero() {
+    let (pool, actor) = fixture().await;
+    for sql in [
+        "INSERT INTO equipments(id,site_id,code,name,created_at,updated_at) VALUES('e','s','E','Machine','2026','2026')",
+        "INSERT INTO equipment_counters(id,site_id,equipment_id,name,unit,current_value,created_at,updated_at) VALUES('c','s','e','Heures','h',100,'2026','2026')",
+        "INSERT INTO maintenance_plans(id,site_id,code,title,equipment_id,frequency,counter_id,counter_interval,next_due_counter,created_at,updated_at) VALUES('p','s','P','Entretien','e','counter','c',100,200,'2026','2026')",
+        "INSERT INTO maintenance_occurrences(id,site_id,plan_id,due_counter,status,created_at,updated_at) VALUES('o1','s','p',100,'done','2026','2026')",
+    ] { sqlx::query(sql).execute(&pool).await.unwrap(); }
+    crate::maintenance::record_counter_reading(
+        &pool,
+        &actor,
+        "c",
+        serde_json::from_value(json!({"value":0,"is_reset":true})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    crate::maintenance::record_counter_reading(
+        &pool,
+        &actor,
+        "c",
+        serde_json::from_value(json!({"value":100})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM maintenance_occurrences WHERE plan_id='p' AND status='generated' AND due_counter=100 AND intervention_id IS NOT NULL").fetch_one(&pool).await.unwrap(), 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(DISTINCT counter_cycle) FROM maintenance_occurrences WHERE plan_id='p'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        2
+    );
+    assert!(sqlx::query("INSERT INTO maintenance_occurrences(id,site_id,plan_id,due_counter,status,created_at,updated_at) VALUES('o3','s','p',100,'done','2026','2026')").execute(&pool).await.is_err());
+}
+
+#[tokio::test]
 async fn dates_precondition_compte_rendu_et_reponse_atomique() {
     let (pool, actor) = fixture().await;
     let input = || {
@@ -182,4 +291,62 @@ async fn instantane_site_delta_taille_et_sans_secrets() {
             .unwrap()["full"],
         true
     );
+}
+
+#[tokio::test]
+async fn dates_d_intervention_analysees_et_normalisees() {
+    let (pool, actor) = fixture().await;
+    sqlx::query("INSERT INTO equipments(id,site_id,code,name,created_at,updated_at) VALUES('eq','s','EQ','Presse',?,?)")
+        .bind(crate::store::now())
+        .bind(crate::store::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let posteriori = |started_at: &str, completed_at: &str| {
+        serde_json::from_value::<crate::interventions::CreateIntervention>(json!({
+            "title": "A posteriori",
+            "type": "a_posteriori",
+            "equipment_id": "eq",
+            "solution_report": "Fait",
+            "duration_minutes": 30,
+            "reported_at": started_at,
+            "started_at": started_at,
+            "completed_at": completed_at,
+        }))
+        .unwrap()
+    };
+    // Une date non RFC 3339 (ici du HTML) est refusée avant toute écriture.
+    let err = crate::interventions::create_intervention(
+        &pool,
+        &actor,
+        posteriori("2026-10-01T08:00:00Z", "<b id='audit'>injecté</b>"),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.http_status(), 400);
+    // Une date valide avec décalage est enregistrée en UTC, au format de store::now().
+    let item = crate::interventions::create_intervention(
+        &pool,
+        &actor,
+        posteriori("2026-10-01T08:00:00+02:00", "2026-10-01T10:30:00+02:00"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(item.reported_at, "2026-10-01T06:00:00.000Z");
+    assert_eq!(
+        item.completed_at.as_deref(),
+        Some("2026-10-01T08:30:00.000Z")
+    );
+    // Fin antérieure au début : refusée.
+    let err = crate::interventions::create_intervention(
+        &pool,
+        &actor,
+        posteriori("2026-10-01T10:00:00Z", "2026-10-01T09:00:00Z"),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.http_status(), 400);
 }

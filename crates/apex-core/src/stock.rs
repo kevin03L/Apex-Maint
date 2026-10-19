@@ -1607,6 +1607,15 @@ pub async fn consume_part_on_intervention(
     .fetch_one(&mut *tx)
     .await?;
 
+    let own_reservations: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stock_reservations WHERE site_id = ? AND intervention_id = ? AND part_id = ? AND location_id = ? AND status = 'prepared'",
+    ).bind(&int.site_id).bind(intervention_id).bind(&part.id).bind(&input.location_id)
+        .fetch_one(&mut *tx).await?;
+    if own_reservations > 0 {
+        return Err(MaintError::Conflict(
+            "Utilisez la consommation de réservation pour ces pièces préparées".into(),
+        ));
+    }
     let reserved_for_others: i64 = sqlx::query_scalar(
         r#"
         SELECT COALESCE(SUM(quantity), 0) 

@@ -416,6 +416,58 @@ async fn reset_jeton_unique_expire_sessions_et_limites() {
 }
 
 #[tokio::test]
+async fn reset_jetons_revoques_par_changement_de_mot_de_passe_ou_d_adresse() {
+    let (pool, admin) = fixture().await;
+    smtp(&pool, &admin).await;
+    let dernier_jeton = || async {
+        let text: String = sqlx::query_scalar(
+            "SELECT body_text FROM outbox_emails ORDER BY created_at DESC,id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        text.split("jeton=").nth(1).unwrap().trim().to_string()
+    };
+    // Mot de passe réinitialisé par l'administrateur : le lien déjà émis ne vaut plus.
+    reset::request(&pool, "responsable", "127.0.0.1")
+        .await
+        .unwrap();
+    let token = dernier_jeton().await;
+    store::reset_password(&pool, &admin, "responsable", "Admin-pose123".into())
+        .await
+        .unwrap();
+    assert!(reset::confirm(&pool, &token, "Pirate-test123".into())
+        .await
+        .is_err());
+    // Adresse de récupération changée : idem.
+    reset::request(&pool, "responsable", "127.0.0.1")
+        .await
+        .unwrap();
+    let token = dernier_jeton().await;
+    store::update_user(
+        &pool,
+        &admin,
+        "responsable",
+        json!({"email": "nouvelle@example.test"}),
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(reset::confirm(&pool, &token, "Pirate-test123".into())
+        .await
+        .is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM password_reset_tokens WHERE user_id='responsable' AND used_at IS NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn smtp_local_capture_et_reprises() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let (pool, admin) = fixture().await;

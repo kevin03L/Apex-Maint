@@ -19,6 +19,33 @@ use crate::{
     Actor, MaintError, Permission, Role,
 };
 
+/// Analyse une date RFC 3339 reçue du client et la normalise en UTC (millisecondes, `Z`),
+/// au format de `store::now()` : la valeur enregistrée est sûre à l'affichage et les
+/// comparaisons textuelles entre dates restent chronologiques.
+pub(crate) fn normalize_date(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<String>, MaintError> {
+    let Some(raw) = value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    chrono::DateTime::parse_from_rfc3339(&raw)
+        .map(|d| {
+            Some(
+                d.with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            )
+        })
+        .map_err(|_| {
+            MaintError::BadRequest(format!(
+                "Date invalide pour « {field} » (format RFC 3339 attendu)"
+            ))
+        })
+}
+
 // ============================================================================
 // ÉNUMÉRATIONS ET MACHINE À ÉTATS FINIS
 // ============================================================================
@@ -869,6 +896,9 @@ pub async fn create_intervention(
     ip: Option<&str>,
 ) -> Result<Intervention, MaintError> {
     actor.require_permission(Permission::InterventionsCreate)?;
+    if input.parent_id.is_some() {
+        actor.require_permission(Permission::InterventionsEdit)?;
+    }
     let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
     let title = validate_title(&input.title)?;
     let description = clean_opt_string(input.description, 4096, "La description")?;
@@ -925,7 +955,7 @@ pub async fn create_intervention(
     let now = store::now();
     let reported_at = crate::terrain::occurred(&mut tx, actor, None)
         .await?
-        .or(input.reported_at)
+        .or(normalize_date(input.reported_at, "reported_at")?)
         .unwrap_or_else(|| now.clone());
     let code =
         resolve_or_generate_code(&mut tx, &site_id, input.code.as_deref(), &reported_at).await?;
@@ -965,8 +995,15 @@ pub async fn create_intervention(
                 "La durée doit être positive ou nulle".into(),
             ));
         }
-        let start = input.started_at.unwrap_or_else(|| reported_at.clone());
-        let comp = input.completed_at.unwrap_or_else(|| now.clone());
+        let start =
+            normalize_date(input.started_at, "started_at")?.unwrap_or_else(|| reported_at.clone());
+        let comp =
+            normalize_date(input.completed_at, "completed_at")?.unwrap_or_else(|| now.clone());
+        if comp < start {
+            return Err(MaintError::BadRequest(
+                "La date de fin ne peut pas être antérieure à la date de début".into(),
+            ));
+        }
         (
             InterventionStatus::Completed,
             Some(rep),
@@ -1267,7 +1304,7 @@ pub async fn complete_intervention(
         current.started_at.as_deref().or(Some(&current.reported_at)),
     )
     .await?
-    .or(input.completed_at)
+    .or(normalize_date(input.completed_at, "completed_at")?)
     .unwrap_or_else(|| now.clone());
     let started_at = current.started_at.unwrap_or_else(|| completed_at.clone());
 

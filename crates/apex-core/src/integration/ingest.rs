@@ -105,7 +105,7 @@ async fn counter(pool: &SqlitePool, actor: &Actor, r: &Reading) -> Result<(), Ma
                 )
                 .ok_or_else(|| MaintError::BadRequest("Échéance hors limites".into()))?;
             let anchor = if due >= interval { due % interval } else { due };
-            sqlx::query("UPDATE maintenance_plans SET next_due_counter=?,anchor_counter=?,updated_at=? WHERE id=? AND site_id=?")
+            sqlx::query("UPDATE maintenance_plans SET next_due_counter=?,anchor_counter=?,counter_cycle=counter_cycle+1,updated_at=? WHERE id=? AND site_id=?")
                 .bind(due).bind(anchor).bind(&now).bind(&plan).bind(&site).execute(&mut *tx).await?;
             store::audit(
                 &mut tx,
@@ -222,7 +222,7 @@ async fn status_one(pool: &SqlitePool, actor: &Actor, s: &StatusInput) -> Result
         .bind(&actor.site_id).bind(&s.equipment_ref).bind(&s.equipment_ref).bind(&s.equipment_ref).fetch_optional(&mut *tx).await?;
     let id = id.ok_or_else(|| MaintError::NotFound("Référence d'équipement inconnue".into()))?;
     let previous: Option<(String, String)> = sqlx::query_as(
-        "SELECT state,since FROM equipment_external_status WHERE equipment_id=? AND site_id=?",
+        "SELECT state,COALESCE(last_event_at,since) FROM equipment_external_status WHERE equipment_id=? AND site_id=?",
     )
     .bind(&id)
     .bind(&actor.site_id)
@@ -237,8 +237,8 @@ async fn status_one(pool: &SqlitePool, actor: &Actor, s: &StatusInput) -> Result
         sqlx::query("INSERT INTO equipment_external_status_history(id,equipment_id,site_id,state,since,message,received_at) VALUES(?,?,?,?,?,?,?)")
             .bind(store::id()).bind(&id).bind(&actor.site_id).bind(&s.state).bind(&since).bind(&s.message).bind(&now).execute(&mut *tx).await?;
     }
-    sqlx::query("INSERT INTO equipment_external_status(equipment_id,site_id,state,since,message,received_at) VALUES(?,?,?,?,?,?) ON CONFLICT(equipment_id) DO UPDATE SET state=excluded.state,since=CASE WHEN equipment_external_status.state=excluded.state THEN equipment_external_status.since ELSE excluded.since END,message=excluded.message,received_at=excluded.received_at")
-        .bind(&id).bind(&actor.site_id).bind(&s.state).bind(&since).bind(&s.message).bind(&now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO equipment_external_status(equipment_id,site_id,state,since,message,received_at,last_event_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(equipment_id) DO UPDATE SET state=excluded.state,since=CASE WHEN equipment_external_status.state=excluded.state THEN equipment_external_status.since ELSE excluded.since END,message=excluded.message,received_at=excluded.received_at,last_event_at=excluded.last_event_at")
+        .bind(&id).bind(&actor.site_id).bind(&s.state).bind(&since).bind(&s.message).bind(&now).bind(&since).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

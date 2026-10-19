@@ -13,6 +13,38 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const offline = require('../static/offline.js');
 
+test('M3. La déclaration a posteriori conserve tous les champs saisis', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  const fields = {
+    title: 'Réparation', type: 'a_posteriori', solution_report: 'Joint remplacé',
+    duration_minutes: 45, technician_ids: ['tech'],
+    started_at: '2026-10-18T10:00:00.000Z', completed_at: '2026-10-18T10:45:00.000Z'
+  };
+  const item = await offline.localCreateIntervention(fields, 'tech', 'site', db);
+  const [operation] = await offline.getAllOperations(db);
+  for (const key of ['solution_report', 'duration_minutes', 'technician_ids', 'started_at', 'completed_at']) {
+    assert.deepEqual(item[key], fields[key]);
+    assert.deepEqual(operation.body[key], fields[key]);
+  }
+  assert.equal(item.status, 'completed');
+});
+
+test('M2. La progression locale conserve la prise en charge, le temps et la clôture', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  const item = await offline.localCreateIntervention({ title: 'Panne' }, 'tech', 'site', db);
+  await offline.localTakeIntervention(item.id, 'tech', 'site', db);
+  await offline.localRecordTime(item.id, 20, 'tech', 'site', db);
+  await offline.localRecordTime(item.id, 45, 'tech', 'site', db);
+  await offline.localCompleteIntervention(item.id, { solution_report: 'Réparé' }, 'tech', 'site', db);
+  const saved = await offline.getSnapshotItem('interventions', item.id, db);
+  assert.equal(saved.duration_minutes, 45);
+  assert.equal(saved.status, 'completed');
+  assert.equal(saved.solution_report, 'Réparé');
+  assert.equal((await offline.getAllOperations(db)).length, 5);
+});
+
 /** Mock IndexedDB en mémoire pour node:test */
 function createMockIndexedDB() {
   const stores = new Map();
@@ -321,4 +353,39 @@ test('5. Pas d\'envoi sous une autre identité', async () => {
   assert.equal(report.stoppedReason, 'USER_MISMATCH');
   assert.equal(wasFetchCalled, false);
   assert.equal(report.sent, 0);
+});
+
+test('6. Changement d\'identité détecté avant tout usage du cache', async () => {
+  const mockIDB = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+
+  // Cache vierge : pas de changement.
+  assert.equal((await offline.checkCacheOwner('user-b', 'site-b', mockIDB)).changed, false);
+
+  // Instantané chargé par A (site A), avec une opération non envoyée.
+  await offline.saveSnapshot({ full: true, generated_at: '2026-10-18T10:00:00.000Z', equipments: [{ id: 'EQ-A' }] }, 'user-a', 'site-a', mockIDB);
+  await offline.enqueueOperation({ id: 'op-a', type: 'take_intervention', url: '/api/interventions/1/take', user_id: 'user-a', site_id: 'site-a' }, mockIDB);
+
+  // Même identité : aucun changement.
+  assert.equal((await offline.checkCacheOwner('user-a', 'site-a', mockIDB)).changed, false);
+  // Même utilisateur, autre site : changement.
+  assert.equal((await offline.checkCacheOwner('user-a', 'site-b', mockIDB)).changed, true);
+
+  // B se connecte : changement, et la file de A est remontée pour l'export.
+  const check = await offline.checkCacheOwner('user-b', 'site-b', mockIDB);
+  assert.equal(check.changed, true);
+  assert.deepEqual(check.foreignOperations.map(op => op.id), ['op-a']);
+});
+
+test('7. Les opérations « À résoudre » comptent parmi les non synchronisées', async () => {
+  const mockIDB = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+
+  await offline.enqueueOperation({ id: 'op-1', type: 'take_intervention', url: '/api/interventions/1/take', user_id: 'u', created_at: '2026-10-18T10:00:00.000Z' }, mockIDB);
+  await offline.enqueueOperation({ id: 'op-2', type: 'take_intervention', url: '/api/interventions/2/take', user_id: 'u', created_at: '2026-10-18T10:01:00.000Z' }, mockIDB);
+  await offline.markOperationConflict('op-1', 'Clôturée entre-temps', 409, null, mockIDB);
+  await offline.markOperationConflict('op-2', 'Clôturée entre-temps', 409, null, mockIDB);
+
+  assert.equal((await offline.getPendingOperations(mockIDB)).length, 0);
+  assert.equal((await offline.getUnsyncedOperations(mockIDB)).length, 2);
 });

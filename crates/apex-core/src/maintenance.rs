@@ -351,18 +351,27 @@ pub struct AdvanceCounterResult {
     pub missed_counters: Vec<i64>,
 }
 
+/// Nombre maximal d'échéances manquées enregistrées une à une lors d'un rattrapage de compteur.
+/// Au-delà, seules les plus récentes sont conservées : un saut aberrant du compteur (saisie ou
+/// relevé Supervision) ne doit ni épuiser la mémoire ni retenir le verrou d'écriture.
+pub const MAX_MISSED_COUNTERS: i64 = 1000;
+
 /// Avance un planning de compteur après la clôture ou l'annulation d'une échéance.
 ///
 /// Règle §2.2 :
 /// - `next_due_counter` augmente de `counter_interval`.
-/// - Les échéances déjà franchies par `current_reading` passent en `missed`.
+/// - Les échéances déjà franchies par `current_reading` passent en `missed`, dans la limite
+///   des `MAX_MISSED_COUNTERS` plus récentes.
+///
+/// Le nombre d'échéances franchies est calculé par arithmétique, en `i128`, sans boucle ni
+/// dépassement d'entier.
 pub fn advance_counter(
     counter_interval: i64,
     current_due_counter: i64,
     current_reading: i64,
 ) -> AdvanceCounterResult {
     let interval = counter_interval.max(1);
-    let first_next = current_due_counter + interval;
+    let first_next = current_due_counter.saturating_add(interval);
 
     if first_next > current_reading {
         return AdvanceCounterResult {
@@ -371,16 +380,18 @@ pub fn advance_counter(
         };
     }
 
-    let mut missed = Vec::new();
-    let mut k = first_next;
-
-    while k + interval <= current_reading {
-        missed.push(k);
-        k += interval;
-    }
+    let (first, step) = (i128::from(first_next), i128::from(interval));
+    // Échéances franchies : first, first + step, … strictement avant la nouvelle échéance.
+    let crossed = (i128::from(current_reading) - first) / step;
+    // first <= next <= current_reading : la conversion vers i64 ne peut pas échouer.
+    let next = i64::try_from(first + crossed * step).unwrap_or(current_reading);
+    let kept = crossed.min(i128::from(MAX_MISSED_COUNTERS));
+    let missed = ((crossed - kept)..crossed)
+        .filter_map(|i| i64::try_from(first + i * step).ok())
+        .collect();
 
     AdvanceCounterResult {
-        next_due_counter: k,
+        next_due_counter: next,
         missed_counters: missed,
     }
 }
@@ -1160,7 +1171,8 @@ pub async fn record_counter_reading(
 
     let is_reset = input.is_reset.unwrap_or(false);
     let now = store::now();
-    let read_at = input.read_at.unwrap_or_else(|| now.clone());
+    let read_at = crate::interventions::normalize_date(input.read_at, "read_at")?
+        .unwrap_or_else(|| now.clone());
     let note = input
         .note
         .map(|s| s.trim().to_string())
@@ -1200,8 +1212,10 @@ pub async fn record_counter_reading(
         .await?;
 
         for (p_id, old_due, interval) in linked_plans {
-            let remaining = old_due - old_current_value;
-            let new_due = input.value + remaining;
+            let new_due = i64::try_from(
+                i128::from(input.value) + i128::from(old_due) - i128::from(old_current_value),
+            )
+            .map_err(|_| MaintError::BadRequest("Échéance hors limites".into()))?;
             let int_val = interval.max(1);
             let new_anchor = if new_due >= int_val {
                 new_due % int_val
@@ -1210,7 +1224,7 @@ pub async fn record_counter_reading(
             };
 
             sqlx::query(
-                "UPDATE maintenance_plans SET next_due_counter = ?, anchor_counter = ?, updated_at = ? WHERE id = ?",
+                "UPDATE maintenance_plans SET next_due_counter = ?, anchor_counter = ?, counter_cycle = counter_cycle + 1, updated_at = ? WHERE id = ?",
             )
             .bind(new_due)
             .bind(new_anchor)
@@ -1617,7 +1631,18 @@ pub async fn create_plan(
 ) -> Result<MaintenancePlan, MaintError> {
     actor.require_permission(Permission::MaintenanceManage)?;
 
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    // Administrateur sans site précisé (vue « Tous les sites ») : site de l'équipement.
+    let requested_site = match input.site_id.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => Some(s.to_string()),
+        _ if actor.is_admin() => {
+            sqlx::query_scalar("SELECT site_id FROM equipments WHERE id = ? AND deleted_at IS NULL")
+                .bind(&input.equipment_id)
+                .fetch_optional(pool)
+                .await?
+        }
+        _ => None,
+    };
+    let site_id = resolve_site_id_for_create(actor, requested_site.as_deref())?;
     let code = validate_code(&input.code)?;
     let title = validate_name(&input.title, "Le titre du planning", 255)?;
     let frequency = Frequency::parse(&input.frequency)?;
@@ -1756,7 +1781,12 @@ pub async fn create_plan(
             }
 
             let anchor_c = input.anchor_counter.unwrap_or(c_val);
-            let next_c = input.next_due_counter.unwrap_or(anchor_c + c_interval);
+            let next_c = match input.next_due_counter {
+                Some(value) => value,
+                None => anchor_c
+                    .checked_add(c_interval)
+                    .ok_or_else(|| MaintError::BadRequest("Échéance hors limites".into()))?,
+            };
 
             (
                 None,
@@ -2032,30 +2062,36 @@ pub async fn update_plan(
     }
 
     // Recalcul de next_due si planification modifiée
-    let (next_due_date, next_due_counter) = if schedule_params_changed {
-        match frequency {
-            Frequency::Counter => {
-                let interval = counter_interval.ok_or_else(|| {
-                    MaintError::BadRequest("L'intervalle de compteur est requis".into())
-                })?;
-                let anc = anchor_counter.unwrap_or(current.counter_current_value.unwrap_or(0));
-                (None, Some(anc + interval))
+    let (next_due_date, next_due_counter) =
+        if schedule_params_changed {
+            match frequency {
+                Frequency::Counter => {
+                    let interval = counter_interval.ok_or_else(|| {
+                        MaintError::BadRequest("L'intervalle de compteur est requis".into())
+                    })?;
+                    let anc = anchor_counter.unwrap_or(current.counter_current_value.unwrap_or(0));
+                    (
+                        None,
+                        Some(anc.checked_add(interval).ok_or_else(|| {
+                            MaintError::BadRequest("Échéance hors limites".into())
+                        })?),
+                    )
+                }
+                Frequency::Daily
+                | Frequency::Weekly
+                | Frequency::Monthly
+                | Frequency::Quarterly
+                | Frequency::Yearly
+                | Frequency::IntervalDays => {
+                    let ad = anchor_date.clone().ok_or_else(|| {
+                        MaintError::BadRequest("La date d'ancrage est requise".into())
+                    })?;
+                    (Some(ad), None)
+                }
             }
-            Frequency::Daily
-            | Frequency::Weekly
-            | Frequency::Monthly
-            | Frequency::Quarterly
-            | Frequency::Yearly
-            | Frequency::IntervalDays => {
-                let ad = anchor_date.clone().ok_or_else(|| {
-                    MaintError::BadRequest("La date d'ancrage est requise".into())
-                })?;
-                (Some(ad), None)
-            }
-        }
-    } else {
-        (current.next_due_date.clone(), current.next_due_counter)
-    };
+        } else {
+            (current.next_due_date.clone(), current.next_due_counter)
+        };
 
     let lead_days = input.lead_days.unwrap_or(current.lead_days).clamp(0, 365);
     let lead_counter = input.lead_counter.unwrap_or(current.lead_counter).max(0);
@@ -3378,6 +3414,19 @@ mod tests {
         let res_missed = advance_counter(100, 1000, 1450);
         assert_eq!(res_missed.missed_counters, vec![1100, 1200, 1300]);
         assert_eq!(res_missed.next_due_counter, 1400);
+
+        // Saut aberrant du compteur : rattrapage borné, sans allocation démesurée.
+        let res_saut = advance_counter(1, 0, 1_000_000_000_000);
+        assert_eq!(res_saut.next_due_counter, 1_000_000_000_000);
+        assert_eq!(res_saut.missed_counters.len() as i64, MAX_MISSED_COUNTERS);
+        assert_eq!(res_saut.missed_counters.last(), Some(&999_999_999_999));
+        // Valeurs extrêmes : aucun dépassement d'entier.
+        let res_max = advance_counter(i64::MAX, i64::MAX - 1, i64::MAX);
+        assert_eq!(res_max.next_due_counter, i64::MAX);
+        assert!(res_max.missed_counters.is_empty());
+        let res_max = advance_counter(1, i64::MAX - 5, i64::MAX);
+        assert_eq!(res_max.next_due_counter, i64::MAX);
+        assert_eq!(res_max.missed_counters.len(), 4);
 
         // Remise à zéro préservant la distance restante
         // Compteur était à 950, prochaine échéance à 1000 -> distance = 50

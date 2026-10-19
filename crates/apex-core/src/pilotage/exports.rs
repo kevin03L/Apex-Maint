@@ -426,7 +426,7 @@ pub fn code_label(key: &str, code: &str) -> Option<&'static str> {
     Some(match (field, code) {
         ("status", "open") => "Ouverte",
         ("status", "in_progress") => "En cours",
-        ("status", "completed") => "Terminée",
+        ("status", "completed") => "Clôturée",
         ("status", "cancelled") => "Annulée",
         ("status", "operational") => "En service",
         ("status", "degraded") => "Dégradé",
@@ -550,6 +550,12 @@ fn display(v: &Value, key: &str) -> String {
         return neutralize(s);
     }
     if v.is_number() {
+        // Décimaux (délais, taux) arrondis au centième ; entiers inchangés.
+        if let (None, Some(n)) = (v.as_i64(), v.as_f64()) {
+            let rounded = format!("{n:.2}");
+            let rounded = rounded.trim_end_matches('0').trim_end_matches('.');
+            return rounded.replace('.', ",");
+        }
         return v.to_string().replace('.', ",");
     }
     neutralize(&v.to_string())

@@ -291,8 +291,14 @@ pub fn save(
         #[cfg(unix)]
         if let Ok(meta) = fs::metadata(path) {
             use std::os::unix::fs::MetadataExt;
-            let _ = std::os::unix::fs::chown(&tmp, None, Some(meta.gid()));
-            let _ = fs::set_permissions(&tmp, meta.permissions());
+            std::os::unix::fs::chown(&tmp, None, Some(meta.gid()))?;
+            fs::set_permissions(&tmp, meta.permissions())?;
+        } else {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            // Le dossier système est provisionné root:apex-maint par postinst.
+            let meta = fs::metadata(dir)?;
+            std::os::unix::fs::chown(&tmp, None, Some(meta.gid()))?;
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o640))?;
         }
         f.sync_all()
     };
@@ -693,5 +699,17 @@ mod tests {
             .iter()
             .any(|i| i.severity == Severity::Warning));
         let _ = fs::remove_dir_all(layout.config_file.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn premiere_configuration_lisible_par_le_groupe_du_dossier() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let layout = temp_layout("groupe-initial");
+        save(&layout, &AppConfig::default(), None).unwrap();
+        let file = fs::metadata(&layout.config_file).unwrap();
+        let dir = fs::metadata(layout.config_file.parent().unwrap()).unwrap();
+        assert_eq!(file.gid(), dir.gid());
+        assert_eq!(file.permissions().mode() & 0o777, 0o640);
     }
 }
