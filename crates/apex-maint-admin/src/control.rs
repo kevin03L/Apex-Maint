@@ -304,6 +304,7 @@ pub fn is_elevated() -> bool {
 /// Exécute une commande d'administration du moteur. Déjà administrateur : exécution directe,
 /// sortie récupérée. Sinon (Windows) : élévation UAC, seul le code de sortie est connu.
 /// Renvoie le code de sortie et la sortie du programme (vide si inconnue).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn run_privileged(exe: &Path, args: &[&str]) -> Result<(i32, String), String> {
     if is_elevated() || !CAN_RELAUNCH_ELEVATED {
         let out = hidden(Command::new(exe).args(args))
