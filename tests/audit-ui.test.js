@@ -25,6 +25,52 @@ function fonction(name, next) {
   return app.slice(app.indexOf(`function ${name}(`), app.indexOf(`function ${next}(`));
 }
 
+test('A12. Le formulaire conserve le PATCH en ligne et utilise la file hors ligne', async () => {
+  for (const online of [true, false]) {
+    const calls = [];
+    const context = vm.createContext({
+      navigator: { onLine: online }, state: { currentUser: { id: 'tech' } },
+      document: { getElementById: () => ({}) },
+      ensureOfflineCacheOwner: async () => {}, hasPermission: () => true,
+      api: async (...args) => calls.push(['api', ...args]),
+      ApexOffline: { getLocalIntervention: async () => ({ site_id: 'site' }),
+        localPatchIntervention: async (...args) => calls.push(['local', ...args]) },
+      closeModal() {}, notify() {}, loadInterventionDetail: async () => {},
+    });
+    vm.runInContext('async ' + fonction('handleEditInterventionSubmit', 'interventionProgress').replace(/async\s*$/, ''), context);
+    context.form = { dataset: { args: '"i"' }, title: { value: 'Titre' }, description: { value: 'Diagnostic' },
+      priority: { value: 'high' }, machine_state: { value: 'ARRET' }, solution_report: { value: 'Réparé' } };
+    await vm.runInContext('handleEditInterventionSubmit(form)', context);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], online ? 'api' : 'local');
+    assert.deepEqual(JSON.parse(JSON.stringify(online ? calls[0][2].body : calls[0][2])), online
+      ? { title: 'Titre', description: 'Diagnostic', priority: 'high', machine_state: 'ARRET' }
+      : { description: 'Diagnostic', solution_report: 'Réparé' });
+  }
+});
+
+test('A13. Une autorisation différée après fermeture libère la caméra', async () => {
+  let allow;
+  let stopped = 0;
+  let played = 0;
+  const video = { isConnected: true, play: async () => played++ };
+  const context = vm.createContext({
+    navigator: { mediaDevices: { getUserMedia: () => new Promise(resolve => { allow = resolve; }) } },
+    document: { getElementById: () => video },
+    openModal() {}, closeModal() {}, notify() {}, startQrCodeDetectionLoop() {},
+    openManualEquipmentCodeModal() {}, cancelAnimationFrame() {},
+  });
+  const start = app.indexOf('let scannerActiveStream = null;');
+  const end = app.indexOf('function closeQrScannerModal()', start);
+  vm.runInContext(app.slice(start, end), context);
+  const pending = vm.runInContext('openQrScannerModal()', context);
+  vm.runInContext('stopQrScanner()', context);
+  allow({ getTracks: () => [{ stop() { stopped++; } }] });
+  await pending;
+  assert.equal(stopped, 1);
+  assert.equal(played, 0);
+});
+
 test('U7. Les échéances conservent les pages de 25, leur ordre et leurs curseurs dans l’IHM', async () => {
   for (const due of ['overdue', 'soon']) {
     const expected = Array.from({ length: 57 }, (_, i) => ({ id: `plan-${i}`, state: due === 'soon' ? 'due_soon' : due }));

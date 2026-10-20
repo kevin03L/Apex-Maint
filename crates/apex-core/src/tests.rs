@@ -7,6 +7,246 @@ use crate::{
 };
 use serde_json::{json, Value};
 
+#[tokio::test]
+async fn audit4_reglages_documentaires_delegues() {
+    use crate::documents::{self, storage};
+    let (pool, _, admin) = setup().await;
+    let site = store::save_site(&pool, &admin.actor, None, Some("Site"), false)
+        .await
+        .unwrap();
+    let user = store::create_user(
+        &pool,
+        &admin.actor,
+        input(
+            "delegue",
+            Role::Responsable,
+            Some(site["id"].as_str().unwrap().into()),
+        ),
+    )
+    .await
+    .unwrap();
+    let actor = Actor::new(
+        user.id,
+        user.site_id,
+        Role::Responsable,
+        [Permission::SettingsEdit, Permission::SettingsView],
+    );
+    let settings = documents::settings_internal(&pool, &actor).await.unwrap();
+    documents::set_settings(&pool, &actor, settings)
+        .await
+        .unwrap();
+    let labels = documents::labels(&pool, &actor).await.unwrap();
+    documents::set_labels(&pool, &actor, labels).await.unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let files = storage::FileStore::new(temp.path().into(), [42; 32]);
+    let backend = storage::save_storage(
+        &pool,
+        &actor,
+        &files,
+        None,
+        json!({"kind":"folder","label":"Temporaire","config":{"path":temp.path()}}),
+    )
+    .await
+    .unwrap();
+    storage::save_storage(
+        &pool,
+        &actor,
+        &files,
+        Some(&backend.id),
+        json!({"label":"Modifié"}),
+    )
+    .await
+    .unwrap();
+    storage::change_storage(&pool, &actor, &files, &backend.id, true)
+        .await
+        .unwrap();
+    let sites: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT site_id FROM audit_log WHERE user_id=?")
+            .bind(&actor.user_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(sites.len(), 6);
+    assert!(sites.iter().all(|site| site == &actor.site_id));
+}
+
+#[tokio::test]
+async fn audit4_plannings_et_equipements_supprimes() {
+    use crate::{maintenance as m, referentiel as r};
+    let (pool, _, admin) = setup().await;
+    let actor = &admin.actor;
+    let site = store::save_site(&pool, actor, None, Some("Site"), false)
+        .await
+        .unwrap();
+    let site = site["id"].as_str().unwrap();
+    let eq = r::create_equipment(
+        &pool,
+        actor,
+        serde_json::from_value(json!({
+            "site_id":site,"code":"EQ-A4","name":"Équipement","status":"operational"
+        }))
+        .unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let prod = store::create_user(
+        &pool,
+        actor,
+        input("production", Role::Production, Some(site.into())),
+    )
+    .await
+    .unwrap();
+    let mut data = json!({"site_id":site,"code":"PLAN-A4","title":"Entretien","equipment_id":eq.id,
+        "frequency":"daily","anchor_date":"2026-01-01","active":false,"default_technician_id":prod.id});
+    assert!(m::create_plan(
+        &pool,
+        actor,
+        serde_json::from_value(data.clone()).unwrap(),
+        None
+    )
+    .await
+    .is_err());
+    data["default_technician_id"] = Value::Null;
+    let plan = m::create_plan(&pool, actor, serde_json::from_value(data).unwrap(), None)
+        .await
+        .unwrap();
+    assert!(m::update_plan(
+        &pool,
+        actor,
+        &plan.id,
+        serde_json::from_value(json!({"default_technician_id":prod.id})).unwrap(),
+        None
+    )
+    .await
+    .is_err());
+    // Ancien planning dont le compte a changé de rôle : aucune affectation production.
+    sqlx::query("UPDATE maintenance_plans SET default_technician_id=? WHERE id=? AND site_id=?")
+        .bind(&prod.id)
+        .bind(&plan.id)
+        .bind(site)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, intervention) = m::generate_plan_occurrence(&pool, actor, &plan.id, None)
+        .await
+        .unwrap();
+    assert!(intervention.technicians.is_empty());
+    // Un second planning sans occurrence reste supprimable avec son équipement.
+    let eq2 = r::create_equipment(
+        &pool,
+        actor,
+        serde_json::from_value(json!({
+            "site_id":site,"code":"EQ-A4-B","name":"Retiré","status":"operational"
+        }))
+        .unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let plan2 = m::create_plan(&pool, actor, serde_json::from_value(json!({"site_id":site,"code":"PLAN-A4-B",
+        "title":"Entretien","equipment_id":eq2.id,"frequency":"daily","anchor_date":"2026-01-01","active":false})).unwrap(), None).await.unwrap();
+    r::delete_equipment(&pool, actor, &eq2.id, None)
+        .await
+        .unwrap();
+    assert!(m::generate_plan_occurrence(&pool, actor, &plan2.id, None)
+        .await
+        .is_err());
+    assert!(m::update_plan(
+        &pool,
+        actor,
+        &plan2.id,
+        serde_json::from_value(json!({"active":true})).unwrap(),
+        None
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn audit4_releve_constant_preserve_la_chronologie() {
+    use crate::{integration as i, maintenance as m, referentiel as r};
+    let (pool, _, admin) = setup().await;
+    let site = store::save_site(&pool, &admin.actor, None, Some("Site"), false)
+        .await
+        .unwrap();
+    let site = site["id"].as_str().unwrap();
+    let actor = Actor::new(&admin.actor.user_id, Some(site.into()), Role::Admin, []);
+    let eq = r::create_equipment(
+        &pool,
+        &actor,
+        serde_json::from_value(json!({"site_id":site,"code":"EQ-A2","name":"Compteur"})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let counter = m::create_equipment_counter(
+        &pool,
+        &actor,
+        &eq.id,
+        serde_json::from_value(json!({"name":"Heures","unit":"h","current_value":0})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE equipment_counters SET external_ref='A2' WHERE id=? AND site_id=?")
+        .bind(&counter.id)
+        .bind(site)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let key = i::create_key(
+        &pool,
+        &actor,
+        i::KeyInput {
+            site_id: Some(site.into()),
+            label: "Test".into(),
+            scopes: vec!["counters".into()],
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    for (value, read_at, reset) in [
+        (100, "2026-01-01T10:00:00Z", false),
+        (100, "2026-01-01T11:00:00Z", false),
+        (90, "2026-01-01T10:30:00Z", true),
+    ] {
+        let report = i::ingest_counters(
+            &pool,
+            &actor,
+            key["item"]["id"].as_str().unwrap(),
+            vec![i::Reading {
+                counter_ref: "A2".into(),
+                value,
+                read_at: read_at.into(),
+                reset,
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.accepted, 1);
+    }
+    let row: (i64, String) = sqlx::query_as(
+        "SELECT current_value,last_reading_at FROM equipment_counters WHERE id=? AND site_id=?",
+    )
+    .bind(&counter.id)
+    .bind(site)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, (100, "2026-01-01T11:00:00.000Z".into()));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM counter_readings WHERE counter_id=? AND site_id=? AND value=100",
+    )
+    .bind(&counter.id)
+    .bind(site)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}
+
 async fn setup() -> (sqlx::SqlitePool, Auth, crate::services::Session) {
     let pool = db::open(None).await.unwrap();
     let auth = Auth::new(pool.clone(), 12);
@@ -17,6 +257,162 @@ async fn setup() -> (sqlx::SqlitePool, Auth, crate::services::Session) {
         .unwrap();
     let session = auth.session(&token).await.unwrap();
     (pool, auth, session)
+}
+
+#[tokio::test]
+async fn audit4_generation_automatique_equivalente_par_les_deux_declencheurs() {
+    use crate::{maintenance as m, referentiel as r};
+    let (pool, _, admin) = setup().await;
+    let actor = &admin.actor;
+    let site = store::save_site(&pool, actor, None, Some("Site"), false)
+        .await
+        .unwrap();
+    let site = site["id"].as_str().unwrap();
+    let eq = r::create_equipment(
+        &pool,
+        actor,
+        serde_json::from_value(json!({"site_id":site,"code":"EQ-A5","name":"Machine"})).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut plans = Vec::new();
+    for index in 0..2 {
+        let counter = m::create_equipment_counter(
+            &pool,
+            actor,
+            &eq.id,
+            serde_json::from_value(
+                json!({"name":format!("Compteur {index}"),"unit":"h","current_value":100}),
+            )
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let plan = m::create_plan(&pool, actor, serde_json::from_value(json!({"site_id":site,"code":format!("PLAN-A5-{index}"),"title":"Entretien","equipment_id":eq.id,
+            "frequency":"counter","counter_id":counter.id,"counter_interval":10,"next_due_counter":100,"auto_generate":true})).unwrap(), None).await.unwrap();
+        plans.push((plan.id, counter.id));
+    }
+    m::process_auto_generation_for_counter(&pool, &plans[0].1).await;
+    m::process_auto_generation(&pool).await;
+    for (plan, _) in &plans {
+        let rows: Vec<(String, String, i64, String)> = sqlx::query_as("SELECT o.status,o.generation,o.due_counter,i.type FROM maintenance_occurrences o JOIN interventions i ON i.id=o.intervention_id WHERE o.plan_id=? AND o.site_id=?")
+            .bind(plan).bind(site).fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            rows,
+            vec![("generated".into(), "auto".into(), 100, "preventive".into())]
+        );
+    }
+    m::process_auto_generation_for_counter(&pool, &plans[1].1).await;
+    m::process_auto_generation(&pool).await;
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM maintenance_occurrences WHERE site_id=?")
+            .bind(site)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn audit4_index_audit_migration_0015_equivalente() {
+    let pool = db::open(None).await.unwrap();
+    sqlx::query("CREATE INDEX audit_site_date ON audit_log(site_id,created_at)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sites(id,name,created_at,updated_at) VALUES('s','Site','','')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for id in ["a", "b", "c"] {
+        sqlx::query("INSERT INTO audit_log(id,site_id,action,entity,created_at) VALUES(?,'s','test','test','2026-01-01')").bind(id).execute(&pool).await.unwrap();
+    }
+    let before: Vec<String> = sqlx::query_scalar("SELECT id FROM audit_log WHERE site_id='s' AND created_at>='2026-01-01' ORDER BY created_at DESC,id DESC LIMIT 2").fetch_all(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0015_audit_index.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let after: Vec<String> = sqlx::query_scalar("SELECT id FROM audit_log WHERE site_id='s' AND created_at>='2026-01-01' ORDER BY created_at DESC,id DESC LIMIT 2").fetch_all(&pool).await.unwrap();
+    assert_eq!(before, after);
+    let plan: Vec<(i64,i64,i64,String)> = sqlx::query_as("EXPLAIN QUERY PLAN SELECT id FROM audit_log WHERE site_id='s' AND created_at>='2026-01-01' ORDER BY created_at DESC,id DESC LIMIT 2").fetch_all(&pool).await.unwrap();
+    assert!(plan.iter().any(|row| row.3.contains("audit_site_date_id")));
+}
+
+#[tokio::test]
+async fn audit4_purge_preserve_sessions_valides_et_limites_de_debit() {
+    use chrono::{Duration, Utc};
+    let (pool, auth, admin) = setup().await;
+    sqlx::query("UPDATE app_settings SET value='30' WHERE key='session_timeout_min'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let now = Utc::now();
+    for (key, age, revoked) in [
+        ("valide", 10, false),
+        ("expiree", 31, false),
+        ("revoquee", 0, true),
+    ] {
+        sqlx::query("INSERT INTO sessions(token_hash,user_id,created_at,last_seen_at,revoked_at) VALUES(?,?,?,?,?)")
+            .bind(key).bind(&admin.actor.user_id).bind(now.to_rfc3339()).bind((now-Duration::minutes(age)).to_rfc3339())
+            .bind(revoked.then(|| now.to_rfc3339())).execute(&pool).await.unwrap();
+    }
+    for (key, age, validity, used) in [
+        ("ancien", 61, -31, false),
+        ("recent", 40, -10, false),
+        ("utilise", 40, -10, true),
+        ("encore_valide", 61, 10, false),
+    ] {
+        sqlx::query("INSERT INTO password_reset_tokens(id,user_id,token_hash,expires_at,created_at,used_at) VALUES(?,?,?,?,?,?)")
+            .bind(key).bind(&admin.actor.user_id).bind(key).bind((now+Duration::minutes(validity)).to_rfc3339())
+            .bind((now-Duration::minutes(age)).to_rfc3339()).bind(used.then(|| now.to_rfc3339())).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO password_reset_requests(id,requested_ip,created_at) VALUES(?,'test',?)",
+        )
+        .bind(key)
+        .bind((now - Duration::minutes(age)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let since = (now - Duration::hours(1)).to_rfc3339();
+    let limits = async {
+        let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE user_id=? AND created_at>?").bind(&admin.actor.user_id).bind(&since).fetch_one(&pool).await.unwrap();
+        let requests: i64 = sqlx::query_scalar("SELECT count(*) FROM password_reset_requests WHERE requested_ip='test' AND created_at>?").bind(&since).fetch_one(&pool).await.unwrap();
+        (tokens, requests)
+    }.await;
+    assert_eq!(auth.purge_unused(&admin.actor).await.unwrap(), 5);
+    let tokens: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM password_reset_tokens WHERE user_id=? AND created_at>?",
+    )
+    .bind(&admin.actor.user_id)
+    .bind(&since)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let requests: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM password_reset_requests WHERE requested_ip='test' AND created_at>?",
+    )
+    .bind(&since)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((tokens, requests), limits);
+    let sessions: Vec<String> =
+        sqlx::query_scalar("SELECT token_hash FROM sessions ORDER BY token_hash")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(sessions.contains(&"valide".into()));
+    assert!(!sessions.contains(&"expiree".into()));
+    let valid: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE id='encore_valide'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(valid, 1);
+    assert_eq!(auth.purge_unused(&admin.actor).await.unwrap(), 0);
 }
 fn input(name: &str, role: Role, site: Option<String>) -> CreateUser {
     CreateUser {

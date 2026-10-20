@@ -98,6 +98,34 @@ test('U23. La création hors ligne garde le site choisi et le parent', async () 
 });
 
 /** Mock IndexedDB en mémoire pour node:test */
+test('A11. Un delta remplace les affectations, même par une liste vide', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  await offline.saveSnapshot({ full: true,
+    interventions: [{ id: 'i' }, { id: 'autre' }],
+    technicians: [{ intervention_id: 'i', user_id: 'a' }, { intervention_id: 'i', user_id: 'b' },
+      { intervention_id: 'autre', user_id: 'b' }],
+  }, 'a', 'site', db);
+  await offline.saveSnapshot({ full: false, interventions: [{ id: 'i' }],
+    technicians: [{ intervention_id: 'i', user_id: 'a' }],
+  }, 'a', 'site', db);
+  assert.deepEqual((await offline.getLocalIntervention('i', db)).technicians.map(t => t.user_id), ['a']);
+  await offline.saveSnapshot({ full: false, interventions: [{ id: 'i' }], technicians: [] }, 'a', 'site', db);
+  assert.equal((await offline.getLocalIntervention('i', db)).technicians.length, 0);
+  assert.equal((await offline.getLocalIntervention('autre', db)).technicians.length, 1);
+});
+
+test('A12. La modification locale conserve les champs et la précondition dans la file', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  await offline.saveSnapshot({ full: true, interventions: [{ id: 'i', updated_at: '2026-10-18T10:00:00.000Z' }] }, 'a', 'site', db);
+  await offline.localPatchIntervention('i', { description: 'Diagnostic', solution_report: 'Réparation' }, 'a', 'site', db);
+  const [op] = await offline.getAllOperations(db);
+  assert.equal(op.if_unmodified_since, '2026-10-18T10:00:00.000Z');
+  assert.deepEqual(op.body, { description: 'Diagnostic', solution_report: 'Réparation' });
+  assert.equal((await offline.getLocalIntervention('i', db)).solution_report, 'Réparation');
+});
+
 function createMockIndexedDB(onRead = () => {}) {
   const stores = new Map();
 

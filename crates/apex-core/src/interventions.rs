@@ -988,7 +988,7 @@ pub async fn create_intervention(
     let tech_ids = input.technician_ids.unwrap_or_default();
     if !tech_ids.is_empty() {
         for (idx, uid) in tech_ids.iter().enumerate() {
-            validate_user_for_assignment(&mut tx, &site_id, uid).await?;
+            validate_user_for_assignment(&mut tx, actor, &site_id, uid).await?;
             let is_lead = if idx == 0 { 1 } else { 0 };
             let tech_dur = if int_type == InterventionType::APosteriori && is_lead == 1 {
                 duration_minutes
@@ -1008,7 +1008,8 @@ pub async fn create_intervention(
         }
     } else if int_type == InterventionType::APosteriori && !actor.user_id.is_empty() {
         // Pour a posteriori sans technicien spécifié, assigne le demandeur comme lead avec la durée
-        if let Ok(()) = validate_user_for_assignment(&mut tx, &site_id, &actor.user_id).await {
+        if let Ok(()) = validate_user_for_assignment(&mut tx, actor, &site_id, &actor.user_id).await
+        {
             sqlx::query(
                 "INSERT INTO intervention_technicians (intervention_id, user_id, is_lead, assigned_at, duration_minutes) VALUES (?, ?, 1, ?, ?)",
             )
@@ -1107,7 +1108,7 @@ pub async fn take_intervention(
             .await?;
 
             for (idx, uid) in tech_ids.iter().enumerate() {
-                validate_user_for_assignment(&mut tx, &current.site_id, uid).await?;
+                validate_user_for_assignment(&mut tx, actor, &current.site_id, uid).await?;
                 let is_lead = if idx == 0 { 1 } else { 0 };
                 sqlx::query(
                     r#"
@@ -1133,7 +1134,7 @@ pub async fn take_intervention(
         .await?;
 
         if count == 0 && !actor.user_id.is_empty() {
-            validate_user_for_assignment(&mut tx, &current.site_id, &actor.user_id).await?;
+            validate_user_for_assignment(&mut tx, actor, &current.site_id, &actor.user_id).await?;
             sqlx::query(
                 "INSERT INTO intervention_technicians (intervention_id, user_id, is_lead, assigned_at, duration_minutes) VALUES (?, ?, 1, ?, NULL)",
             )
@@ -1580,7 +1581,7 @@ pub async fn assign_technician(
         ));
     }
 
-    validate_user_for_assignment(&mut tx, &current.site_id, &input.user_id).await?;
+    validate_user_for_assignment(&mut tx, actor, &current.site_id, &input.user_id).await?;
 
     let now = store::now();
 
@@ -1867,11 +1868,15 @@ pub async fn recalculate_equipment_status(
 }
 
 /// Vérifie qu'un utilisateur peut être assigné (même site, actif, rôle technicien/responsable/admin).
-async fn validate_user_for_assignment(
+pub(crate) async fn validate_user_for_assignment(
     conn: &mut SqliteConnection,
+    actor: &Actor,
     site_id: &str,
     user_id: &str,
 ) -> Result<(), MaintError> {
+    if !actor.is_admin() && actor.site_id.as_deref() != Some(site_id) {
+        return Err(MaintError::NotFound("Site".into()));
+    }
     let row: Option<(Option<String>, String, i64)> = sqlx::query_as(
         "SELECT site_id, role, active FROM users WHERE id = ? AND deleted_at IS NULL",
     )

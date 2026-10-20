@@ -141,6 +141,53 @@ fn authority_params() -> rcgen::CertificateParams {
     p.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(3650);
     p
 }
+/// Compare les SAN DNS/IP configurés avec l'extension du certificat existant.
+fn same_names(cert: &CertificateDer<'_>, expected: &[rcgen::SanType]) -> Result<bool, String> {
+    let (_, mut outer) = tlv(&mut cert.as_ref())?;
+    let (_, mut tbs) = tlv(&mut outer)?;
+    let mut actual = Vec::new();
+    while !tbs.is_empty() {
+        let (tag, mut value) = tlv(&mut tbs)?;
+        if tag != 0xa3 {
+            continue;
+        }
+        let (_, mut extensions) = tlv(&mut value)?;
+        while !extensions.is_empty() {
+            let (_, mut extension) = tlv(&mut extensions)?;
+            let (_, oid) = tlv(&mut extension)?;
+            if oid != [0x55, 0x1d, 0x11] {
+                continue;
+            }
+            let (mut tag, mut value) = tlv(&mut extension)?;
+            if tag == 1 {
+                (tag, value) = tlv(&mut extension)?;
+            }
+            if tag != 4 {
+                return Ok(false);
+            }
+            let (_, mut names) = tlv(&mut value)?;
+            while !names.is_empty() {
+                let (tag, name) = tlv(&mut names)?;
+                actual.push((tag, name.to_vec()));
+            }
+        }
+    }
+    let mut wanted = Vec::new();
+    for name in expected {
+        wanted.push(match name {
+            rcgen::SanType::DnsName(name) => (0x82, name.as_str().as_bytes().to_vec()),
+            rcgen::SanType::IpAddress(std::net::IpAddr::V4(ip)) => (0x87, ip.octets().to_vec()),
+            rcgen::SanType::IpAddress(std::net::IpAddr::V6(ip)) => (0x87, ip.octets().to_vec()),
+            _ => return Ok(false),
+        });
+    }
+    actual.sort();
+    actual.dedup();
+    wanted.sort();
+    wanted.dedup();
+    Ok(actual == wanted)
+}
+
 pub fn self_signed(
     config: &TlsConfig,
     base: &Path,
@@ -194,37 +241,39 @@ pub fn self_signed(
     load(&dir.join("ca.pem"), &ca_key_path)?;
     let cert = dir.join("server.pem");
     let key = dir.join("server.key");
+    let mut names = config.self_signed_names.clone();
+    if names.is_empty() {
+        names = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+        if let Ok(host) = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")) {
+            use std::net::ToSocketAddrs;
+            if let Ok(addresses) = (host.as_str(), 0).to_socket_addrs() {
+                names.extend(addresses.map(|a| a.ip().to_string()));
+            }
+            names.push(host);
+        }
+        if bind
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| !ip.is_unspecified())
+        {
+            names.push(bind.into());
+        }
+    }
+    names.sort();
+    names.dedup();
+    let mut params = rcgen::CertificateParams::new(names).map_err(error)?;
+
     let renew = load(&cert, &key)
         .ok()
         .and_then(|_| {
             let data = std::fs::read(&cert).ok()?;
             let der = rustls_pemfile::certs(&mut data.as_slice()).next()?.ok()?;
-            validity(&der)
-                .ok()
-                .map(|(_, end)| end <= Utc::now() + chrono::Duration::days(30))
+            validity(&der).ok().map(|(_, end)| {
+                end <= Utc::now() + chrono::Duration::days(30)
+                    || !same_names(&der, &params.subject_alt_names).unwrap_or(false)
+            })
         })
         .unwrap_or(true);
     if renew {
-        let mut names = config.self_signed_names.clone();
-        if names.is_empty() {
-            names = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-            if let Ok(host) = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")) {
-                use std::net::ToSocketAddrs;
-                if let Ok(addresses) = (host.as_str(), 0).to_socket_addrs() {
-                    names.extend(addresses.map(|a| a.ip().to_string()));
-                }
-                names.push(host);
-            }
-            if bind
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| !ip.is_unspecified())
-            {
-                names.push(bind.into());
-            }
-        }
-        names.sort();
-        names.dedup();
-        let mut params = rcgen::CertificateParams::new(names).map_err(error)?;
         params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
         params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(730);
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
@@ -268,6 +317,46 @@ pub fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comparaison_san_dns_et_ip_sans_acces_disque() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(vec![
+            "atelier.local".into(),
+            "127.0.0.1".into(),
+            "::1".into(),
+        ])
+        .unwrap();
+        let mut names = params.subject_alt_names.clone();
+        let cert = params.self_signed(&key).unwrap();
+        names.reverse();
+        assert!(same_names(cert.der(), &names).unwrap());
+        names.pop();
+        assert!(!same_names(cert.der(), &names).unwrap());
+        names.push(rcgen::SanType::DnsName("nouveau.local".try_into().unwrap()));
+        assert!(!same_names(cert.der(), &names).unwrap());
+    }
+    #[test]
+    fn noms_modifies_renouvellent_le_serveur_sans_changer_autorite() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = TlsConfig {
+            self_signed_names: vec!["localhost".into(), "127.0.0.1".into()],
+            ..Default::default()
+        };
+        let (cert, _) = self_signed(&config, dir.path(), "127.0.0.1").unwrap();
+        let original = std::fs::read(&cert).unwrap();
+        let ca = std::fs::read(dir.path().join("tls/ca.pem")).unwrap();
+        config.self_signed_names.reverse();
+        self_signed(&config, dir.path(), "127.0.0.1").unwrap();
+        assert_eq!(std::fs::read(&cert).unwrap(), original);
+        config.self_signed_names.push("atelier.local".into());
+        self_signed(&config, dir.path(), "127.0.0.1").unwrap();
+        assert_ne!(std::fs::read(&cert).unwrap(), original);
+        assert_eq!(std::fs::read(dir.path().join("tls/ca.pem")).unwrap(), ca);
+        config.self_signed_names.retain(|n| n != "atelier.local");
+        let changed = std::fs::read(&cert).unwrap();
+        self_signed(&config, dir.path(), "127.0.0.1").unwrap();
+        assert_ne!(std::fs::read(&cert).unwrap(), changed);
+    }
     #[test]
     fn certificats_absents_expires_et_cle_incompatible() {
         let dir = tempfile::tempdir().unwrap();

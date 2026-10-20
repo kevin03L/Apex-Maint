@@ -1,12 +1,15 @@
 //! API de pilotage, exports, paramètres et récupération du compte.
-use super::{auth::ApiError, AppState};
+use super::{
+    errors::{body, Body as JsonBody, Result},
+    AppState,
+};
 use apex_core::{
     pilotage::{audit, dashboard, exports, notifications, reports, reset, settings},
     services::Session,
     MaintError, Permission, Role,
 };
 use axum::{
-    extract::{rejection::JsonRejection, ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -15,15 +18,8 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, net::SocketAddr};
-type Result<T> = std::result::Result<T, ApiError>;
 pub type WidgetCache =
     std::sync::Arc<tokio::sync::Mutex<BTreeMap<String, (std::time::Instant, Value)>>>;
-type Body<T> = std::result::Result<Json<T>, JsonRejection>;
-fn body<T>(input: Body<T>) -> Result<T> {
-    input
-        .map(|Json(v)| v)
-        .map_err(|_| MaintError::BadRequest("Corps JSON invalide ou champs inconnus".into()).into())
-}
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -72,7 +68,7 @@ async fn dashboard_get(
 async fn dashboard_put(
     State(s): State<AppState>,
     Extension(session): Extension<Session>,
-    input: Body<dashboard::Layout>,
+    input: JsonBody<dashboard::Layout>,
 ) -> Result<Json<Value>> {
     dashboard::save(&s.pool, &session.actor, None, Some(body(input)?)).await?;
     dashboard_get(State(s), Extension(session)).await
@@ -103,7 +99,7 @@ async fn defaults_put(
     State(s): State<AppState>,
     Extension(session): Extension<Session>,
     Path(r): Path<String>,
-    input: Body<dashboard::Layout>,
+    input: JsonBody<dashboard::Layout>,
 ) -> Result<Json<Value>> {
     dashboard::save(&s.pool, &session.actor, Some(role(&r)?), Some(body(input)?)).await?;
     defaults_get(State(s), Extension(session), Path(r)).await
@@ -182,7 +178,7 @@ macro_rules! section {
         async fn $put(
             State(s): State<AppState>,
             Extension(session): Extension<Session>,
-            input: Body<Value>,
+            input: JsonBody<Value>,
         ) -> Result<Json<Value>> {
             Ok(Json(
                 settings::save(&s.pool, &s.files, &session.actor, $name, body(input)?).await?,
@@ -210,7 +206,7 @@ async fn preferences_get(
 async fn preferences_put(
     State(s): State<AppState>,
     Extension(session): Extension<Session>,
-    input: Body<Value>,
+    input: JsonBody<Value>,
 ) -> Result<Json<Value>> {
     Ok(Json(
         notifications::preferences(&s.pool, &session.actor, Some(body(input)?)).await?,
@@ -246,7 +242,7 @@ struct ConfirmReset {
 async fn reset_request(
     State(s): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    input: Body<RequestReset>,
+    input: JsonBody<RequestReset>,
 ) -> Result<(StatusCode, Json<Value>)> {
     reset::request(&s.pool, &body(input)?.identifier, &peer.ip().to_string()).await?;
     Ok((
@@ -256,7 +252,10 @@ async fn reset_request(
         ),
     ))
 }
-async fn reset_confirm(State(s): State<AppState>, input: Body<ConfirmReset>) -> Result<StatusCode> {
+async fn reset_confirm(
+    State(s): State<AppState>,
+    input: JsonBody<ConfirmReset>,
+) -> Result<StatusCode> {
     let input = body(input)?;
     reset::confirm(&s.pool, &input.token, input.new_password).await?;
     Ok(StatusCode::NO_CONTENT)

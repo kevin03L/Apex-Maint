@@ -662,7 +662,7 @@ async fn set_values(
                 action: "update",
                 entity: "app_setting",
                 entity_id: Some(key),
-                site_id: None,
+                site_id: actor.site_id.as_deref(),
                 before: Some(json!(before)),
                 after: Some(value),
                 ip: None,

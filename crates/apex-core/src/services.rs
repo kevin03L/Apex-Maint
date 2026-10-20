@@ -322,6 +322,35 @@ impl Auth {
         })
     }
 
+    /// Purge technique : les limites de débit restent intactes pendant une heure entière.
+    pub async fn purge_unused(&self, actor: &Actor) -> Result<u64, MaintError> {
+        actor.require_permission(Permission::SettingsEdit)?;
+        store::require_admin(actor)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let timeout = crate::pilotage::settings::raw(&mut tx, "session_timeout_min")
+            .await?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| (15..=10080).contains(n))
+            .map(Duration::minutes)
+            .unwrap_or(self.ttl);
+        let now = Utc::now();
+        let mut count = sqlx::query("DELETE FROM sessions WHERE revoked_at IS NOT NULL OR julianday(last_seen_at)<=julianday(?)")
+            .bind((now-timeout).to_rfc3339_opts(SecondsFormat::Millis, true)).execute(&mut *tx).await?.rows_affected();
+        count += sqlx::query("DELETE FROM password_reset_tokens WHERE julianday(expires_at)<=julianday(?) AND julianday(created_at)<=julianday(?)")
+            .bind(now.to_rfc3339_opts(SecondsFormat::Millis, true)).bind((now-Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true))
+            .execute(&mut *tx).await?.rows_affected();
+        count += sqlx::query(
+            "DELETE FROM password_reset_requests WHERE julianday(created_at)<=julianday(?)",
+        )
+        .bind((now - Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(count)
+    }
+
     pub async fn logout(&self, session: &Session) -> Result<(), MaintError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("UPDATE sessions SET revoked_at=? WHERE token_hash=? AND user_id=? AND EXISTS(SELECT 1 FROM users WHERE id=sessions.user_id AND (? OR site_id=?))")

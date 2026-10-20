@@ -52,3 +52,108 @@ pub fn body<T>(input: Body<T>) -> Result<T> {
         })
     })
 }
+
+/// Seul un corps réellement vide autorise les valeurs par défaut.
+pub async fn optional_body<T: serde::de::DeserializeOwned>(
+    req: axum::extract::Request,
+) -> Result<Option<T>> {
+    use axum::extract::FromRequest;
+    let (parts, stream) = req.into_parts();
+    let bytes = axum::body::Bytes::from_request(
+        axum::extract::Request::from_parts(parts.clone(), stream),
+        &(),
+    )
+    .await
+    .map_err(|e| {
+        ApiError(if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            MaintError::PayloadTooLarge("Corps JSON trop volumineux".into())
+        } else {
+            MaintError::BadRequest("Corps JSON illisible".into())
+        })
+    })?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    body(
+        Json::<T>::from_request(
+            axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes)),
+            &(),
+        )
+        .await,
+    )
+    .map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn corps_facultatif_invalide_refuse_avant_traitement() {
+        use axum::{
+            body::Body,
+            extract::DefaultBodyLimit,
+            http::{Request, StatusCode},
+            routing::post,
+            Router,
+        };
+        use tower::ServiceExt;
+        let router = Router::new()
+            .route(
+                "/consume",
+                post(|req| async {
+                    super::optional_body::<apex_core::stock::ConsumeReservationInput>(req).await?;
+                    Ok::<_, super::ApiError>(StatusCode::NO_CONTENT)
+                }),
+            )
+            .route(
+                "/take",
+                post(|req| async {
+                    super::optional_body::<apex_core::interventions::TakeIntervention>(req).await?;
+                    Ok::<_, super::ApiError>(StatusCode::NO_CONTENT)
+                }),
+            )
+            .layer(DefaultBodyLimit::max(65536));
+        for path in ["/consume", "/take"] {
+            for input in [
+                "{".to_string(),
+                "null".into(),
+                if path == "/consume" {
+                    r#"{"quantity":"2"}"#.into()
+                } else {
+                    r#"{"technician_ids":2}"#.into()
+                },
+                "x".repeat(65537),
+            ] {
+                let expected = if input.len() > 65536 {
+                    StatusCode::PAYLOAD_TOO_LARGE
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                let request = Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(input))
+                    .unwrap();
+                assert_eq!(
+                    router.clone().oneshot(request).await.unwrap().status(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn corps_facultatif_vide_et_objet_vide_conservent_les_defauts() {
+        use axum::{body::Body, http::Request};
+        for input in ["", "{}"] {
+            let req = Request::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(input))
+                .unwrap();
+            let value = super::optional_body::<apex_core::stock::ConsumeReservationInput>(req)
+                .await
+                .unwrap_or_else(|_| panic!("Corps valide refusé"));
+            assert_eq!(value.and_then(|v| v.quantity), None);
+        }
+    }
+}

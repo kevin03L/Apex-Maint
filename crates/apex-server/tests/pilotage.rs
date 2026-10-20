@@ -3,6 +3,21 @@
 mod common;
 use common::{Server, Settings};
 use serde_json::{json, Value};
+
+#[test]
+fn adaptateur_json_pilotage_conserve_413() {
+    let (s, admin, _) = setup("pilotage-json-413");
+    let response = common::request_bytes(
+        s.port(),
+        "PUT",
+        "/api/dashboard",
+        None,
+        &vec![b' '; 65537],
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+    )
+    .unwrap();
+    assert_eq!(response.status, 413, "{}", response.text());
+}
 fn login(s: &Server, name: &str, password: &str) -> String {
     let r = s.session_call(
         "POST",

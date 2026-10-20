@@ -5,6 +5,34 @@ use std::{
     sync::mpsc,
 };
 
+#[derive(Debug, PartialEq)]
+struct BackupListing {
+    directory: PathBuf,
+    entries: Vec<(PathBuf, u64)>,
+}
+
+fn load_backup_listing(config: &Path, data: &Path) -> Result<BackupListing, String> {
+    let directory = resolve_backup_dir(config, data)?;
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|s| s == "zip"))
+        .collect();
+    paths.sort();
+    let entries = paths
+        .into_iter()
+        .rev()
+        .map(|path| {
+            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+            (path, size)
+        })
+        .collect();
+    Ok(BackupListing { directory, entries })
+}
+
 pub struct Operations {
     tx: mpsc::Sender<String>,
     rx: mpsc::Receiver<String>,
@@ -12,8 +40,8 @@ pub struct Operations {
     report: String,
     archive: String,
     password: String,
-    backup_dir: Option<Result<PathBuf, String>>,
-    backup_dir_rx: Option<mpsc::Receiver<Result<PathBuf, String>>>,
+    backup_dir: Option<Result<BackupListing, String>>,
+    backup_dir_rx: Option<mpsc::Receiver<Result<BackupListing, String>>>,
     from: String,
     to: String,
     confirm: bool,
@@ -115,6 +143,8 @@ impl Operations {
         if let Ok(report) = self.rx.try_recv() {
             self.report = report;
             self.busy = false;
+            self.backup_dir = None;
+            self.backup_dir_rx = None;
         }
     }
     pub fn maintenance(&mut self, ui: &mut egui::Ui, config: &Path) {
@@ -214,14 +244,15 @@ impl Operations {
             let data = data.to_path_buf();
             let ctx = ui.ctx().clone();
             std::thread::spawn(move || {
-                let _ = tx.send(resolve_backup_dir(&config, &data));
+                let _ = tx.send(load_backup_listing(&config, &data));
                 ctx.request_repaint();
             });
         }
         if let Some(Err(error)) = &self.backup_dir {
             ui.label(error);
         }
-        let directory = self.backup_dir.as_ref().and_then(|r| r.as_ref().ok());
+        let listing = self.backup_dir.as_ref().and_then(|r| r.as_ref().ok());
+        let directory = listing.map(|l| &l.directory);
         if ui
             .add_enabled(
                 directory.is_some(),
@@ -231,21 +262,15 @@ impl Operations {
         {
             let _ = crate::control::open_path(directory.unwrap());
         }
-        if let Some(Ok(entries)) = directory.map(std::fs::read_dir) {
-            let mut list: Vec<PathBuf> = entries
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|s| s == "zip"))
-                .collect();
-            list.sort();
-            for path in list.iter().rev() {
+        if let Some(listing) = listing {
+            for (path, size) in &listing.entries {
                 if ui
                     .selectable_label(
                         self.archive == path.display().to_string(),
                         format!(
                             "{} — {}",
                             path.file_name().unwrap().to_string_lossy(),
-                            crate::diag::human_size(path.metadata().map(|m| m.len()).unwrap_or(0))
+                            crate::diag::human_size(*size)
                         ),
                     )
                     .clicked()
@@ -381,6 +406,10 @@ fn resolve_backup_dir(config: &Path, data: &Path) -> Result<PathBuf, String> {
                     .await
                     .map_err(|e| e.to_string())?;
             conn.close().await.map_err(|e| e.to_string())?;
+            let value = value
+                .map(|v| serde_json::from_str::<String>(&v))
+                .transpose()
+                .map_err(|e| format!("Dossier de sauvegardes invalide : {e}"))?;
             Ok(value
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
@@ -391,6 +420,63 @@ fn resolve_backup_dir(config: &Path, data: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn liste_sauvegardes_equivalente_et_conservee_sans_nouvelle_lecture() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("apex-maint.toml");
+        let data = temp.path().join("data");
+        let directory = data.join("backups");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            &config,
+            apex_config::store::render(&apex_config::AppConfig::default()),
+        )
+        .unwrap();
+        for (name, content) in [("a.zip", "a"), ("b.zip", "bbb"), ("c.txt", "ignoré")] {
+            std::fs::write(directory.join(name), content).unwrap();
+        }
+        let listing = load_backup_listing(&config, &data).unwrap();
+        // Même sélection, ordre inverse et tailles que l'ancien parcours du rendu.
+        let mut paths: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|s| s == "zip"))
+            .collect();
+        paths.sort();
+        let expected: Vec<_> = paths
+            .into_iter()
+            .rev()
+            .map(|p| {
+                let size = p.metadata().map(|m| m.len()).unwrap_or(0);
+                (p, size)
+            })
+            .collect();
+        assert_eq!(listing.entries, expected);
+        let mut operations = Operations {
+            backup_dir: Some(Ok(listing)),
+            ..Default::default()
+        };
+        std::fs::remove_file(directory.join("b.zip")).unwrap();
+        assert_eq!(
+            operations
+                .backup_dir
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .entries,
+            expected
+        );
+        operations.tx.send("Opération terminée".into()).unwrap();
+        operations.poll();
+        assert!(operations.backup_dir.is_none());
+        assert_eq!(
+            load_backup_listing(&config, &data).unwrap().entries,
+            vec![(directory.join("a.zip"), 1)]
+        );
+    }
 
     #[test]
     fn dossier_sauvegardes_configure_et_repli_moteur_arrete() {
@@ -426,7 +512,7 @@ mod tests {
                 .await
                 .unwrap();
             sqlx::query("INSERT INTO app_settings VALUES('backup.dir',?)")
-                .bind(custom.to_string_lossy().as_ref())
+                .bind(serde_json::to_string(&custom.to_string_lossy()).unwrap())
                 .execute(&mut conn)
                 .await
                 .unwrap();
@@ -439,7 +525,8 @@ mod tests {
             )
             .await
             .unwrap();
-            sqlx::query("UPDATE app_settings SET value=''")
+            sqlx::query("UPDATE app_settings SET value=?")
+                .bind("\"\"")
                 .execute(&mut conn)
                 .await
                 .unwrap();

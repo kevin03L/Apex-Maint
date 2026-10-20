@@ -334,10 +334,10 @@ async fn consume_stock_reservation(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
-    input: Option<Json<ConsumeReservationInput>>,
+    input: axum::extract::Request,
 ) -> Result<Json<InterventionPart>> {
-    let input = input
-        .map(|Json(v)| v)
+    let input = super::errors::optional_body::<ConsumeReservationInput>(input)
+        .await?
         .unwrap_or(ConsumeReservationInput { quantity: None });
     let ip = peer.ip().to_string();
     let item = stock::consume_stock_reservation(&state.pool, &session.actor, &id, input, Some(&ip))

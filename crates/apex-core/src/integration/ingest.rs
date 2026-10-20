@@ -86,7 +86,22 @@ async fn counter(pool: &SqlitePool, actor: &Actor, r: &Reading) -> Result<(), Ma
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .is_some_and(|d| date < d);
     let duplicate:i64=sqlx::query_scalar("SELECT count(*) FROM counter_readings WHERE counter_id=? AND site_id=? AND read_at=? AND value=? AND is_reset=? AND source='supervision'").bind(&id).bind(&site).bind(&read_at).bind(r.value).bind(r.reset).fetch_one(&mut *tx).await?;
-    if duplicate > 0 || (!historical && last.is_some() && current == r.value) {
+    if !historical && last.is_some() && current == r.value {
+        // Conserver l'ordre chronologique sans ajouter de doublon à l'historique.
+        sqlx::query(
+            "UPDATE equipment_counters SET last_reading_at=?,updated_at=? WHERE id=? AND site_id=? AND julianday(last_reading_at)<julianday(?)",
+        )
+        .bind(&read_at)
+        .bind(&now)
+        .bind(&id)
+        .bind(&site)
+        .bind(&read_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+    if duplicate > 0 {
         tx.rollback().await?;
         return Ok(());
     }

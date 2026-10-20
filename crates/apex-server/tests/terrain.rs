@@ -73,6 +73,35 @@ fn synchronisation_idempotence_dates_et_preconditions() {
     .unwrap();
     assert_eq!(replay.status, 201);
     assert_eq!(first.body, replay.body);
+    let child_path = format!("/api/interventions/{id}/sub-interventions");
+    let child_key = uuid::Uuid::now_v7().to_string();
+    let child_headers = [
+        ("Cookie", cookie.as_str()),
+        ("Idempotency-Key", child_key.as_str()),
+    ];
+    let child_input = json!({"site_id":site,"title":"Sous-intervention","type":"hors_equipement"});
+    let child = request_with_headers(
+        server.port(),
+        "POST",
+        &child_path,
+        None,
+        Some(&child_input),
+        &child_headers,
+    )
+    .unwrap();
+    assert_eq!(child.status, 201, "{}", child.text());
+    server.restart();
+    let child_replay = request_with_headers(
+        server.port(),
+        "POST",
+        &child_path,
+        None,
+        Some(&child_input),
+        &child_headers,
+    )
+    .unwrap();
+    assert_eq!(child_replay.status, 201);
+    assert_eq!(child.body, child_replay.body);
     let path = format!("/api/interventions/{id}/take");
     assert_eq!(
         request_with_headers(
@@ -108,7 +137,7 @@ fn synchronisation_idempotence_dates_et_preconditions() {
     assert_eq!(snapshot.status, 200);
     assert_eq!(
         snapshot.json()["interventions"].as_array().unwrap().len(),
-        1
+        2
     );
     assert!(!String::from_utf8_lossy(&snapshot.body).contains("password_hash"));
     let login = server.call_with_headers(

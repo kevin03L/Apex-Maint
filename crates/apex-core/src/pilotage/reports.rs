@@ -187,7 +187,7 @@ pub async fn report(
     check(pool, actor, f).await?;
     let (from, to) = period(f)?;
     let mut data = data(pool, actor, name, f, from, to).await?;
-    enrich(pool, &mut data).await?;
+    enrich(pool, actor, &mut data).await?;
     Ok(json!({"report":name,"from":from.to_rfc3339(),"to":to.to_rfc3339(),"data":data}))
 }
 async fn data(
@@ -425,59 +425,155 @@ pub async fn widget(
         _ => return Err(MaintError::NotFound("Widget".into())),
     };
     let mut result = result;
-    enrich(pool, &mut result).await?;
+    enrich(pool, actor, &mut result).await?;
     Ok(json!({"widget":name,"from":from.to_rfc3339(),"to":to.to_rfc3339(),"data":result}))
 }
 
 /// Complète les lignes qui ne portent qu'un identifiant : code et nom de l'équipement, nom de
 /// l'utilisateur. Les identifiants viennent de requêtes déjà limitées au périmètre de l'acteur.
-async fn enrich(pool: &SqlitePool, data: &mut Value) -> Result<(), MaintError> {
-    let mut equipments: std::collections::HashMap<String, (String, String)> = Default::default();
-    let mut users: std::collections::HashMap<String, String> = Default::default();
+async fn enrich(pool: &SqlitePool, actor: &Actor, data: &mut Value) -> Result<(), MaintError> {
+    let mut equipments = std::collections::HashMap::<String, (String, String)>::new();
+    let mut users = std::collections::HashMap::<String, String>::new();
     let Some(sections) = data.as_object_mut() else {
         return Ok(());
     };
+    for section in sections.values() {
+        let Some(items) = section.as_array() else {
+            continue;
+        };
+        for row in items {
+            if let Some(id) = row.get("equipment_id").and_then(Value::as_str) {
+                equipments.entry(id.into()).or_default();
+            }
+            if let Some(id) = row.get("user_id").and_then(Value::as_str) {
+                users.entry(id.into()).or_default();
+            }
+        }
+    }
+    // Lots bornés pour rester sous la limite SQLite de paramètres liés.
+    let equipment_ids: Vec<_> = equipments.keys().cloned().collect();
+    for ids in equipment_ids.chunks(400) {
+        // Les identifiants proviennent des agrégats déjà limités au site de l'acteur.
+        let mut query = QueryBuilder::<Sqlite>::new("SELECT id,code,name FROM equipments WHERE (");
+        query
+            .push_bind(actor.is_admin())
+            .push(" OR site_id=")
+            .push_bind(&actor.site_id)
+            .push(") AND id IN (");
+        let mut list = query.separated(",");
+        for id in ids {
+            list.push_bind(id);
+        }
+        list.push_unseparated(")");
+        for (id, code, name) in query
+            .build_query_as::<(String, String, String)>()
+            .fetch_all(pool)
+            .await?
+        {
+            equipments.insert(id, (code, name));
+        }
+    }
+    let user_ids: Vec<_> = users.keys().cloned().collect();
+    for ids in user_ids.chunks(400) {
+        let mut query = QueryBuilder::<Sqlite>::new("SELECT id,display_name FROM users WHERE (");
+        query
+            .push_bind(actor.is_admin())
+            .push(" OR site_id=")
+            .push_bind(&actor.site_id)
+            .push(" OR role='admin' OR EXISTS(SELECT 1 FROM intervention_technicians t JOIN interventions i ON i.id=t.intervention_id WHERE t.user_id=users.id AND i.site_id=")
+            .push_bind(&actor.site_id)
+            .push(")) AND id IN (");
+        let mut list = query.separated(",");
+        for id in ids {
+            list.push_bind(id);
+        }
+        list.push_unseparated(")");
+        for (id, name) in query
+            .build_query_as::<(String, String)>()
+            .fetch_all(pool)
+            .await?
+        {
+            users.insert(id, name);
+        }
+    }
     for section in sections.values_mut() {
         let Some(items) = section.as_array_mut() else {
             continue;
         };
-        for item in items.iter_mut() {
+        for item in items {
             let Some(row) = item.as_object_mut() else {
                 continue;
             };
-            if let Some(id) = row
-                .get("equipment_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            {
-                if !equipments.contains_key(&id) {
-                    let found: Option<(String, String)> =
-                        sqlx::query_as("SELECT code,name FROM equipments WHERE id=?")
-                            .bind(&id)
-                            .fetch_optional(pool)
-                            .await?;
-                    equipments.insert(id.clone(), found.unwrap_or_default());
-                }
-                let (code, name) = &equipments[&id];
+            if let Some(id) = row.get("equipment_id").and_then(Value::as_str) {
+                let (code, name) = &equipments[id];
                 row.insert("equipment_code".into(), json!(code));
                 row.insert("equipment_name".into(), json!(name));
             }
-            if let Some(id) = row
-                .get("user_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            {
-                if !users.contains_key(&id) {
-                    let found: Option<String> =
-                        sqlx::query_scalar("SELECT display_name FROM users WHERE id=?")
-                            .bind(&id)
-                            .fetch_optional(pool)
-                            .await?;
-                    users.insert(id.clone(), found.unwrap_or_default());
-                }
-                row.insert("user_display_name".into(), json!(users[&id]));
+            if let Some(id) = row.get("user_id").and_then(Value::as_str) {
+                row.insert("user_display_name".into(), json!(users[id]));
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn enrichissement_groupe_equivalent_aux_lectures_unitaires() {
+        let pool = crate::db::open(None).await.unwrap();
+        sqlx::query("INSERT INTO sites(id,name,created_at,updated_at) VALUES('s','Site','','')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<404) INSERT INTO equipments(id,site_id,code,name,created_at,updated_at,deleted_at) SELECT 'e'||x,'s','E'||x,'Équipement '||x,'','',CASE WHEN x=0 THEN '2020-01-01' END FROM n").execute(&pool).await.unwrap();
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<404) INSERT INTO users(id,site_id,username,display_name,role,password_hash,created_at,updated_at) SELECT 'u'||x,'s','u'||x,'Utilisateur '||x,'technicien','','','' FROM n").execute(&pool).await.unwrap();
+        let mut rows: Vec<Value> = (0..405)
+            .map(|i| json!({"equipment_id":format!("e{i}"),"user_id":format!("u{i}")}))
+            .collect();
+        rows.extend([
+            rows[0].clone(),
+            json!({"equipment_id":"absent","user_id":"absent"}),
+            json!({"equipment_id":null}),
+            json!(42),
+        ]);
+        let mut data = json!({"items":rows,"autre":rows,"total":405});
+        let mut expected = data.clone();
+        for section in expected.as_object_mut().unwrap().values_mut() {
+            let Some(rows) = section.as_array_mut() else {
+                continue;
+            };
+            for row in rows {
+                if let Some(id) = row.get("equipment_id").and_then(Value::as_str) {
+                    let (code, name): (String, String) =
+                        sqlx::query_as("SELECT code,name FROM equipments WHERE id=?")
+                            .bind(id)
+                            .fetch_optional(&pool)
+                            .await
+                            .unwrap()
+                            .unwrap_or_default();
+                    row["equipment_code"] = json!(code);
+                    row["equipment_name"] = json!(name);
+                }
+                if let Some(id) = row.get("user_id").and_then(Value::as_str) {
+                    let name: String =
+                        sqlx::query_scalar("SELECT display_name FROM users WHERE id=?")
+                            .bind(id)
+                            .fetch_optional(&pool)
+                            .await
+                            .unwrap()
+                            .unwrap_or_default();
+                    row["user_display_name"] = json!(name);
+                }
+            }
+        }
+        let actor = Actor::new("", Some("s".into()), crate::Role::Responsable, []);
+        enrich(&pool, &actor, &mut data).await.unwrap();
+        assert_eq!(data, expected);
+        let mut empty = json!({"items":[],"total":0});
+        enrich(&pool, &actor, &mut empty).await.unwrap();
+        assert_eq!(empty, json!({"items":[],"total":0}));
+    }
 }

@@ -82,13 +82,8 @@ async fn by_code(
     session
         .actor
         .require_permission(Permission::EquipmentsView)?;
-    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM equipments WHERE code=? COLLATE NOCASE AND deleted_at IS NULL AND (? OR site_id=?) ORDER BY site_id,id")
-        .bind(code).bind(session.actor.is_admin()).bind(&session.actor.site_id).fetch_all(&state.pool).await?;
-    let mut equipments = Vec::new();
-    for id in ids {
-        equipments
-            .push(apex_core::referentiel::get_equipment(&state.pool, &session.actor, &id).await?);
-    }
+    let mut equipments =
+        apex_core::referentiel::equipments_by_code(&state.pool, &session.actor, &code).await?;
     if equipments.is_empty() {
         return Err(MaintError::NotFound("Équipement inconnu sur ce site".into()).into());
     }
@@ -105,7 +100,14 @@ fn synchronizable(method: &str, path: &str) -> bool {
         (method, p.as_slice()),
         ("POST", ["interventions"])
             | ("PATCH", ["interventions", _])
-            | ("POST", ["interventions", _, "take" | "complete"])
+            | (
+                "POST",
+                [
+                    "interventions",
+                    _,
+                    "take" | "complete" | "sub-interventions"
+                ]
+            )
             | ("PUT", ["interventions", _, "technicians", _, "time"])
     )
 }
@@ -154,16 +156,24 @@ pub async fn synchronize(State(state): State<AppState>, req: Request, next: Next
         Ok(c) => c,
         Err(e) => return ApiError::from(e).into_response(),
     };
-    if let Err(e) =
-        session
-            .actor
-            .require_permission(if req.method() == "POST" && path == "/interventions" {
-                Permission::InterventionsCreate
-            } else {
-                Permission::InterventionsEdit
-            })
-    {
+    if let Err(e) = session.actor.require_permission(
+        if req.method() == "POST"
+            && (path == "/interventions" || path.ends_with("/sub-interventions"))
+        {
+            Permission::InterventionsCreate
+        } else {
+            Permission::InterventionsEdit
+        },
+    ) {
         return ApiError::from(e).into_response();
+    }
+    if req.method() == "POST" && path.ends_with("/sub-interventions") {
+        if let Err(e) = session
+            .actor
+            .require_permission(Permission::InterventionsEdit)
+        {
+            return ApiError::from(e).into_response();
+        }
     }
     // Une seule instance détient la base ; le verrou évite deux prélectures concurrentes
     // lorsqu'une clé d'idempotence est fournie.

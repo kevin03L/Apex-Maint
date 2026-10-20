@@ -702,23 +702,7 @@ pub async fn list_equipments(
     })
 }
 
-pub async fn get_equipment(
-    pool: &SqlitePool,
-    actor: &Actor,
-    id: &str,
-) -> Result<Equipment, MaintError> {
-    actor.require_permission(Permission::EquipmentsView)?;
-    let mut conn = pool.acquire().await?;
-    scoped_equipment(&mut conn, actor, id).await
-}
-
-async fn scoped_equipment(
-    conn: &mut SqliteConnection,
-    actor: &Actor,
-    id: &str,
-) -> Result<Equipment, MaintError> {
-    let row: Option<RawEquipmentRow> = sqlx::query_as(
-        r#"
+const EQUIPMENT_DETAIL: &str = r#"
         SELECT 
             e.id, 
             e.site_id, 
@@ -746,9 +730,37 @@ async fn scoped_equipment(
         FROM equipments e
         LEFT JOIN production_lines pl ON pl.id = e.production_line_id AND pl.deleted_at IS NULL
         LEFT JOIN equipments pe ON pe.id = e.parent_id AND pe.deleted_at IS NULL
-        WHERE e.id = ? AND e.deleted_at IS NULL AND (? OR e.site_id = ?)
-        "#,
-    )
+"#;
+
+pub async fn equipments_by_code(
+    pool: &SqlitePool,
+    actor: &Actor,
+    code: &str,
+) -> Result<Vec<Equipment>, MaintError> {
+    actor.require_permission(Permission::EquipmentsView)?;
+    let rows: Vec<RawEquipmentRow> = sqlx::query_as(&format!("{EQUIPMENT_DETAIL} WHERE e.code=? COLLATE NOCASE AND e.deleted_at IS NULL AND (? OR e.site_id=?) ORDER BY e.site_id,e.id"))
+        .bind(code).bind(actor.is_admin()).bind(&actor.site_id).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(map_raw_equipment).collect())
+}
+
+pub async fn get_equipment(
+    pool: &SqlitePool,
+    actor: &Actor,
+    id: &str,
+) -> Result<Equipment, MaintError> {
+    actor.require_permission(Permission::EquipmentsView)?;
+    let mut conn = pool.acquire().await?;
+    scoped_equipment(&mut conn, actor, id).await
+}
+
+async fn scoped_equipment(
+    conn: &mut SqliteConnection,
+    actor: &Actor,
+    id: &str,
+) -> Result<Equipment, MaintError> {
+    let row: Option<RawEquipmentRow> = sqlx::query_as(&format!(
+        "{EQUIPMENT_DETAIL} WHERE e.id = ? AND e.deleted_at IS NULL AND (? OR e.site_id = ?)"
+    ))
     .bind(id)
     .bind(actor.is_admin())
     .bind(&actor.site_id)
@@ -2369,6 +2381,58 @@ fn clean_opt_string(
 #[cfg(test)]
 mod tests {
     use super::like_pattern;
+
+    #[tokio::test]
+    async fn recherche_code_equivalente_aux_fiches_et_isolee_par_site() {
+        use super::*;
+        let (pool, admin) = crate::audit_tests::fixture().await;
+        sqlx::query("INSERT INTO equipments(id,site_id,code,name,created_at,updated_at) VALUES('eq-b','b','eq','Autre','2026','2026')")
+            .execute(&pool).await.unwrap();
+        for actor in [
+            admin.clone(),
+            Actor::new(
+                &admin.user_id,
+                Some("a".into()),
+                crate::Role::Technicien,
+                [Permission::EquipmentsView],
+            ),
+        ] {
+            let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM equipments WHERE code=? COLLATE NOCASE AND deleted_at IS NULL AND (? OR site_id=?) ORDER BY site_id,id")
+                .bind("eQ").bind(actor.is_admin()).bind(&actor.site_id).fetch_all(&pool).await.unwrap();
+            let mut expected = Vec::new();
+            for id in ids {
+                expected.push(get_equipment(&pool, &actor, &id).await.unwrap());
+            }
+            let actual = equipments_by_code(&pool, &actor, "eQ").await.unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+            assert!(equipments_by_code(&pool, &actor, "absent")
+                .await
+                .unwrap()
+                .is_empty());
+        }
+        sqlx::query("UPDATE equipments SET deleted_at='2026' WHERE id='eq-b'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            equipments_by_code(&pool, &admin, "EQ").await.unwrap().len(),
+            1
+        );
+        let forbidden = Actor::new(
+            &admin.user_id,
+            Some("a".into()),
+            crate::Role::Technicien,
+            [],
+        );
+        assert!(matches!(
+            equipments_by_code(&pool, &forbidden, "EQ").await,
+            Err(MaintError::Forbidden(_))
+        ));
+        crate::db::close(&pool).await;
+    }
 
     #[test]
     fn motif_like_echappe_les_jokers() {

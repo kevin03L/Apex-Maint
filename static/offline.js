@@ -148,24 +148,39 @@ async function saveSnapshot(snapshotData, currentUserId, currentSiteId, customID
       'technicians'
     ];
 
-    for (const col of collections) {
-      const items = snapshotData[col] || [];
-      for (const item of items) {
-        // En cas de suppression logique dans un delta
-        if (item.deleted_at) {
-          const storeKey = `${col}:${item.id || (item.intervention_id + '_' + item.user_id)}`;
-          snapStore.delete(storeKey);
-        } else {
-          const itemId = item.id || (item.intervention_id + '_' + item.user_id);
-          const storeKey = `${col}:${itemId}`;
-          snapStore.put({
-            store_key: storeKey,
-            collection: col,
-            id: itemId,
-            data: item
-          });
+    const writeCollections = () => {
+      for (const col of collections) {
+        const items = snapshotData[col] || [];
+        for (const item of items) {
+          // En cas de suppression logique dans un delta
+          if (item.deleted_at) {
+            const storeKey = `${col}:${item.id || (item.intervention_id + '_' + item.user_id)}`;
+            snapStore.delete(storeKey);
+          } else {
+            const itemId = item.id || (item.intervention_id + '_' + item.user_id);
+            const storeKey = `${col}:${itemId}`;
+            snapStore.put({
+              store_key: storeKey,
+              collection: col,
+              id: itemId,
+              data: item
+            });
+          }
         }
       }
+    };
+    if (!snapshotData.full) {
+      // Les affectations des interventions renvoyées remplacent la liste précédente.
+      const replaced = new Set((snapshotData.interventions || []).map(item => item.id));
+      const req = snapStore.index('by_collection').getAll('technicians');
+      req.onsuccess = () => {
+        for (const row of req.result || []) {
+          if (replaced.has(row.data.intervention_id)) snapStore.delete(row.store_key);
+        }
+        writeCollections();
+      };
+    } else {
+      writeCollections();
     }
 
     // Si delta avec intervention_ids : purger les interventions non listées

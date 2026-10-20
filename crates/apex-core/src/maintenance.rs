@@ -1714,19 +1714,7 @@ pub async fn create_plan(
 
     // Vérifier technicien par défaut si fourni
     if let Some(tid) = &input.default_technician_id {
-        let tech_ok: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM users WHERE id = ? AND deleted_at IS NULL AND active = 1 AND (role = 'admin' OR site_id = ?)",
-        )
-        .bind(tid)
-        .bind(&site_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        if tech_ok == 0 {
-            return Err(MaintError::BadRequest(
-                "Le technicien par défaut est introuvable ou inactif sur ce site".into(),
-            ));
-        }
+        crate::interventions::validate_user_for_assignment(&mut tx, actor, &site_id, tid).await?;
     }
 
     let plan_id = store::id();
@@ -2038,6 +2026,10 @@ pub async fn update_plan(
         None => current.active,
     };
 
+    if active == 1 {
+        validate_plan_equipment(&mut tx, actor, &current.site_id, &current.equipment_id).await?;
+    }
+
     let mut estimated_minutes = current.estimated_minutes;
     match input.estimated_minutes {
         PatchField::Absent => {}
@@ -2051,18 +2043,13 @@ pub async fn update_plan(
         PatchField::Null => default_technician_id = None,
         PatchField::Value(v) => {
             let tid = v.trim().to_string();
-            let tech_ok: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM users WHERE id = ? AND deleted_at IS NULL AND active = 1 AND (role = 'admin' OR site_id = ?)",
+            crate::interventions::validate_user_for_assignment(
+                &mut tx,
+                actor,
+                &current.site_id,
+                &tid,
             )
-            .bind(&tid)
-            .bind(&current.site_id)
-            .fetch_one(&mut *tx)
             .await?;
-            if tech_ok == 0 {
-                return Err(MaintError::BadRequest(
-                    "Le technicien est introuvable ou inactif sur ce site".into(),
-                ));
-            }
             default_technician_id = Some(tid);
         }
     }
@@ -2275,6 +2262,8 @@ async fn do_generate_in_tx(
 
     let now = store::now();
 
+    validate_plan_equipment(tx, actor, &plan.site_id, &plan.equipment_id).await?;
+
     // 1. Récupération ou génération de la référence d'intervention
     let int_code =
         crate::interventions::resolve_or_generate_code(&mut *tx, actor, &plan.site_id, None, &now)
@@ -2342,15 +2331,15 @@ async fn do_generate_in_tx(
 
     // Technicien par défaut si présent et actif
     if let Some(tid) = &plan.default_technician_id {
-        let tech_valid: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM users WHERE id = ? AND deleted_at IS NULL AND active = 1 AND (role = 'admin' OR site_id = ?)",
-        )
-        .bind(tid)
-        .bind(&plan.site_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        if tech_valid > 0 {
+        let assignable =
+            match crate::interventions::validate_user_for_assignment(tx, actor, &plan.site_id, tid)
+                .await
+            {
+                Ok(()) => true,
+                Err(MaintError::BadRequest(_)) => false,
+                Err(e) => return Err(e),
+            };
+        if assignable {
             sqlx::query(
                 "INSERT INTO intervention_technicians (intervention_id, user_id, is_lead, assigned_at) VALUES (?, ?, 1, ?)",
             )
@@ -3079,33 +3068,38 @@ pub async fn process_auto_generation(pool: &SqlitePool) {
             continue;
         }
 
-        // Tenter la génération dans une transaction immédiate
-        if let Ok(mut tx) = pool.begin_with("BEGIN IMMEDIATE").await {
-            // Revérifier qu'aucune occurrence generated n'a été créée entre-temps
-            let open_count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM maintenance_occurrences WHERE plan_id = ? AND status = 'generated' AND deleted_at IS NULL",
-            )
-            .bind(&p.id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap_or(1);
+        let actor = Actor::new("", Some(p.site_id.clone()), crate::Role::Admin, []);
+        try_auto_generation(pool, &actor, &p, true).await;
+    }
+}
 
-            if open_count == 0 {
-                let auto_actor = Actor::new("", Some(p.site_id.clone()), crate::Role::Admin, []);
-                if let Err(e) = do_generate_in_tx(&mut tx, &p, &auto_actor, "auto", None).await {
-                    tracing::warn!(
-                        "Échec de génération automatique pour le planning {} : {e}",
-                        p.code
-                    );
-                    let _ = tx.rollback().await;
-                    continue;
-                }
-                if let Err(e) = tx.commit().await {
-                    tracing::warn!("Échec de commit pour le planning {} : {e}", p.code);
-                }
-            } else {
-                let _ = tx.rollback().await;
-            }
+/// Même transaction pour les deux déclencheurs ; conserver leur politique de journalisation.
+async fn try_auto_generation(
+    pool: &SqlitePool,
+    actor: &Actor,
+    plan: &RawPlanRow,
+    log_errors: bool,
+) {
+    let Ok(mut tx) = pool.begin_with("BEGIN IMMEDIATE").await else {
+        return;
+    };
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM maintenance_occurrences WHERE plan_id=? AND site_id=? AND status='generated' AND deleted_at IS NULL")
+        .bind(&plan.id).bind(&actor.site_id).fetch_one(&mut *tx).await.unwrap_or(1);
+    if open != 0 {
+        let _ = tx.rollback().await;
+        return;
+    }
+    if let Err(e) = do_generate_in_tx(&mut tx, plan, actor, "auto", None).await {
+        if log_errors {
+            tracing::warn!(
+                "Échec de génération automatique pour le planning {} : {e}",
+                plan.code
+            );
+        }
+        let _ = tx.rollback().await;
+    } else if let Err(e) = tx.commit().await {
+        if log_errors {
+            tracing::warn!("Échec de commit pour le planning {} : {e}", plan.code);
         }
     }
 }
@@ -3136,30 +3130,8 @@ pub async fn process_auto_generation_for_counter(pool: &SqlitePool, counter_id: 
         let lead = p.lead_counter;
 
         if counter_active && (cur >= due - lead) {
-            if let Ok(mut tx) = pool.begin_with("BEGIN IMMEDIATE").await {
-                let open_count: i64 = sqlx::query_scalar(
-                    "SELECT count(*) FROM maintenance_occurrences WHERE plan_id = ? AND status = 'generated' AND deleted_at IS NULL",
-                )
-                .bind(&p.id)
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap_or(1);
-
-                if open_count == 0 {
-                    let auto_actor =
-                        Actor::new("", Some(p.site_id.clone()), crate::Role::Admin, []);
-                    if do_generate_in_tx(&mut tx, &p, &auto_actor, "auto", None)
-                        .await
-                        .is_ok()
-                    {
-                        let _ = tx.commit().await;
-                    } else {
-                        let _ = tx.rollback().await;
-                    }
-                } else {
-                    let _ = tx.rollback().await;
-                }
-            }
+            let actor = Actor::new("", Some(p.site_id.clone()), crate::Role::Admin, []);
+            try_auto_generation(pool, &actor, &p, false).await;
         }
     }
 }
@@ -3197,6 +3169,30 @@ pub(crate) async fn generate_counter_in_tx(
         }
     }
     Ok(generated)
+}
+
+async fn validate_plan_equipment(
+    conn: &mut SqliteConnection,
+    actor: &Actor,
+    site_id: &str,
+    equipment_id: &str,
+) -> Result<(), MaintError> {
+    if !actor.is_admin() && actor.site_id.as_deref() != Some(site_id) {
+        return Err(MaintError::NotFound("Site".into()));
+    }
+    let found: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM equipments WHERE id=? AND site_id=? AND deleted_at IS NULL",
+    )
+    .bind(equipment_id)
+    .bind(site_id)
+    .fetch_one(conn)
+    .await?;
+    if found == 0 {
+        return Err(MaintError::BadRequest(
+            "Équipement supprimé ou introuvable sur ce site".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

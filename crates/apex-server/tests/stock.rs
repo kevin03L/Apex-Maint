@@ -906,6 +906,40 @@ fn reservations_pieces_preparees_et_liberation() {
         "Réservation supérieure au disponible doit échouer"
     );
 
+    for payload in [
+        b"{\"quantity\":\"2\"}".as_slice(),
+        b"{",
+        b"null",
+        &vec![b'x'; 65537],
+    ] {
+        let response = common::request_bytes(
+            srv.port(),
+            "POST",
+            &format!("/api/reservations/{res_id}/consume"),
+            None,
+            payload,
+            &[
+                ("Cookie", &tech_cookie),
+                ("Content-Type", "application/json"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            response.status,
+            if payload.len() > 65536 { 413 } else { 400 }
+        );
+        let part = srv
+            .session_call(
+                "GET",
+                &format!("/api/parts/{part_id}"),
+                Some(&tech_cookie),
+                None,
+            )
+            .json();
+        assert_eq!(part["total_stock"], 10);
+        assert_eq!(part["total_reserved"], 4);
+    }
+
     // 2. Consommation partielle : on consomme 2 unités sur les 4 préparées
     let r_cons_part = srv.session_call(
         "POST",

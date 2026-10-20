@@ -8144,7 +8144,7 @@ async function openEditInterventionModal(id) {
     <div class="form-row">
       <div class="form-group">
         <label for="editIntPriority">Priorité *</label>
-        <select id="editIntPriority" name="priority" required>
+        <select id="editIntPriority" name="priority" ${navigator.onLine === false ? 'disabled' : ''} required>
           <option value="low" ${inter.priority === 'low' ? 'selected' : ''}>Basse</option>
           <option value="medium" ${inter.priority === 'medium' ? 'selected' : ''}>Moyenne</option>
           <option value="high" ${inter.priority === 'high' ? 'selected' : ''}>Haute</option>
@@ -8153,7 +8153,7 @@ async function openEditInterventionModal(id) {
       </div>
       <div class="form-group">
         <label for="editIntMachineState">État machine *</label>
-        <select id="editIntMachineState" name="machine_state" required data-action="on-intervention-machine-state-change">
+        <select id="editIntMachineState" name="machine_state" ${navigator.onLine === false ? 'disabled' : ''} required data-action="on-intervention-machine-state-change">
           <option value="FONCTIONNEL" ${inter.machine_state === 'FONCTIONNEL' ? 'selected' : ''}>FONCTIONNEL</option>
           <option value="DEGRADE" ${inter.machine_state === 'DEGRADE' ? 'selected' : ''}>DEGRADE</option>
           <option value="ARRET" ${inter.machine_state === 'ARRET' ? 'selected' : ''}>ARRET (machine arrêtée)</option>
@@ -8166,12 +8166,13 @@ async function openEditInterventionModal(id) {
     </div>
     <div class="form-group">
       <label for="editIntTitle">Titre de l'intervention *</label>
-      <input type="text" id="editIntTitle" name="title" value="${esc(inter.title)}" required />
+      <input type="text" id="editIntTitle" name="title" value="${esc(inter.title)}" ${navigator.onLine === false ? 'disabled' : ''} required />
     </div>
     <div class="form-group">
       <label for="editIntDesc">Description</label>
       <textarea id="editIntDesc" name="description" rows="3">${esc(inter.description || '')}</textarea>
     </div>
+    ${navigator.onLine === false ? `<div class="form-group"><label for="editIntReport">Compte rendu</label><textarea id="editIntReport" name="solution_report" rows="3">${esc(inter.solution_report || '')}</textarea></div>` : ''}
   `;
 
   openFormModal({
@@ -8201,10 +8202,25 @@ async function handleEditInterventionSubmit(form) {
   errBox.hidden = true;
 
   try {
-    await api(`/api/interventions/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: { title, description, priority, machine_state },
-    });
+    if (navigator.onLine === false) {
+      await ensureOfflineCacheOwner();
+      if (!hasPermission('interventions.edit')) throw new Error('Modification non autorisée.');
+      const item = await ApexOffline.getLocalIntervention(id);
+      if (!item) throw new Error('Intervention absente de l’instantané local.');
+      if ((item.title !== undefined && title !== item.title)
+          || (item.priority !== undefined && priority !== item.priority)
+          || (item.machine_state !== undefined && machine_state !== item.machine_state)) {
+        throw new Error('Hors ligne, seuls la description et le compte rendu peuvent être modifiés.');
+      }
+      const fields = { description };
+      if (form.solution_report) fields.solution_report = (form.solution_report.value || '').trim() || null;
+      await ApexOffline.localPatchIntervention(id, fields, state.currentUser.id, item.site_id);
+    } else {
+      await api(`/api/interventions/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: { title, description, priority, machine_state },
+      });
+    }
     closeModal();
     notify('Intervention mise à jour.', 'success');
     await loadInterventionDetail(id);
@@ -16894,6 +16910,7 @@ async function handleClearOfflineData() {
 // ----------------------------------------------------------------------------
 
 let scannerActiveStream = null;
+let scannerSession = 0;
 let scannerAnimFrameId = null;
 
 async function openQrScannerModal() {
@@ -16920,6 +16937,7 @@ async function openQrScannerModal() {
 
   openModal('Scanner un équipement', bodyHtml, '<button type="button" class="btn" data-action="close-qr-scanner">Fermer la caméra</button>');
 
+  const session = ++scannerSession;
   const video = document.getElementById('qrScannerVideo');
   if (!video) return;
 
@@ -16928,17 +16946,19 @@ async function openQrScannerModal() {
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     });
     // Autorisation accordée après la fermeture de la modale : la caméra est libérée aussitôt.
-    if (!video.isConnected) {
+    if (session !== scannerSession || !video.isConnected) {
       stream.getTracks().forEach(t => t.stop());
       return;
     }
     scannerActiveStream = stream;
     video.srcObject = stream;
     await video.play();
+    if (session !== scannerSession) return;
 
     // Démarrer la boucle de lecture
     startQrCodeDetectionLoop(video);
   } catch (err) {
+    if (session !== scannerSession) return;
     closeModal();
     notify(`Impossible d'accéder à la caméra : ${err.message}. Vous pouvez saisir le code manuellement.`, 'warn');
     openManualEquipmentCodeModal();
@@ -16947,6 +16967,7 @@ async function openQrScannerModal() {
 
 /** Arrête la caméra et la boucle de détection ; appelé à chaque fermeture de modale. */
 function stopQrScanner() {
+  scannerSession++;
   if (scannerActiveStream) {
     scannerActiveStream.getTracks().forEach(t => t.stop());
     scannerActiveStream = null;

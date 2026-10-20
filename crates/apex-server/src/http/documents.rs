@@ -8,7 +8,7 @@ use apex_core::{
 };
 use axum::{
     body::Body,
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -20,15 +20,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use super::{auth::ApiError, AppState};
-type Result<T> = std::result::Result<T, ApiError>;
-type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
-fn body<T>(input: JsonBody<T>) -> Result<T> {
-    input
-        .map(|Json(v)| v)
-        .map_err(|e| MaintError::BadRequest(format!("Corps JSON invalide : {e}")).into())
-}
-
+use super::{
+    errors::{body, ApiError, Body as JsonBody, Result},
+    AppState,
+};
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -64,7 +59,7 @@ pub fn routes() -> Router<AppState> {
 pub async fn upload_limit(
     State(state): State<AppState>,
     session: Option<Extension<Session>>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     let path = req.uri().path();
@@ -86,6 +81,7 @@ pub async fn upload_limit(
             Err(e) => return ApiError::from(e).into_response(),
         };
         let effective_max_mb = settings.max_size_mb.min(state.files_max_size_mb);
+        req.extensions_mut().insert(UploadLimit(effective_max_mb));
         let max = effective_max_mb as usize * 1024 * 1024 + 64 * 1024;
         if req
             .headers()
@@ -197,6 +193,9 @@ async fn restore(
     ))
 }
 
+#[derive(Clone, Copy)]
+struct UploadLimit(u32);
+
 struct Received {
     file: tempfile::NamedTempFile,
     name: String,
@@ -216,13 +215,12 @@ async fn receive(
     session: &Session,
     mut multipart: Multipart,
     version: bool,
+    limit: UploadLimit,
 ) -> Result<Received> {
     session
         .actor
         .require_permission(Permission::DocumentsCreate)?;
-    let settings = documents::settings_internal(&s.pool, &session.actor).await?;
-    let effective_max_mb = settings.max_size_mb.min(s.files_max_size_mb);
-    let max = u64::from(effective_max_mb) * 1024 * 1024;
+    let max = u64::from(limit.0) * 1024 * 1024;
     let mut fields = HashMap::new();
     let mut received = None;
     while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
@@ -301,9 +299,10 @@ async fn receive(
 async fn create(
     State(s): State<AppState>,
     Extension(session): Extension<Session>,
+    Extension(limit): Extension<UploadLimit>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<documents::Document>)> {
-    let mut r = receive(&s, &session, multipart, false).await?;
+    let mut r = receive(&s, &session, multipart, false, limit).await?;
     let mut required = |name: &str| {
         r.fields
             .remove(name)
@@ -337,11 +336,12 @@ async fn new_version(
     State(s): State<AppState>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
+    Extension(limit): Extension<UploadLimit>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<documents::Version>)> {
     // Vérifie le site avant de lire le moindre octet de fichier.
     documents::entity_for_upload(&s.pool, &session.actor, &id).await?;
-    let mut r = receive(&s, &session, multipart, true).await?;
+    let mut r = receive(&s, &session, multipart, true, limit).await?;
     let document = documents::upload(
         &s.pool,
         &session.actor,
