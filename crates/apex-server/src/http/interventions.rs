@@ -153,9 +153,11 @@ async fn take_intervention(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
-    input: Option<Json<TakeIntervention>>,
+    input: axum::extract::Request,
 ) -> Result<Json<Intervention>> {
-    let input = input.map(|Json(v)| v).unwrap_or_default();
+    let input = super::errors::optional_body::<TakeIntervention>(input)
+        .await?
+        .unwrap_or_default();
     let ip = peer.ip().to_string();
     let item = interventions::take_intervention(&state.pool, &session.actor, &id, input, Some(&ip))
         .await?;

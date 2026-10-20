@@ -270,6 +270,7 @@ dependencies = [
  "apex-config",
  "chrono",
  "eframe",
+ "rcgen",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",

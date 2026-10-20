@@ -38,3 +38,4 @@ apex-build.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+rcgen = "0.13"

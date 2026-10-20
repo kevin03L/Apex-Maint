@@ -59,8 +59,8 @@ pub fn web_url(cfg: &AppConfig) -> String {
 
 /// Interroge `/api/health`. `Err` signifie « serveur web injoignable » (avec la cause).
 /// Sans le jeton de contrôle local, le moteur ne publie pas le détail d'exécution.
-pub fn health(cfg: &AppConfig) -> Result<Health, String> {
-    health_with_token(cfg, None, None)
+pub fn health(cfg: &AppConfig, layout: &Layout) -> Result<Health, String> {
+    health_with_token(cfg, None, Some(layout))
 }
 
 /// Comme [`health`], avec le jeton de contrôle local s'il est lisible (administrateur sous
@@ -328,6 +328,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sonde_simple_charge_autorite_locale_sans_magasin_systeme() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let temp = tempfile::tempdir().unwrap();
+        let layout = Layout::portable(temp.path());
+        std::fs::create_dir_all(layout.data_dir.join("tls")).unwrap();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        std::fs::write(layout.data_dir.join("tls/ca.pem"), cert.cert.pem()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+        let listener = loop {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            if ![3000, 3100].contains(&listener.local_addr().unwrap().port()) {
+                break listener;
+            }
+        };
+        let mut cfg = AppConfig::default();
+        cfg.server.port = listener.local_addr().unwrap().port();
+        cfg.server.tls.mode = "self_signed".into();
+        cfg.server.tls.self_signed_names = vec!["localhost".into()];
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let connection = rustls::ServerConnection::new(std::sync::Arc::new(config)).unwrap();
+            let mut stream = rustls::StreamOwned::new(connection, socket);
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.extend_from_slice(&byte);
+            }
+            let body = r#"{"version":"test","uptime_seconds":42}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            stream.conn.send_close_notify();
+            stream.flush().unwrap();
+        });
+        let result = health(&cfg, &layout);
+        server.join().unwrap();
+        let health = result.unwrap();
+        assert_eq!(health.version, "test");
+        assert_eq!(health.uptime_seconds, 42);
+    }
+
+    #[test]
     fn parses_plain_and_chunked_responses() {
         let plain = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}";
         assert_eq!(parse_response(plain), Some((200, "{}".into())));
@@ -357,7 +412,7 @@ mod tests {
             .unwrap()
             .port();
         cfg.server.port = free;
-        let err = health(&cfg).unwrap_err();
+        let err = health(&cfg, &Layout::portable(std::path::Path::new("temp"))).unwrap_err();
         assert!(
             err.contains("aucun serveur") || err.contains("impossible"),
             "{err}"

@@ -147,8 +147,9 @@ protègent leurs parents par propagation. Les cycles documents/versions et
 occurrences/interventions, ainsi que les hiérarchies, sont traités. Les écritures sont validées
 par lots de 500. Les fichiers ne sont supprimés qu'après validation et disparition de leur
 dernière référence. Le dry-run exécute le même plan sur une copie `VACUUM INTO`, sans toucher
-aux stockages. Les journaux courants restent protégés ; la conservation en jours remplace
-le plafond historique `logging.retention_files` pour les journaux du moteur.
+aux stockages. Les journaux courants restent protégés ; la conservation en jours et le plafond
+`logging.retention_files` sont tous deux appliqués aux journaux du moteur.
+Les rapports de purge relèvent uniquement de la conservation en jours.
 
 L'utilitaire exporte `diagnostic.json` dans un ZIP, par liste blanche : version, date et constats
 (titre/niveau). Les détails libres, la base, les journaux et la configuration brute sont exclus,

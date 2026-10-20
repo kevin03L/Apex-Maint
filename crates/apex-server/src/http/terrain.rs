@@ -82,13 +82,8 @@ async fn by_code(
     session
         .actor
         .require_permission(Permission::EquipmentsView)?;
-    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM equipments WHERE code=? COLLATE NOCASE AND deleted_at IS NULL AND (? OR site_id=?) ORDER BY site_id,id")
-        .bind(code).bind(session.actor.is_admin()).bind(&session.actor.site_id).fetch_all(&state.pool).await?;
-    let mut equipments = Vec::new();
-    for id in ids {
-        equipments
-            .push(apex_core::referentiel::get_equipment(&state.pool, &session.actor, &id).await?);
-    }
+    let mut equipments =
+        apex_core::referentiel::equipments_by_code(&state.pool, &session.actor, &code).await?;
     if equipments.is_empty() {
         return Err(MaintError::NotFound("Équipement inconnu sur ce site".into()).into());
     }

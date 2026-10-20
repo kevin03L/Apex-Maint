@@ -521,7 +521,7 @@ impl AdminApp {
             let (cfg, layout) = self.running_target();
             let file = self.base_layout.config_file.clone();
             self.action(ctx, "Redémarrage du moteur", move || {
-                if probe::health(&cfg).is_ok() {
+                if probe::health(&cfg, &layout).is_ok() {
                     stop_manual_and_wait(&layout, &cfg)?;
                 }
                 control::start_manual(&file)
@@ -622,7 +622,7 @@ impl AdminApp {
                 let started = if uses_service {
                     control::service_action("restart").map(|_| "Service démarré.".to_string())
                 } else {
-                    let stop = if probe::health(&running_cfg).is_ok() {
+                    let stop = if probe::health(&running_cfg, &running_layout).is_ok() {
                         stop_manual_and_wait(&running_layout, &running_cfg)
                     } else {
                         Ok(())
@@ -1823,7 +1823,7 @@ fn stop_manual_and_wait(layout: &Layout, cfg: &AppConfig) -> Result<(), String> 
     probe::request_shutdown(layout, cfg)?;
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        if probe::health(cfg).is_err() && instance_lock_free(layout) {
+        if probe::health(cfg, layout).is_err() && instance_lock_free(layout) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(300));

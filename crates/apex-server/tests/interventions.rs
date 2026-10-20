@@ -46,6 +46,40 @@ fn cycle_de_vie_standard_et_temps_technicien() {
     assert_eq!(int_created["status"], "open");
     assert!(int_created["code"].as_str().unwrap().starts_with("INT-"));
 
+    for payload in [
+        b"{".as_slice(),
+        b"{\"technician_ids\":2}",
+        b"null",
+        &vec![b'x'; 65537],
+    ] {
+        let response = common::request_bytes(
+            srv.port(),
+            "POST",
+            &format!("/api/interventions/{int_id}/take"),
+            None,
+            payload,
+            &[
+                ("Cookie", &tech_cookie),
+                ("Content-Type", "application/json"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            response.status,
+            if payload.len() > 65536 { 413 } else { 400 }
+        );
+        let intervention = srv
+            .session_call(
+                "GET",
+                &format!("/api/interventions/{int_id}"),
+                Some(&tech_cookie),
+                None,
+            )
+            .json();
+        assert_eq!(intervention["status"], "open");
+        assert_eq!(intervention["technicians"], json!([]));
+    }
+
     // 2. Prise en charge par le technicien (/take)
     let r_take = srv.session_call(
         "POST",

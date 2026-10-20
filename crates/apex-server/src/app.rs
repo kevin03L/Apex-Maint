@@ -533,6 +533,21 @@ fn write_control_token(path: &std::path::Path, token: &str) -> std::io::Result<(
     write_private_file(path, token.as_bytes())
 }
 
+/// Restaure la clé en préservant les autorisations du fichier existant.
+pub(crate) fn restore_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    // Conserver le fichier et ses ACL, notamment les droits du compte de service.
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(mut file) => file.write_all(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => write_private_file(path, contents),
+        Err(e) => Err(e),
+    }
+}
+
 /// Même restriction d'accès pour le jeton local et la clé de chiffrement persistante.
 pub(crate) fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -621,6 +636,61 @@ async fn wait_os_signal() {
             _ => {
                 let _ = tokio::signal::ctrl_c().await;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    #[test]
+    fn restauration_cle_conserve_les_autorisations() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = temp.path().join("secret.key");
+        super::write_private_file(&key, &[1; 32]).unwrap();
+        #[cfg(windows)]
+        let before = {
+            // LocalService et un autre principal : aucune ACL existante ne doit disparaître.
+            let grant = std::process::Command::new("icacls")
+                .arg(&key)
+                .args(["/grant", "*S-1-5-19:(R)", "*S-1-5-20:(R)"])
+                .output()
+                .unwrap();
+            assert!(
+                grant.status.success(),
+                "{}",
+                String::from_utf8_lossy(&grant.stderr)
+            );
+            let output = std::process::Command::new("icacls")
+                .arg(&key)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        #[cfg(unix)]
+        let before = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).unwrap();
+            std::fs::metadata(&key).unwrap().permissions().mode()
+        };
+        super::restore_private_file(&key, &[2; 32]).unwrap();
+        assert_eq!(std::fs::read(&key).unwrap(), [2; 32]);
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("icacls")
+                .arg(&key)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, before);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&key).unwrap().permissions().mode(),
+                before
+            );
         }
     }
 }

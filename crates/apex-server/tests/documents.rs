@@ -110,6 +110,155 @@ const PDF1: &[u8] = b"%PDF-1.7\nnotice version 1\n%%EOF";
 const PDF2: &[u8] = b"%PDF-1.7\nnotice version 2\n%%EOF";
 
 #[test]
+fn plafonds_envoi_equivalents_pour_creation_et_version() {
+    let (mut s, admin, resp) = setup("documents-plafonds");
+    let eq = equipment(&s, &resp, "DOC-LIMIT");
+    let mut cfg = apex_config::store::load(&s.config).unwrap().config;
+    cfg.files.max_size_mb = 1;
+    std::fs::write(&s.config, apex_config::store::render(&cfg)).unwrap();
+    s.restart();
+    // Même plafond effectif : tantôt le TOML, tantôt le réglage documentaire le borne.
+    for maximum_documentaire in [2, 1] {
+        call(
+            &s,
+            &admin,
+            "PUT",
+            "/api/settings/documents",
+            Some(json!({"allowed_types":["pdf"],"max_size_mb":maximum_documentaire})),
+            200,
+        );
+        let initial = attach(&s, &resp, "equipment", &eq, "notice.pdf", PDF1);
+        assert_eq!(initial.status, 201);
+        let id = initial.json()["id"].as_str().unwrap().to_string();
+        for size in [1024 * 1024, 1024 * 1024 + 1] {
+            let mut content = vec![b' '; size];
+            content[..PDF1.len()].copy_from_slice(PDF1);
+            let expected = if size > 1024 * 1024 { 413 } else { 201 };
+            let creation = attach(&s, &resp, "equipment", &eq, "notice.pdf", &content);
+            let version = send(
+                &s,
+                &resp,
+                &format!("/api/documents/{id}/versions"),
+                &[],
+                "notice.pdf",
+                &content,
+            );
+            assert_eq!(creation.status, expected, "{}", creation.text());
+            assert_eq!(version.status, expected, "{}", version.text());
+        }
+        let document = call(&s, &resp, "GET", &format!("/api/documents/{id}"), None, 200);
+        assert_eq!(document["versions_count"], 2);
+    }
+}
+
+#[test]
+fn adaptateurs_json_documentaires_conservent_413() {
+    let (s, admin, _) = setup("documents-json-413");
+    for path in ["/api/settings/documents", "/api/settings/labels"] {
+        let response = common::request_bytes(
+            s.port(),
+            "PUT",
+            path,
+            None,
+            &vec![b' '; 65537],
+            &[("Cookie", &admin), ("Content-Type", "application/json")],
+        )
+        .unwrap();
+        assert_eq!(response.status, 413, "{}", response.text());
+    }
+}
+
+#[test]
+fn restauration_stockages_personnalises_apres_redemarrage() {
+    let (mut s, admin, resp) = setup("restauration-stockages");
+    let eq = equipment(&s, &resp, "REST-DOC");
+    let mut documents = Vec::new();
+    for (index, contenu) in [PDF1, PDF2].into_iter().enumerate() {
+        let folder = s.dir().join(format!("source-{index}"));
+        std::fs::create_dir(&folder).unwrap();
+        let storage = call(
+            &s,
+            &admin,
+            "POST",
+            "/api/settings/storage",
+            Some(json!({"kind":"folder","label":"Source","config":{"path":folder}})),
+            201,
+        );
+        call(
+            &s,
+            &admin,
+            "POST",
+            &format!(
+                "/api/settings/storage/{}/activate",
+                storage["id"].as_str().unwrap()
+            ),
+            None,
+            204,
+        );
+        let response = attach(&s, &resp, "equipment", &eq, "notice.pdf", contenu);
+        assert_eq!(response.status, 201, "{}", response.text());
+        documents.push((
+            response.json()["id"].as_str().unwrap().to_string(),
+            contenu,
+            folder,
+        ));
+    }
+    let output = std::process::Command::new(common::EXE)
+        .args([
+            "backup",
+            "--include-files",
+            "folder_only",
+            "--with-secret-key",
+            "--config",
+        ])
+        .arg(&s.config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let archive: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let token = s.control_token();
+    assert_eq!(
+        s.call("POST", "/api/system/shutdown", Some(&token), None)
+            .status,
+        200
+    );
+    assert!(s.wait_exit(common::EXIT_TIMEOUT).unwrap().success());
+    for (_, _, folder) in &documents {
+        std::fs::rename(folder, folder.with_extension("ancienne")).unwrap();
+    }
+    let output = std::process::Command::new(common::EXE)
+        .args([
+            "restore",
+            archive["archive"].as_str().unwrap(),
+            "--force",
+            "--config",
+        ])
+        .arg(&s.config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    s.restart();
+    for (id, contenu, _) in documents {
+        let response = s.session_call(
+            "GET",
+            &format!("/api/documents/{id}/download"),
+            Some(&resp),
+            None,
+        );
+        assert_eq!(response.status, 200, "{}", response.text());
+        assert_eq!(response.body, contenu);
+    }
+}
+
+#[test]
 fn documents_versions_telechargement_et_audit() {
     let (s, admin, resp) = setup("documents-versions");
     let eq = equipment(&s, &resp, "DOC-01");

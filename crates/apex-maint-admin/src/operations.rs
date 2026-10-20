@@ -381,6 +381,10 @@ fn resolve_backup_dir(config: &Path, data: &Path) -> Result<PathBuf, String> {
                     .await
                     .map_err(|e| e.to_string())?;
             conn.close().await.map_err(|e| e.to_string())?;
+            let value = value
+                .map(|v| serde_json::from_str::<String>(&v))
+                .transpose()
+                .map_err(|e| format!("Dossier de sauvegardes invalide : {e}"))?;
             Ok(value
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
@@ -426,7 +430,7 @@ mod tests {
                 .await
                 .unwrap();
             sqlx::query("INSERT INTO app_settings VALUES('backup.dir',?)")
-                .bind(custom.to_string_lossy().as_ref())
+                .bind(serde_json::to_string(&custom.to_string_lossy()).unwrap())
                 .execute(&mut conn)
                 .await
                 .unwrap();
@@ -439,7 +443,8 @@ mod tests {
             )
             .await
             .unwrap();
-            sqlx::query("UPDATE app_settings SET value=''")
+            sqlx::query("UPDATE app_settings SET value=?")
+                .bind("\"\"")
                 .execute(&mut conn)
                 .await
                 .unwrap();
