@@ -22,3 +22,12 @@
 *.pfx
 *.p12
 signature-metadata*.json
+
+# Client Android : uniquement les sources et la configuration partagée
+/android/.gradle/
+/android/.kotlin/
+/android/**/build/
+/android/local.properties
+/android/**/*.jks
+/android/**/*.keystore
+/android/.verification/
