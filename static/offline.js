@@ -464,6 +464,42 @@ async function rewriteTemporaryId(tempId, realId, realItem, customIDB) {
 // SYNCHRONISATION COMPLÈTE
 // ----------------------------------------------------------------------------
 
+/** Chaîne les préconditions sur la réponse serveur et les conserve pour une reprise. */
+async function acknowledgeOperation(op, serverItem, pendingOps, customIDB) {
+  const db = await openOfflineDB(customIDB);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['outbox', 'snapshot'], 'readwrite');
+    const outbox = tx.objectStore('outbox');
+    if (serverItem && serverItem.id === op.depends_on && serverItem.updated_at) {
+      const rebase = next => next.id !== op.id && next.status === 'pending'
+        && next.depends_on === serverItem.id && next.if_unmodified_since;
+      outbox.getAll().onsuccess = e => {
+        for (const next of e.target.result || []) {
+          if (rebase(next)) {
+            next.if_unmodified_since = serverItem.updated_at;
+            outbox.put(next);
+          }
+        }
+      };
+      for (const next of pendingOps) {
+        if (rebase(next)) next.if_unmodified_since = serverItem.updated_at;
+      }
+      const snapshot = tx.objectStore('snapshot');
+      snapshot.get(`interventions:${serverItem.id}`).onsuccess = e => {
+        const row = e.target.result;
+        if (row) {
+          // Garder les champs locaux encore en attente, mais mémoriser la version acquittée.
+          row.data.server_updated_at = serverItem.updated_at;
+          snapshot.put(row);
+        }
+      };
+    }
+    outbox.delete(op.id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
 /**
  * Exécute la synchronisation séquentielle de la file d'attente vers le serveur.
  * Arguments :
@@ -566,7 +602,7 @@ async function syncOutbox(fetchFn, currentUserId, currentSiteId, customIDB) {
         }
       }
 
-      await removeOperation(op.id, customIDB);
+      await acknowledgeOperation(op, resData, pendingOps, customIDB);
       report.sent++;
     } else if (response.status === 409 || response.status === 403 || response.status === 400 || response.status === 412 || response.status === 422) {
       // Conflit ou refus métier -> passage en "À résoudre"
@@ -632,6 +668,7 @@ async function localCreateIntervention(params, currentUserId, currentSiteId, cus
     duration_minutes: params.duration_minutes ?? 0,
     technician_ids: params.technician_ids || [],
     updated_at: occurredAt,
+    server_updated_at: null,
     deleted_at: null
   };
 
@@ -680,6 +717,7 @@ async function localTakeIntervention(interventionId, currentUserId, currentSiteI
   if (item) {
     item.status = 'in_progress';
     if (!item.started_at) item.started_at = occurredAt;
+    if (item.server_updated_at === undefined) item.server_updated_at = item.updated_at || null;
     item.updated_at = occurredAt;
     await putSnapshotItem('interventions', interventionId, item, customIDB);
   }
@@ -711,6 +749,7 @@ async function localRecordTime(interventionId, durationMinutes, currentUserId, c
     if (technician) technician.duration_minutes = durationMinutes;
     else technicians.push({ user_id: currentUserId, duration_minutes: durationMinutes });
     item.technicians = technicians;
+    if (item.server_updated_at === undefined) item.server_updated_at = item.updated_at || null;
     item.updated_at = occurredAt;
     await putSnapshotItem('interventions', interventionId, item, customIDB);
   }
@@ -734,9 +773,12 @@ async function localRecordTime(interventionId, durationMinutes, currentUserId, c
 async function localPatchIntervention(interventionId, fields, currentUserId, currentSiteId, customIDB) {
   const item = await getSnapshotItem('interventions', interventionId, customIDB);
   const occurredAt = new Date().toISOString();
-  const ifUnmodifiedSince = item ? item.updated_at : null;
+  // L'heure locale sert à l'affichage ; seule la version serveur protège le PATCH.
+  const ifUnmodifiedSince = interventionId.startsWith('temp_') || !item ? null
+    : item.server_updated_at !== undefined ? item.server_updated_at : item.updated_at;
 
   if (item) {
+    item.server_updated_at = ifUnmodifiedSince;
     if (fields.description !== undefined) item.description = fields.description;
     if (fields.solution_report !== undefined) item.solution_report = fields.solution_report;
     item.updated_at = occurredAt;
@@ -769,6 +811,7 @@ async function localCompleteIntervention(interventionId, params, currentUserId, 
     item.status = 'completed';
     item.completed_at = occurredAt;
     if (params && params.solution_report) item.solution_report = params.solution_report;
+    if (item.server_updated_at === undefined) item.server_updated_at = item.updated_at || null;
     item.updated_at = occurredAt;
     await putSnapshotItem('interventions', interventionId, item, customIDB);
   }

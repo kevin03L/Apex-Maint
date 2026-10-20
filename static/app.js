@@ -8216,9 +8216,11 @@ async function handleEditInterventionSubmit(form) {
       if (form.solution_report) fields.solution_report = (form.solution_report.value || '').trim() || null;
       await ApexOffline.localPatchIntervention(id, fields, state.currentUser.id, item.site_id);
     } else {
+      const body = { title, description, priority, machine_state };
+      if (form.solution_report) body.solution_report = (form.solution_report.value || '').trim() || null;
       await api(`/api/interventions/${encodeURIComponent(id)}`, {
         method: 'PATCH',
-        body: { title, description, priority, machine_state },
+        body,
       });
     }
     closeModal();

@@ -26,10 +26,13 @@ function fonction(name, next) {
 }
 
 test('A12. Le formulaire conserve le PATCH en ligne et utilise la file hors ligne', async () => {
-  for (const online of [true, false]) {
+  for (const { online, report } of [
+    { online: true, report: ' Réparé ' }, { online: false, report: ' Réparé ' },
+    { online: true, report: '' }, { online: true },
+  ]) {
     const calls = [];
     const context = vm.createContext({
-      navigator: { onLine: online }, state: { currentUser: { id: 'tech' } },
+      navigator: { onLine: false }, state: { currentUser: { id: 'tech' } },
       document: { getElementById: () => ({}) },
       ensureOfflineCacheOwner: async () => {}, hasPermission: () => true,
       api: async (...args) => calls.push(['api', ...args]),
@@ -39,13 +42,18 @@ test('A12. Le formulaire conserve le PATCH en ligne et utilise la file hors lign
     });
     vm.runInContext('async ' + fonction('handleEditInterventionSubmit', 'interventionProgress').replace(/async\s*$/, ''), context);
     context.form = { dataset: { args: '"i"' }, title: { value: 'Titre' }, description: { value: 'Diagnostic' },
-      priority: { value: 'high' }, machine_state: { value: 'ARRET' }, solution_report: { value: 'Réparé' } };
+      priority: { value: 'high' }, machine_state: { value: 'ARRET' } };
+    if (report !== undefined) context.form.solution_report = { value: report };
+    // Le formulaire reste ouvert pendant le retour éventuel de la connexion.
+    context.navigator.onLine = online;
     await vm.runInContext('handleEditInterventionSubmit(form)', context);
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], online ? 'api' : 'local');
-    assert.deepEqual(JSON.parse(JSON.stringify(online ? calls[0][2].body : calls[0][2])), online
+    const expected = online
       ? { title: 'Titre', description: 'Diagnostic', priority: 'high', machine_state: 'ARRET' }
-      : { description: 'Diagnostic', solution_report: 'Réparé' });
+      : { description: 'Diagnostic' };
+    if (report !== undefined) expected.solution_report = report.trim() || null;
+    assert.deepEqual(JSON.parse(JSON.stringify(online ? calls[0][2].body : calls[0][2])), expected);
   }
 });
 

@@ -126,6 +126,87 @@ test('A12. La modification locale conserve les champs et la précondition dans l
   assert.equal((await offline.getLocalIntervention('i', db)).solution_report, 'Réparation');
 });
 
+test('Deux PATCH successifs chaînent la version serveur, même après une coupure', async () => {
+  for (const interrupted of [false, true]) {
+    const db = createMockIndexedDB();
+    offline.setOfflineDBInstance(null);
+    const initial = '2026-10-18T10:00:00.000Z';
+    const received = '2026-10-20T14:00:00.000Z';
+    await offline.saveSnapshot({ full: true, interventions: [{ id: 'i', updated_at: initial }] }, 'a', 'site', db);
+    await offline.localPatchIntervention('i', { description: 'Diagnostic' }, 'a', 'site', db);
+    await offline.localPatchIntervention('i', { solution_report: 'Réparé' }, 'a', 'site', db);
+    assert.deepEqual((await offline.getPendingOperations(db)).map(op => op.if_unmodified_since), [initial, initial]);
+    let calls = 0;
+    let version = initial;
+    const send = async (url, options) => {
+      calls++;
+      assert.equal(options.headers['If-Unmodified-Since'], version);
+      if (interrupted && calls === 2) throw new Error('Coupure réseau');
+      version = received;
+      return { status: 200, json: async () => ({ id: 'i', updated_at: version }) };
+    };
+    const report = await offline.syncOutbox(send, 'a', 'site', db);
+    assert.equal(report.conflicts, 0);
+    if (interrupted) {
+      assert.equal(report.sent, 1);
+      assert.equal(report.stoppedReason, 'NETWORK_ERROR');
+      const [remaining] = await offline.getPendingOperations(db);
+      assert.equal(remaining.if_unmodified_since, received);
+      const local = await offline.getLocalIntervention('i', db);
+      assert.equal(local.server_updated_at, received);
+      assert.equal(local.solution_report, 'Réparé');
+      const retry = await offline.syncOutbox(send, 'a', 'site', db);
+      assert.equal(retry.sent, 1);
+      assert.equal(retry.conflicts, 0);
+    } else {
+      assert.equal(report.sent, 2);
+    }
+    assert.equal((await offline.getPendingOperations(db)).length, 0);
+  }
+});
+
+test('Une création locale suivie de deux PATCH ne porte aucune précondition', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  const item = await offline.localCreateIntervention({ title: 'Panne' }, 'a', 'site', db);
+  await offline.localPatchIntervention(item.id, { description: 'Diagnostic' }, 'a', 'site', db);
+  await offline.localPatchIntervention(item.id, { solution_report: 'Réparé' }, 'a', 'site', db);
+  const urls = [];
+  const report = await offline.syncOutbox(async (url, options) => {
+    urls.push(url);
+    assert.equal(options.headers['If-Unmodified-Since'], undefined);
+    return { status: 200, json: async () => ({ id: 'réelle', updated_at: '2026-10-20T14:00:00.000Z' }) };
+  }, 'a', 'site', db);
+  assert.equal(report.sent, 3);
+  assert.equal(report.conflicts, 0);
+  assert.deepEqual(urls, ['/api/interventions', '/api/interventions/réelle', '/api/interventions/réelle']);
+});
+
+test('Les PATCH dépendants restent bloqués par une modification concurrente réelle', async () => {
+  for (const concurrentAfterFirst of [false, true]) {
+    const db = createMockIndexedDB();
+    offline.setOfflineDBInstance(null);
+    const initial = '2026-10-18T10:00:00.000Z';
+    const received = '2026-10-20T14:00:00.000Z';
+    await offline.saveSnapshot({ full: true, interventions: [{ id: 'i', updated_at: initial }] }, 'a', 'site', db);
+    await offline.localPatchIntervention('i', { description: 'Diagnostic' }, 'a', 'site', db);
+    await offline.localPatchIntervention('i', { solution_report: 'Réparé' }, 'a', 'site', db);
+    let calls = 0;
+    const report = await offline.syncOutbox(async (url, options) => {
+      calls++;
+      assert.equal(options.headers['If-Unmodified-Since'], calls === 1 ? initial : received);
+      if (concurrentAfterFirst && calls === 1) {
+        return { status: 200, json: async () => ({ id: 'i', updated_at: received }) };
+      }
+      return { status: 412, json: async () => ({ message: 'Modification concurrente' }) };
+    }, 'a', 'site', db);
+    assert.equal(report.conflicts, 1);
+    assert.equal(report.sent, concurrentAfterFirst ? 1 : 0);
+    assert.equal(report.blocked, concurrentAfterFirst ? 0 : 1);
+    assert.equal((await offline.getConflictOperations(db))[0].error_status, 412);
+  }
+});
+
 function createMockIndexedDB(onRead = () => {}) {
   const stores = new Map();
 

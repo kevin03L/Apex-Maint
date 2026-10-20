@@ -170,7 +170,16 @@ fn adaptateurs_json_documentaires_conservent_413() {
 
 #[test]
 fn restauration_stockages_personnalises_apres_redemarrage() {
-    let (mut s, admin, resp) = setup("restauration-stockages");
+    verifier_restauration_stockages("folder_only");
+}
+
+#[test]
+fn restauration_sans_fichiers_conserve_les_stockages_origine() {
+    verifier_restauration_stockages("none");
+}
+
+fn verifier_restauration_stockages(include_files: &str) {
+    let (mut s, admin, resp) = setup(&format!("restauration-stockages-{include_files}"));
     let eq = equipment(&s, &resp, "REST-DOC");
     let mut documents = Vec::new();
     for (index, contenu) in [PDF1, PDF2].into_iter().enumerate() {
@@ -207,7 +216,7 @@ fn restauration_stockages_personnalises_apres_redemarrage() {
         .args([
             "backup",
             "--include-files",
-            "folder_only",
+            include_files,
             "--with-secret-key",
             "--config",
         ])
@@ -227,8 +236,10 @@ fn restauration_stockages_personnalises_apres_redemarrage() {
         200
     );
     assert!(s.wait_exit(common::EXIT_TIMEOUT).unwrap().success());
-    for (_, _, folder) in &documents {
-        std::fs::rename(folder, folder.with_extension("ancienne")).unwrap();
+    if include_files != "none" {
+        for (_, _, folder) in &documents {
+            std::fs::rename(folder, folder.with_extension("ancienne")).unwrap();
+        }
     }
     let output = std::process::Command::new(common::EXE)
         .args([
