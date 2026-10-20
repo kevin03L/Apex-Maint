@@ -336,6 +336,15 @@ pub struct AssignedTechnician {
     pub duration_minutes: Option<i64>,
 }
 
+/// Résultat d'une saisie de temps et version de l'intervention dans la même transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TechnicianTime {
+    #[serde(flatten)]
+    pub technician: AssignedTechnician,
+    pub intervention_id: String,
+    pub updated_at: String,
+}
+
 /// Représentation complète d'une intervention.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Intervention {
@@ -1090,6 +1099,7 @@ pub async fn take_intervention(
     actor.require_permission(Permission::InterventionsEdit)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = scoped_intervention_raw(&mut tx, actor, id).await?;
+    crate::terrain::check_unmodified(&current.updated_at)?;
 
     let cur_status = InterventionStatus::parse(&current.status)?;
     check_transition(cur_status, InterventionStatus::InProgress)?;
@@ -1196,6 +1206,7 @@ pub async fn complete_intervention(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = scoped_intervention_raw(&mut tx, actor, id).await?;
     crate::terrain::require_assignment(&mut tx, actor, id).await?;
+    crate::terrain::check_unmodified(&current.updated_at)?;
 
     let cur_status = InterventionStatus::parse(&current.status)?;
     check_transition(cur_status, InterventionStatus::Completed)?;
@@ -1700,11 +1711,12 @@ pub async fn set_technician_time(
     user_id: &str,
     input: SetTechnicianTime,
     ip: Option<&str>,
-) -> Result<AssignedTechnician, MaintError> {
+) -> Result<TechnicianTime, MaintError> {
     actor.require_permission(Permission::InterventionsEdit)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = scoped_intervention_raw(&mut tx, actor, intervention_id).await?;
     crate::terrain::require_assignment(&mut tx, actor, intervention_id).await?;
+    crate::terrain::check_unmodified(&current.updated_at)?;
 
     let cur_status = InterventionStatus::parse(&current.status)?;
     if cur_status == InterventionStatus::Completed || cur_status == InterventionStatus::Cancelled {
@@ -1769,6 +1781,12 @@ pub async fn set_technician_time(
     )
     .await?;
 
+    let updated = scoped_intervention_raw(&mut tx, actor, intervention_id).await?;
+    let tech = TechnicianTime {
+        technician: tech,
+        intervention_id: intervention_id.to_string(),
+        updated_at: updated.updated_at,
+    };
     crate::terrain::record(&mut tx, actor, &tech, 200).await?;
     tx.commit().await?;
     Ok(tech)

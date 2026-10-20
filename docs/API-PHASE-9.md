@@ -58,8 +58,8 @@ La réponse est gzip si `Accept-Encoding: gzip` ; `Cache-Control: no-store` rest
 
 Les cinq routes de la spécification conservent leurs corps/réponses de phase 3 : création
 (201, `Intervention`), prise en charge (200, `Intervention`), temps (200,
-`AssignedTechnician`), PATCH et clôture (200, `Intervention`). PATCH accepte aussi
-`solution_report` (chaîne ou null).
+`AssignedTechnician` enrichi de `intervention_id` et `updated_at`), PATCH et clôture
+(200, `Intervention`). PATCH accepte aussi `solution_report` (chaîne ou null).
 
 - `Idempotency-Key: UUID` : réponse réussie stockée dans la même transaction que l'écriture et
   l'audit. Une répétition renvoie le même code et le même corps, même après redémarrage.
@@ -69,9 +69,20 @@ Les cinq routes de la spécification conservent leurs corps/réponses de phase 3
 - `X-Occurred-At: RFC3339` : date d'action entre réception −7 jours et réception +5 minutes,
   jamais antérieure à l'étape précédente. Sinon, date de réception et audit
   `offline_date_replaced`, dans la transaction. Sans cet en-tête, comportement habituel.
-- `If-Unmodified-Since: <updated_at>` sur PATCH : comparaison exacte dans la transaction,
+- `If-Unmodified-Since: <updated_at>` sur PATCH, prise en charge, saisie de temps et clôture :
+  comparaison exacte dans la transaction,
   refus 412 si l'intervention a changé. Les erreurs gardent la forme
   `{"error":true,"message":"…"}`.
+
+Les requêtes sans précondition restent acceptées. La version `updated_at` de la réponse
+de saisie de temps est celle de l'intervention après recalcul de sa durée, lue et mémorisée
+avec la réponse idempotente dans la même transaction.
+
+La file hors ligne envoie la version initiale de l'instantané sur chaque opération portant
+sur une intervention existante. Après un acquittement conditionné, elle chaîne uniquement
+les opérations dépendantes portant cette même version sur la version renvoyée. Une création
+locale initialise cette chaîne avec sa version serveur. Une réponse non conditionnée ne
+permet pas de recaler une précondition ni la version connue dans l'instantané.
 
 ## Configuration TLS et proxies
 

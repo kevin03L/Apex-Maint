@@ -165,7 +165,7 @@ test('Deux PATCH successifs chaînent la version serveur, même après une coupu
   }
 });
 
-test('Une création locale suivie de deux PATCH ne porte aucune précondition', async () => {
+test('Une création locale initialise la précondition des deux PATCH suivants', async () => {
   const db = createMockIndexedDB();
   offline.setOfflineDBInstance(null);
   const item = await offline.localCreateIntervention({ title: 'Panne' }, 'a', 'site', db);
@@ -174,12 +174,62 @@ test('Une création locale suivie de deux PATCH ne porte aucune précondition', 
   const urls = [];
   const report = await offline.syncOutbox(async (url, options) => {
     urls.push(url);
-    assert.equal(options.headers['If-Unmodified-Since'], undefined);
+    assert.equal(options.headers['If-Unmodified-Since'], urls.length === 1 ? undefined : '2026-10-20T14:00:00.000Z');
     return { status: 200, json: async () => ({ id: 'réelle', updated_at: '2026-10-20T14:00:00.000Z' }) };
   }, 'a', 'site', db);
   assert.equal(report.sent, 3);
   assert.equal(report.conflicts, 0);
   assert.deepEqual(urls, ['/api/interventions', '/api/interventions/réelle', '/api/interventions/réelle']);
+});
+
+test('Prise en charge, temps et clôture chaînent le PATCH sans masquer une modification distante', async () => {
+  for (const action of ['take', 'time', 'complete']) {
+    for (const concurrent of [false, true]) {
+      const db = createMockIndexedDB();
+      offline.setOfflineDBInstance(null);
+      const initial = '2026-10-18T10:00:00.000Z';
+      const received = '2026-10-20T14:00:00.000Z';
+      await offline.saveSnapshot({ full: true, interventions: [{ id: 'i', updated_at: initial }] }, 'a', 'site', db);
+      if (action === 'take') await offline.localTakeIntervention('i', 'a', 'site', db);
+      if (action === 'time') await offline.localRecordTime('i', 30, 'a', 'site', db);
+      if (action === 'complete') await offline.localCompleteIntervention('i', { solution_report: 'Réparé' }, 'a', 'site', db);
+      await offline.localPatchIntervention('i', { description: 'Diagnostic local' }, 'a', 'site', db);
+      assert.deepEqual((await offline.getPendingOperations(db)).map(op => op.if_unmodified_since), [initial, initial]);
+      let calls = 0;
+      const report = await offline.syncOutbox(async (url, options) => {
+        calls++;
+        assert.equal(options.headers['If-Unmodified-Since'], calls === 1 ? initial : received);
+        if (concurrent) return { status: 412, json: async () => ({ message: 'Modification distante' }) };
+        return { status: 200, json: async () => action === 'time' && calls === 1
+          ? { user_id: 'a', intervention_id: 'i', duration_minutes: 30, updated_at: received }
+          : { id: 'i', updated_at: received } };
+      }, 'a', 'site', db);
+      assert.equal(report.sent, concurrent ? 0 : 2);
+      assert.equal(report.conflicts, concurrent ? 1 : 0);
+      assert.equal(report.blocked, concurrent ? 1 : 0);
+      const local = await offline.getLocalIntervention('i', db);
+      assert.equal(local.server_updated_at, concurrent ? initial : received);
+      assert.equal(local.description, 'Diagnostic local');
+      if (concurrent) assert.equal((await offline.getConflictOperations(db))[0].error_status, 412);
+    }
+  }
+});
+
+test('Une ancienne opération non conditionnée ne recale pas le PATCH suivant', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  const initial = '2026-10-18T10:00:00.000Z';
+  await offline.saveSnapshot({ full: true, interventions: [{ id: 'i', updated_at: initial }] }, 'a', 'site', db);
+  await offline.enqueueOperation({ type: 'take_intervention', url: '/api/interventions/i/take', method: 'POST', depends_on: 'i' }, db);
+  await offline.localPatchIntervention('i', { description: 'Local' }, 'a', 'site', db);
+  const report = await offline.syncOutbox(async (url, options) => {
+    if (url.endsWith('/take')) return { status: 200, json: async () => ({ id: 'i', updated_at: '2026-10-20T14:00:00.000Z' }) };
+    assert.equal(options.headers['If-Unmodified-Since'], initial);
+    return { status: 412, json: async () => ({ message: 'Modification distante' }) };
+  }, 'a', 'site', db);
+  assert.equal(report.sent, 1);
+  assert.equal(report.conflicts, 1);
+  assert.equal((await offline.getLocalIntervention('i', db)).server_updated_at, initial);
 });
 
 test('Les PATCH dépendants restent bloqués par une modification concurrente réelle', async () => {

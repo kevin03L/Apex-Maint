@@ -283,7 +283,7 @@ async function putSnapshotItem(collection, id, data, customIDB) {
  * - user_id : identifiant de l'utilisateur ayant réalisé l'action
  * - site_id : identifiant du site
  * - occurred_at : date ISO réelle de l'action
- * - if_unmodified_since : date ISO pour détection de conflit (PATCH)
+ * - if_unmodified_since : version serveur pour détection de conflit
  */
 async function enqueueOperation(opParams, customIDB) {
   const db = await openOfflineDB(customIDB);
@@ -470,9 +470,13 @@ async function acknowledgeOperation(op, serverItem, pendingOps, customIDB) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['outbox', 'snapshot'], 'readwrite');
     const outbox = tx.objectStore('outbox');
-    if (serverItem && serverItem.id === op.depends_on && serverItem.updated_at) {
+    const created = op.temp_id && op.temp_id.startsWith('temp_');
+    const interventionId = serverItem && (op.type === 'record_time' ? serverItem.intervention_id : serverItem.id);
+    if (serverItem && serverItem.updated_at && (created || op.if_unmodified_since)
+        && interventionId === (created ? serverItem.id : op.depends_on)) {
       const rebase = next => next.id !== op.id && next.status === 'pending'
-        && next.depends_on === serverItem.id && next.if_unmodified_since;
+        && next.depends_on === interventionId
+        && (created || next.if_unmodified_since === op.if_unmodified_since);
       outbox.getAll().onsuccess = e => {
         for (const next of e.target.result || []) {
           if (rebase(next)) {
@@ -485,7 +489,7 @@ async function acknowledgeOperation(op, serverItem, pendingOps, customIDB) {
         if (rebase(next)) next.if_unmodified_since = serverItem.updated_at;
       }
       const snapshot = tx.objectStore('snapshot');
-      snapshot.get(`interventions:${serverItem.id}`).onsuccess = e => {
+      snapshot.get(`interventions:${interventionId}`).onsuccess = e => {
         const row = e.target.result;
         if (row) {
           // Garder les champs locaux encore en attente, mais mémoriser la version acquittée.
@@ -730,7 +734,8 @@ async function localTakeIntervention(interventionId, currentUserId, currentSiteI
     depends_on: interventionId,
     user_id: currentUserId,
     site_id: currentSiteId,
-    occurred_at: occurredAt
+    occurred_at: occurredAt,
+    if_unmodified_since: interventionId.startsWith('temp_') || !item ? null : item.server_updated_at
   }, customIDB);
 }
 
@@ -762,7 +767,8 @@ async function localRecordTime(interventionId, durationMinutes, currentUserId, c
     depends_on: interventionId,
     user_id: currentUserId,
     site_id: currentSiteId,
-    occurred_at: occurredAt
+    occurred_at: occurredAt,
+    if_unmodified_since: interventionId.startsWith('temp_') || !item ? null : item.server_updated_at
   }, customIDB);
 }
 
@@ -824,7 +830,8 @@ async function localCompleteIntervention(interventionId, params, currentUserId, 
     depends_on: interventionId,
     user_id: currentUserId,
     site_id: currentSiteId,
-    occurred_at: occurredAt
+    occurred_at: occurredAt,
+    if_unmodified_since: interventionId.startsWith('temp_') || !item ? null : item.server_updated_at
   }, customIDB);
 }
 

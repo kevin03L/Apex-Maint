@@ -249,7 +249,7 @@ async fn set_technician_time(
     Extension(session): Extension<Session>,
     Path((id, user_id)): Path<(String, String)>,
     input: Body<SetTechnicianTime>,
-) -> Result<Json<AssignedTechnician>> {
+) -> Result<Json<TechnicianTime>> {
     let input = body(input)?;
     let ip = peer.ip().to_string();
     let item = interventions::set_technician_time(
