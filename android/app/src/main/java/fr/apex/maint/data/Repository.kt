@@ -6,8 +6,21 @@ import java.time.Instant
 import java.util.UUID
 
 /** Le conteneur sérialise ses appels avec la session et le Worker. */
-class Repository(private val db: MaintDatabase, private val api: () -> MaintApi) {
-    private val dao get() = db.dao()
+class Repository(private val db: MaintDatabase, cipher: PayloadCipher, private val api: () -> MaintApi) {
+    private val dao = EncryptedDao(db.dao(), cipher)
+    private var protected = false
+    suspend fun protectCache() {
+        if (protected) return
+        val sql = db.openHelper.writableDatabase
+        sql.query("PRAGMA secure_delete=ON").use { it.moveToFirst() }
+        val migrated = db.withTransaction { dao.protectLegacy() }
+        if (migrated) {
+            sql.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() }
+            sql.execSQL("VACUUM")
+            sql.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() }
+        }
+        protected = true
+    }
     suspend fun collection(actor: Actor, name: String): List<JsonObject> =
         dao.rows(actor.scope, name).map { wire.parseToJsonElement(it.payload).jsonObject }
     suspend fun item(actor: Actor, name: String, id: String): JsonObject? =
@@ -43,7 +56,7 @@ class Repository(private val db: MaintDatabase, private val api: () -> MaintApi)
             }
             collection(actor, "interventions").forEach { old ->
                 val id = requireNotNull(old.text("id"))
-                if (!id.startsWith("temp_") && id !in snap.intervention_ids) {
+                if (!id.startsWith("temp_") && id !in snap.intervention_ids && id !in protected) {
                     retireItem(actor, "interventions", id)
                     retireItem(actor, "server_interventions", id)
                 }
@@ -65,18 +78,27 @@ class Repository(private val db: MaintDatabase, private val api: () -> MaintApi)
     }
     suspend fun allPages(actor: Actor, path: String, collection: String) {
         var cursor: String? = null
+        val seen = mutableSetOf<String>()
+        val received = mutableSetOf<String>()
         do {
             val page = api().get("$path&limit=100" + cursor?.let { "&cursor=${encode(it)}" }.orEmpty()).checked().objectOrEmpty()
             db.withTransaction {
                 val protected = operations(actor).flatMap { listOfNotNull(it.dependsOn, it.tempId) }.toSet()
-                page.list("items").filter { it.text("site_id") == actor.siteId && it.text("id") !in protected }
+                page.list("items").filter { it.text("site_id") == actor.siteId }
                     .forEach {
-                        save(actor, collection, it)
+                        received.add(requireNotNull(it.text("id")))
+                        if (it.text("id") !in protected) save(actor, collection, it)
                         if (collection == "interventions") save(actor, "server_interventions", it)
                     }
             }
             cursor = page.text("next_cursor")
+            check(cursor == null || seen.add(cursor)) { "Pagination serveur incohérente" }
         } while (cursor != null)
+        db.withTransaction {
+            val protected = operations(actor).flatMap { listOfNotNull(it.dependsOn, it.tempId) }.toSet()
+            this@Repository.collection(actor, collection).filter { it.text("id") !in received && it.text("id") !in protected }
+                .forEach { retireItem(actor, collection, requireNotNull(it.text("id"))) }
+        }
     }
     suspend fun detail(actor: Actor, collection: String, id: String): JsonObject {
         if (id.startsWith("temp_")) return requireNotNull(item(actor, collection, id))
@@ -93,11 +115,12 @@ class Repository(private val db: MaintDatabase, private val api: () -> MaintApi)
         val at = Instant.now().toString()
         val body = JsonObject(input + mapOf("site_id" to actor.siteId.j(), "reported_at" to at.j(),
             "technician_ids" to JsonArray(listOf(actor.userId.j()))))
+        require(TerrainRules.inputProblem(body) == null) { TerrainRules.inputProblem(body).orEmpty() }
         db.withTransaction {
             save(actor, "interventions", JsonObject(body + mapOf("id" to id.j(),
                 "code" to "Référence provisoire".j(), "status" to (if (input.text("type") == "a_posteriori") "completed" else "open").j(), "updated_at" to at.j(),
                 "server_updated_at" to JsonNull, "technicians" to JsonArray(listOf(obj(
-                    "user_id" to actor.userId.j(), "duration_minutes" to (input["duration_minutes"] ?: 0.j())))))))
+                    "user_id" to actor.userId.j(), "duration_minutes" to (input["duration_minutes"] ?: JsonNull)))))))
             dao.operation(Operation(scope = actor.scope, userId = actor.userId, siteId = actor.siteId,
                 kind = "create_intervention", url = "/api/interventions", method = "POST", body = body.toString(),
                 tempId = id, occurredAt = at, position = dao.nextPosition(actor.scope)))
@@ -106,8 +129,12 @@ class Repository(private val db: MaintDatabase, private val api: () -> MaintApi)
     }
     suspend fun mutate(actor: Actor, id: String, kind: String, body: JsonObject) {
         require(actor.can("interventions.edit")) { "Modification non autorisée" }
+        require(TerrainRules.inputProblem(body) == null) { TerrainRules.inputProblem(body).orEmpty() }
         db.withTransaction {
             val old = requireNotNull(item(actor, "interventions", id)) { "Rechargez l’intervention" }
+            if (kind == "complete_intervention") require(TerrainRules.completionProblem(old, body.text("solution_report").orEmpty()) == null) {
+                TerrainRules.completionProblem(old, body.text("solution_report").orEmpty()).orEmpty()
+            }
             val at = Instant.now().toString()
             val version = if (id.startsWith("temp_")) null else
                 if (old.containsKey("server_updated_at")) old.text("server_updated_at") else old.text("updated_at")
@@ -120,7 +147,8 @@ class Repository(private val db: MaintDatabase, private val api: () -> MaintApi)
             }
             val operation = Operation(scope = actor.scope, userId = actor.userId, siteId = actor.siteId,
                 kind = kind, url = "/api/interventions/${encode(id)}$suffix", method = method,
-                body = body.toString(), occurredAt = at, dependsOn = id, version = version,
+                body = QueueProtocol.bodyForActor(actor, kind, body).toString(),
+                occurredAt = at, dependsOn = id, version = version,
                 position = dao.nextPosition(actor.scope))
             if (!id.startsWith("temp_") && item(actor, "server_interventions", id) == null)
                 save(actor, "server_interventions", old)

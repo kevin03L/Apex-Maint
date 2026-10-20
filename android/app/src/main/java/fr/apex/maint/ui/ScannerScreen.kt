@@ -8,8 +8,6 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -25,17 +23,17 @@ import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-@Composable fun ScannerScreen(detected: (String) -> Unit) {
+@Composable fun ScannerScreen(vm: MaintViewModel, detected: (String) -> Unit) {
     val context = LocalContext.current
     var allowed by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
-    var manual by rememberSaveableScanner()
+    var manual by rememberDraft(vm, "scanner:code", "")
     var error by remember { mutableStateOf<String?>(null) }
     var paused by remember { mutableStateOf(false) }
     val currentDetected by rememberUpdatedState(detected)
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         allowed = it; if (!it) error = "Accès à la caméra refusé. Utilisez la saisie manuelle."
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Page {
         Text("Scanner un QR", style = MaterialTheme.typography.headlineSmall)
         Text("Présentez le code d’un équipement devant la caméra.")
         if (!allowed) Button({ request.launch(Manifest.permission.CAMERA) }) { Text("Autoriser la caméra") }
@@ -49,8 +47,6 @@ import java.util.concurrent.atomic.AtomicBoolean
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Ouvrir la fiche") }
     }
 }
-
-@Composable private fun rememberSaveableScanner() = androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
 
 @Composable private fun CameraPreview(modifier: Modifier, detected: (String) -> Unit, error: (String) -> Unit) {
     val context = LocalContext.current
@@ -74,8 +70,13 @@ import java.util.concurrent.atomic.AtomicBoolean
             override fun analyze(frame: ImageProxy) {
                 val image = frame.image
                 if (!active.get() || image == null || delivered.get()) { frame.close(); return }
-                scanner.process(InputImage.fromMediaImage(image, frame.imageInfo.rotationDegrees))
-                    .addOnSuccessListener(main) { codes ->
+                val task = try { scanner.process(InputImage.fromMediaImage(image, frame.imageInfo.rotationDegrees)) }
+                catch (_: Exception) {
+                    frame.close()
+                    main.execute { if (active.get()) currentError("Lecture du QR impossible. Utilisez la saisie manuelle.") }
+                    return
+                }
+                task.addOnSuccessListener(main) { codes ->
                         codes.firstNotNullOfOrNull { it.rawValue }?.let { value ->
                             if (active.get() && delivered.compareAndSet(false, true)) currentDetected(value)
                         }

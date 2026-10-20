@@ -56,4 +56,8 @@ class LocalProjectionTest {
     @Test(expected = IllegalArgumentException::class) fun `la cloture exige un compte rendu`() {
         LocalProjection.apply(initial(), operation("complete_intervention"))
     }
+    @Test fun `une prise en charge ne pretend pas qu un temps a ete saisi`() {
+        val taken = LocalProjection.apply(initial(), operation("take_intervention"))
+        assertEquals(JsonNull, taken.list("technicians").first { it.text("user_id") == "u" }["duration_minutes"])
+    }
 }

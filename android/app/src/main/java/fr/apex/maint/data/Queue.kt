@@ -45,6 +45,7 @@ object QueueRunner {
                 acknowledge(op, reply)
             }
             catch (failure: ApiFailure) {
+                if (failure.code == "password_change_required") throw failure
                 when (disposition(failure.status)) {
                     HttpDisposition.SESSION -> throw failure
                     HttpDisposition.RETRY -> return false
@@ -61,6 +62,8 @@ object QueueRunner {
 
 /** Transformations pures partagées par Room et les tests JVM. */
 object QueueProtocol {
+    fun bodyForActor(actor: Actor, kind: String, body: JsonObject): JsonObject =
+        if (kind == "take_intervention") obj("technician_ids" to JsonArray(listOf(actor.userId.j()))) else body
     fun rewrite(op: Operation, temporary: String, real: String): Operation {
         val body = wire.parseToJsonElement(op.body).jsonObject
         val rewritten = if (body.text("intervention_id") == temporary)
@@ -72,7 +75,7 @@ object QueueProtocol {
     fun acknowledgedId(op: Operation, reply: JsonObject): String? {
         val created = op.tempId?.startsWith("temp_") == true
         val id = reply.text(if (op.kind == "record_time") "intervention_id" else "id")
-        return id?.takeIf { reply.text("updated_at") != null &&
+        return id?.takeIf { it.isNotBlank() && !it.startsWith("temp_") && !reply.text("updated_at").isNullOrBlank() &&
             (created || op.version != null) && (created || id == op.dependsOn) }
     }
     fun acknowledge(op: Operation, reply: JsonObject, pending: List<Operation>): List<Operation> {

@@ -16,7 +16,7 @@ object LocalProjection {
                 if (item.text("started_at") == null) fields["started_at"] = operation.occurredAt.j()
                 val techs = item.list("technicians")
                 if (techs.none { it.text("user_id") == operation.userId }) fields["technicians"] =
-                    JsonArray(techs + obj("user_id" to operation.userId.j(), "duration_minutes" to 0.j()))
+                    JsonArray(techs + obj("user_id" to operation.userId.j(), "duration_minutes" to JsonNull))
             }
             "record_time" -> {
                 val minutes = requireNotNull(body.text("duration_minutes")?.toIntOrNull()) { "Temps invalide" }

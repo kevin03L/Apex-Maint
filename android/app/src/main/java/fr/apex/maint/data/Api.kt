@@ -30,11 +30,17 @@ fun <T> Response<T>.checked(): T? {
         runCatching { wire.parseToJsonElement(body.string()).jsonObject }.getOrNull()
     }
     throw ApiFailure(code(), error?.text("message") ?: when (code()) {
+        400 -> "Données invalides : vérifiez les champs du formulaire"
         401 -> "Session expirée : reconnectez-vous"
         403 -> "Droits insuffisants"
+        404 -> "Ressource introuvable ou inaccessible sur ce site"
         409 -> "État incompatible avec cette action"
+        410 -> "Ce fichier n’est plus disponible dans le stockage"
         412 -> "L’intervention a été modifiée sur le serveur"
+        413 -> "Le fichier ou le formulaire dépasse la taille autorisée"
+        415 -> "Ce type de fichier n’est pas autorisé"
         422 -> "Opération refusée par le serveur"
+        429 -> "Trop de demandes : réessayez dans un instant"
         else -> "Erreur HTTP ${code()}"
     }, error?.text("code"))
 }

@@ -10,6 +10,7 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import androidx.core.content.FileProvider
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
@@ -26,7 +27,8 @@ class Documents(private val context: Context, private val api: () -> MaintApi) {
         val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         } ?: if (photo) "photo.jpg" else "document"
-        val safeName = name.substringAfterLast('/').substringAfterLast('\\').take(180)
+        val safeName = if (photo) "photo.jpg" else name.substringAfterLast('/').substringAfterLast('\\')
+            .filter { it >= ' ' && it != '"' }.take(180).ifBlank { "document" }
         val folder = File(context.cacheDir, "documents").apply { mkdirs() }
         val file = File(folder, "envoi_${UUID.randomUUID()}")
         try {
@@ -64,11 +66,11 @@ class Documents(private val context: Context, private val api: () -> MaintApi) {
                 finally { if (upright !== bitmap) upright.recycle(); bitmap.recycle() }
             }
             require(file.length() <= limit) { "Le document dépasse la limite mobile de 1 Mio" }
-            val mime = resolver.getType(uri) ?: if (photo) "image/jpeg" else "application/octet-stream"
+            val mime = if (photo) "image/jpeg" else resolver.getType(uri) ?: "application/octet-stream"
             val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("entity_type", "intervention").addFormDataPart("entity_id", interventionId)
                 .addFormDataPart("title", safeName).addFormDataPart("category", if (photo) "photo" else "autre")
-                .addFormDataPart("file", safeName, file.asRequestBody(mime.toMediaType())).build()
+                .addFormDataPart("file", safeName, file.asRequestBody(mime.toMediaTypeOrNull() ?: "application/octet-stream".toMediaType())).build()
             api().post("api/documents", multipart).checked()
         } finally {
             file.delete()

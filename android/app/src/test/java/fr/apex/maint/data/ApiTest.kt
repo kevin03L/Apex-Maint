@@ -89,10 +89,52 @@ class ApiTest {
             assertNull(api.post("api/auth/logout", obj().requestBody()).checked())
         }
     }
+    @Test fun `les erreurs documentaires sans JSON ont une explication francaise`() = runBlocking {
+        MockWebServer().use { server ->
+            server.start(); val api = apiAt(server.url("/").toString(), OkHttpClient())
+            for ((status, word) in listOf(410 to "stockage", 413 to "taille", 415 to "type")) {
+                server.enqueue(MockResponse().setResponseCode(status).setBody(""))
+                try { api.get("api/documents/d").checked(); fail() }
+                catch (e: ApiFailure) { assertEquals(status, e.status); assertTrue(e.message.contains(word)) }
+            }
+        }
+    }
     @Test fun `une operation Room se serialise sans perdre sa position ni precondition`() {
         val operation = Operation(scope = "u:s", userId = "u", siteId = "s", kind = "record_time",
             url = "/api/interventions/temp_1/technicians/u/time", method = "PUT",
             body = """{"duration_minutes":25}""", dependsOn = "temp_1", position = 42, version = null)
         assertEquals(operation, wire.decodeFromString<Operation>(wire.encodeToString(operation)))
+    }
+    @Test fun `prise temps et cloture utilisent les corps et routes du serveur`() = runBlocking {
+        MockWebServer().use { server ->
+            server.start(); val api = apiAt(server.url("/").toString(), OkHttpClient())
+            val actor = Actor("u", "s", emptySet())
+            fun headers(version: String) = Operation(scope = "u:s", userId = "u", siteId = "s", kind = "take_intervention",
+                url = "/api/interventions/i/take", method = "POST", body = "{}", version = version).headers()
+            server.enqueue(MockResponse().setBody("""{"id":"i","updated_at":"v2"}"""))
+            api.post("api/interventions/i/take", QueueProtocol.bodyForActor(actor, "take_intervention", obj()).requestBody(), headers("version-exacte")).checked()
+            val take = server.takeRequest()
+            assertEquals("/api/interventions/i/take", take.path)
+            assertEquals("POST", take.method)
+            assertEquals(listOf("u".j()), wire.parseToJsonElement(take.body.readUtf8()).jsonObject["technician_ids"]!!.jsonArray.toList())
+            server.enqueue(MockResponse().setBody("""{"user_id":"u","intervention_id":"i","duration_minutes":0,"updated_at":"v3"}"""))
+            val time = api.put("api/interventions/i/technicians/u/time", obj("duration_minutes" to 0.j()).requestBody(), headers("v2")).checked().objectOrEmpty()
+            val timed = server.takeRequest()
+            assertEquals("/api/interventions/i/technicians/u/time", timed.path)
+            assertEquals("PUT", timed.method)
+            assertEquals(0.j(), wire.parseToJsonElement(timed.body.readUtf8()).jsonObject["duration_minutes"])
+            assertEquals("i", time.text("intervention_id"))
+            server.enqueue(MockResponse().setBody("""{"id":"i","status":"completed","updated_at":"v4"}"""))
+            api.post("api/interventions/i/complete", obj("solution_report" to "Réparé".j()).requestBody(), headers("v3")).checked()
+            val complete = server.takeRequest()
+            assertEquals("/api/interventions/i/complete", complete.path)
+            assertEquals("Réparé", wire.parseToJsonElement(complete.body.readUtf8()).jsonObject.text("solution_report"))
+            assertEquals(listOf("version-exacte", "v2", "v3"), listOf(take, timed, complete).map { it.getHeader("If-Unmodified-Since") })
+            assertEquals(3, listOf(take, timed, complete).map { it.getHeader("Idempotency-Key") }.toSet().size)
+            for (request in listOf(take, timed, complete)) {
+                assertNotNull(request.getHeader("Idempotency-Key"))
+                assertNotNull(request.getHeader("X-Occurred-At"))
+            }
+        }
     }
 }

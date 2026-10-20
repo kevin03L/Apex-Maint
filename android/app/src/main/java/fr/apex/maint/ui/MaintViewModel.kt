@@ -2,6 +2,7 @@ package fr.apex.maint.ui
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import fr.apex.maint.AppContainer
 import fr.apex.maint.data.*
@@ -9,9 +10,12 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import java.io.IOException
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 data class UiState(
     val ready: Boolean = false, val server: String? = null, val session: Session? = null,
@@ -23,41 +27,57 @@ data class UiState(
     val resourceKey: String? = null, val busy: Boolean = false, val message: String? = null,
     val expired: Boolean = false, val online: Boolean = false, val formEquipment: String? = null,
     val lastSync: String? = null,
+    val refreshing: Boolean = false,
     val aliases: Map<String, String> = emptyMap(),
 )
 
-class MaintViewModel(val container: AppContainer) : ViewModel() {
+class MaintViewModel(val container: AppContainer, private val saved: SavedStateHandle) : ViewModel() {
+    val mine = saved.getStateFlow("mine", true)
+    val status = saved.getStateFlow("status", "")
+    fun filterMine(value: Boolean) { saved["mine"] = value }
+    fun filterStatus(value: String) { saved["status"] = value }
     private val mutable = MutableStateFlow(UiState())
     val state = mutable.asStateFlow()
     private val selection = java.util.concurrent.atomic.AtomicLong()
+    private val running = java.util.concurrent.atomic.AtomicInteger()
+    private var selectionJob: Job? = null
     private val documents = Documents(container.context) { container.api }
     init {
         viewModelScope.launch { container.expired.collect { expired ->
             mutable.update { it.copy(expired = expired) }
         } }
         viewModelScope.launch { container.online.collect { online -> mutable.update { it.copy(online = online) } } }
-        viewModelScope.launch { container.revision.collect { reload() } }
-        run { container.initialize(); reload(); if (container.session != null) container.schedule() }
+        viewModelScope.launch { container.revision.drop(1).collect { if (mutable.value.ready) reload() } }
+        run {
+            container.initialize(); reload()
+            if (container.session != null) container.schedule()
+        }
     }
-    private fun run(work: suspend () -> Unit) {
-        viewModelScope.launch {
+    private fun run(networkMessage: String? = null, work: suspend () -> Unit): Job = viewModelScope.launch {
+            running.incrementAndGet()
             mutable.update { it.copy(busy = true, message = null) }
             try { withContext(Dispatchers.IO) { work() } }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                val message = when (e) {
+                if (e is ApiFailure && e.code == "password_change_required")
+                    mutable.update { it.copy(session = it.session?.copy(must_change_password = true)) }
+                val message = if (networkMessage != null && e is IOException && e !is LocalStorageFailure) networkMessage else when (e) {
                     is javax.net.ssl.SSLException -> "Certificat refusé. Vérifiez l’autorité installée et le nom du serveur."
                     is java.net.UnknownHostException -> "Nom du serveur introuvable. Vérifiez l’URL et le réseau."
                     is java.net.SocketTimeoutException -> "Le serveur ne répond pas dans le délai prévu."
-                    is IOException -> "Connexion impossible. Les opérations restent enregistrées sur cet appareil."
+                    is LocalStorageFailure -> e.message.orEmpty()
+                    is IOException -> "Connexion impossible. Vérifiez le réseau puis réessayez."
                     is kotlinx.serialization.SerializationException -> "La réponse du serveur est illisible."
                     is android.content.ActivityNotFoundException -> "Aucune application ne peut ouvrir ce document."
-                    else -> e.message?.takeUnless { it == "Required value was null." } ?: "Action impossible"
+                    is java.security.GeneralSecurityException -> "Le stockage chiffré est inaccessible. Contactez votre administrateur avant de réinitialiser l’application."
+                    is ApiFailure -> e.message
+                    is IllegalArgumentException -> e.message ?: "Valeur invalide"
+                    is IllegalStateException -> e.message?.takeUnless { it == "Required value was null." } ?: "Action impossible"
+                    else -> "Action impossible. Réessayez ou contactez votre administrateur."
                 }
-                mutable.update { it.copy(message = message) }
+                mutable.update { it.copy(message = message, server = it.server ?: container.serverUrl) }
             }
-            finally { mutable.update { it.copy(busy = false, ready = true) } }
-        }
+            finally { val busy = running.decrementAndGet() > 0; mutable.update { it.copy(busy = busy, ready = true) } }
     }
     suspend fun reload() = withContext(Dispatchers.IO) {
         container.gate.withLock {
@@ -82,56 +102,79 @@ class MaintViewModel(val container: AppContainer) : ViewModel() {
                 documents = old.documents.takeIf { actor?.scope == oldScope }.orEmpty(),
                 consumed = old.consumed.takeIf { actor?.scope == oldScope }.orEmpty(),
                 children = old.children.takeIf { actor?.scope == oldScope }.orEmpty()) }
+            withContext(Dispatchers.Main) {
+                if (saved.get<String>("scope") != actor?.scope) {
+                    saved.remove<String>("formEquipment"); saved.remove<String>("resourceKey")
+                }
+                saved["scope"] = actor?.scope
+                mutable.update { it.copy(formEquipment = saved["formEquipment"]) }
+            }
         }
     }
     fun message(value: String?) { mutable.update { it.copy(message = value) } }
-    fun server(value: String) = run { container.saveServer(value); reload() }
+    fun server(value: String) = run { container.saveServer(value); reload(); message("Serveur enregistré") }
     fun login(user: String, password: String) = run {
-        container.login(user, password); reload(); container.schedule()
+        container.login(user, password); reload(); container.schedule(); message("Connexion établie")
     }
-    fun password(current: String, new: String) = run { container.password(current, new); reload(); container.schedule() }
+    fun password(current: String, new: String) = run { container.password(current, new); reload(); container.schedule(); message("Mot de passe modifié") }
     fun logout() = run { container.logout(); mutable.value = UiState(online = container.online.value); reload() }
     fun selectSite(id: String) = run { container.selectSite(id); reload(); container.schedule() }
     fun sites() = run {
         val list = container.gate.withLock { container.api.get("api/sites").checked().objects() }
         mutable.update { it.copy(sites = list) }
     }
-    fun sync() = run { container.synchronize(); reload() }
-    fun siteList() = run {
-        container.gate.withLock { container.repo.siteInterventions(requireNotNull(container.actor)) }; reload()
+    private fun refresh(work: suspend () -> Unit) = run {
+        mutable.update { it.copy(refreshing = true) }
+        try { work() } finally { mutable.update { it.copy(refreshing = false) } }
     }
-    fun catalogue() = run {
+    fun sync() = refresh {
+        val done = container.synchronize(); reload()
+        mutable.update { it.copy(message = if (done) "Synchronisation terminée : données actualisées" else "Envoi interrompu : une nouvelle tentative est prévue") }
+        if (!done) container.schedule()
+    }
+    fun siteList() = refresh {
+        container.gate.withLock { container.repo.siteInterventions(requireNotNull(container.actor)) }; reload()
+        mutable.update { it.copy(message = "Interventions du site actualisées") }
+    }
+    fun catalogue() = refresh {
         container.gate.withLock {
             val a = requireNotNull(container.actor)
             if (a.can("parts.view")) container.repo.allPages(a, "api/parts?site_id=${encode(a.siteId)}", "parts")
-        }; reload()
+        }; reload(); message("Catalogue actualisé")
     }
     fun select(collection: String, id: String) {
         val request = selection.incrementAndGet()
-        run {
+        selectionJob?.cancel()
+        saved["resourceKey"] = "$collection:$id"
+        selectionJob = run {
             container.gate.withLock {
                 if (request != selection.get()) return@withLock
                 val a = requireNotNull(container.actor)
                 val key = "$collection:$id"
-                mutable.update { it.copy(resourceKey = key, selected = null, documents = emptyList(),
-                    children = emptyList(), consumed = emptyList()) }
+                mutable.update { old ->
+                    if (old.resourceKey == key) old else old.copy(resourceKey = key, selected = null,
+                        documents = emptyList(), children = emptyList(), consumed = emptyList())
+                }
                 val cached = container.repo.item(a, collection, id)
                 mutable.update { it.copy(selected = cached) }
                 val item = if (container.online.value && !id.startsWith("temp_")) {
                     try { container.repo.detail(a, collection, id) }
                     catch (e: IOException) { cached ?: throw e }
                 } else cached
+                currentCoroutineContext().ensureActive()
                 mutable.update { it.copy(selected = item) }
                 if (container.online.value && !id.startsWith("temp_")) {
-                    if (a.can("documents.view") && collection in setOf("equipments", "interventions")) {
+                    if (a.can("documents.view") && collection in setOf("equipments", "interventions")) optionalResource {
                         val type = if (collection == "equipments") "equipment" else "intervention"
                         val docs = container.repo.get(a, "api/documents?entity_type=$type&entity_id=${encode(id)}").objects()
                         mutable.update { it.copy(documents = docs) }
                     }
                     if (collection == "interventions") {
-                        val children = container.repo.get(a, "api/interventions/${encode(id)}/sub-interventions").objects()
+                        optionalResource {
+                    val children = container.repo.get(a, "api/interventions/${encode(id)}/sub-interventions").objects()
                         mutable.update { it.copy(children = children) }
-                        if (a.can("stock.view")) {
+                        }
+                        if (a.can("stock.view")) optionalResource {
                             val used = container.repo.get(a, "api/interventions/${encode(id)}/parts").objects()
                             mutable.update { it.copy(consumed = used) }
                         }
@@ -140,17 +183,29 @@ class MaintViewModel(val container: AppContainer) : ViewModel() {
             }
     }
     }
+    private suspend fun optionalResource(load: suspend () -> Unit) {
+        try { load() }
+        catch (e: IOException) { mutable.update { it.copy(message = "Chargement partiel : vérifiez la connexion puis rechargez la fiche") } }
+        catch (e: ApiFailure) {
+            if (e.status == 401) throw e
+            mutable.update { it.copy(message = e.message) }
+        }
+        catch (_: kotlinx.serialization.SerializationException) { message("Chargement partiel : une réponse annexe est illisible") }
+    }
     fun create(body: JsonObject, done: (String) -> Unit) = run {
         val id = container.gate.withLock { container.repo.create(requireNotNull(container.actor), body) }
         reload(); container.schedule(); withContext(Dispatchers.Main) { done(id) }
+        mutable.update { it.copy(message = "Intervention enregistrée sur l’appareil") }
     }
     fun mutate(id: String, kind: String, body: JsonObject) = run {
         container.gate.withLock { container.repo.mutate(requireNotNull(container.actor), id, kind, body) }
-        reload(); select("interventions", id); container.schedule()
+        reload(); withContext(Dispatchers.Main) { if (mutable.value.resourceKey == "interventions:$id") select("interventions", id) }; container.schedule()
+        mutable.update { it.copy(message = "Action enregistrée : envoi automatique dès que possible") }
     }
     fun review(op: Operation, done: (JsonObject?) -> Unit) = run {
         val fresh = container.gate.withLock {
             val a = requireNotNull(container.actor)
+            require(op.scope == a.scope) { "Cette opération appartient à un autre compte ou site" }
             op.dependsOn?.takeUnless { it.startsWith("temp_") }?.let {
                 container.repo.get(a, "api/interventions/${encode(it)}").objectOrEmpty()
             }
@@ -161,11 +216,13 @@ class MaintViewModel(val container: AppContainer) : ViewModel() {
         container.gate.withLock { container.repo.resolve(requireNotNull(container.actor), id, retry, reviewedVersion) }
         reload(); container.schedule()
     }
-    fun consume(interventionId: String, partId: String, locationId: String, quantity: Int) = run {
+    fun consume(interventionId: String, partId: String, locationId: String, quantity: Int) = run(
+        "Connexion interrompue. Rechargez les pièces consommées avant de répéter la sortie : le serveur peut l’avoir enregistrée.") {
         container.gate.withLock {
             container.repo.consume(requireNotNull(container.actor), interventionId, partId, locationId, quantity)
         }
-        select("interventions", interventionId)
+        withContext(Dispatchers.Main) { if (mutable.value.resourceKey == "interventions:$interventionId") select("interventions", interventionId) }
+        message("Sortie de pièce enregistrée sur le serveur")
     }
     fun part(id: String, done: (JsonObject) -> Unit) = run {
         val result = container.gate.withLock { container.repo.detail(requireNotNull(container.actor), "parts", id) }
@@ -177,24 +234,31 @@ class MaintViewModel(val container: AppContainer) : ViewModel() {
             container.repo.detail(a, "interventions", id)
             documents.upload(a, id, uri, photo)
         }
-        select("interventions", id)
+        withContext(Dispatchers.Main) { if (mutable.value.resourceKey == "interventions:$id") select("interventions", id) }
+        message("Document ajouté sur le serveur")
     }
     fun openDocument(document: JsonObject) = run {
-        val version = document["current_version"]?.jsonObject ?: error("Version du document absente")
-        val file = container.gate.withLock { documents.download(requireNotNull(container.actor),
-            requireNotNull(document.text("id")), version.text("extension") ?: "bin") }
+        val version = document["current_version"] as? JsonObject ?: error("Version du document absente")
+        val file = container.gate.withLock {
+            val actor = requireNotNull(container.actor)
+            require(document.text("site_id") == actor.siteId) { "Document hors du site sélectionné" }
+            documents.download(actor, requireNotNull(document.text("id")), version.text("extension") ?: "bin")
+        }
         withContext(Dispatchers.Main) { documents.open(file, version.text("mime_type") ?: "application/octet-stream") }
     }
-    fun equipmentForForm(id: String?) { mutable.update { it.copy(formEquipment = id) } }
+    fun equipmentForForm(id: String?) { saved["formEquipment"] = id; mutable.update { it.copy(formEquipment = id) } }
     fun scan(value: String, done: (String, String) -> Unit) = run {
         container.gate.withLock {
             val a = requireNotNull(container.actor)
             val input = value.trim()
+            require(input.isNotEmpty() && input.length <= 2048) { "Code vide ou trop long" }
             // Le QR web contient le code seul. Une URL de cette même instance est aussi acceptée.
             val uri = Uri.parse(input)
-            val server = Uri.parse(container.serverUrl)
-            if (uri.scheme != null) {
-                require(uri.scheme == server.scheme && uri.host == server.host && uri.port == server.port) {
+            val server = requireNotNull(container.serverUrl).toHttpUrl()
+            if (input.contains("://")) {
+                val link = input.toHttpUrlOrNull()
+                require(link != null && link.scheme == server.scheme && link.host == server.host && link.port == server.port &&
+                    link.username.isEmpty() && link.password.isEmpty()) {
                     "Ce QR appartient à un autre serveur"
                 }
                 val path = uri.fragment?.removePrefix("/") ?: uri.path.orEmpty().removePrefix("/")

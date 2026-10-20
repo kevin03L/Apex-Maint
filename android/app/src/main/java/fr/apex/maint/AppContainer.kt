@@ -34,7 +34,7 @@ class AppContainer(val context: Context) {
     private var apiInstance: MaintApi? = null
     val api get() = requireNotNull(apiInstance) { "Configurez le serveur" }
     private val database = Room.databaseBuilder(context, MaintDatabase::class.java, "terrain.db").build()
-    val repo = Repository(database) { api }
+    val repo = Repository(database, secure.cipher) { api }
     var session: Session? = null; private set
     var actor: Actor? = null; private set
     var serverUrl: String? = null; private set
@@ -46,7 +46,12 @@ class AppContainer(val context: Context) {
     fun observeNetwork() {
         context.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(
             object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { online.value = true; schedule() }
+                override fun onAvailable(network: Network) { online.value = isOnline(); if (online.value) schedule() }
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                    val wasOnline = online.value
+                    online.value = isOnline()
+                    if (online.value && !wasOnline) schedule()
+                }
                 override fun onLost(network: Network) { online.value = isOnline() }
             })
         val periodic = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
@@ -57,7 +62,7 @@ class AppContainer(val context: Context) {
         serverUrl = url
         // Refus de toute redirection : aucun identifiant ou document vers une autre origine.
         val client = OkHttpClient.Builder().cookieJar(PersistentCookieJar(secure))
-            .followRedirects(false).followSslRedirects(false).callTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).callTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val expected = url.toHttpUrl()
                 val request = chain.request()
@@ -71,6 +76,7 @@ class AppContainer(val context: Context) {
     }
     suspend fun initialize() = gate.withLock {
         if (serverUrl == null) settings.url()?.let { configure(it) }
+        repo.protectCache()
         if (apiInstance == null || expired.value) return@withLock
         if (session == null) secure.get("session")?.let { session = wire.decodeFromString<Session>(it) }
         if (session != null) {
@@ -109,6 +115,8 @@ class AppContainer(val context: Context) {
     suspend fun selectSite(id: String) = gate.withLock {
         val s = requireNotNull(session)
         require(s.user.role == "admin" || id == s.user.site_id) { "Changement de site refusé" }
+        if (actor?.siteId == id) return@withLock
+        require(actor?.let { repo.operations(it).isEmpty() } != false) { "Synchronisez ou résolvez la file avant de changer de site" }
         val sites = api.get("api/sites").checked().objects()
         require(sites.any { it.text("id") == id }) { "Site inaccessible" }
         actor?.let { repo.purge(it) }
@@ -140,6 +148,7 @@ class AppContainer(val context: Context) {
         WorkManager.getInstance(context).enqueueUniqueWork("terrain_sync", ExistingWorkPolicy.APPEND_OR_REPLACE, work)
     }
     suspend fun synchronize(): Boolean = gate.withLock {
+        repo.protectCache()
         if (serverUrl == null) settings.url()?.let { configure(it) }
         if (apiInstance == null || expired.value) return@withLock true
         if (session == null) secure.get("session")?.let { session = wire.decodeFromString<Session>(it) }
@@ -149,7 +158,11 @@ class AppContainer(val context: Context) {
         if (session?.must_change_password == true || session?.user?.must_change_password == true) return@withLock true
         val a = actor ?: return@withLock true
         val done = repo.sync(a)
-        if (done) repo.refresh(a)
+        if (done) {
+            repo.refresh(a)
+            repo.siteInterventions(a)
+            if (a.can("parts.view")) repo.allPages(a, "api/parts?site_id=${encode(a.siteId)}", "parts")
+        }
         revision.value++
         done
     }
@@ -161,5 +174,7 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
         return try { if (container.synchronize()) Result.success() else Result.retry() }
         catch (_: IOException) { Result.retry() }
         catch (e: ApiFailure) { if (e.status == 401 || e.status == 403) Result.success() else Result.retry() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { Result.retry() }
     }
 }

@@ -13,11 +13,16 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+class LocalStorageFailure : java.io.IOException("Le stockage chiffré est illisible. Contactez votre administrateur avant de réinitialiser l’application.")
+
 /** Chaque valeur est chiffrée AES-GCM ; la clé ne quitte jamais Android Keystore. */
 class SecureStore(context: Context) {
     private val prefs = context.getSharedPreferences("session_chiffree", Context.MODE_PRIVATE)
     private val alias = "apex_maint_session_v1"
-    private fun key(): SecretKey {
+    val cipher = PayloadCipher { key() }
+    private val encryptionKey: SecretKey by lazy { loadKey() }
+    private fun key(): SecretKey = encryptionKey
+    private fun loadKey(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
@@ -34,7 +39,7 @@ class SecureStore(context: Context) {
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             cipher.updateAAD(name.toByteArray())
             cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8)
-        } catch (_: Exception) { prefs.edit().remove(name).commit(); null }
+        } catch (_: Exception) { throw LocalStorageFailure() }
     }
     @Synchronized fun put(name: String, value: String?) {
         if (value == null) { prefs.edit().remove(name).commit(); return }
@@ -48,8 +53,11 @@ class SecureStore(context: Context) {
 }
 
 class PersistentCookieJar(private val store: SecureStore) : CookieJar {
+    private inline fun <T> withStorage(work: () -> T): T = try { work() }
+        catch (e: java.io.IOException) { throw e }
+        catch (_: Exception) { throw LocalStorageFailure() }
     // Une seule instance serveur ; cookies de session persistés même sans Max-Age.
-    @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+    @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) = withStorage {
         val current = loadForRequest(url).toMutableList()
         cookies.filter { it.name == "apex_maint_session" && it.httpOnly && it.hostOnly }.forEach { cookie ->
             current.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
@@ -57,7 +65,8 @@ class PersistentCookieJar(private val store: SecureStore) : CookieJar {
         }
         store.put("cookies", current.joinToString("\n") { it.toString() })
     }
-    @Synchronized override fun loadForRequest(url: HttpUrl): List<Cookie> =
+    @Synchronized override fun loadForRequest(url: HttpUrl): List<Cookie> = withStorage {
         store.get("cookies").orEmpty().lineSequence().mapNotNull { Cookie.parse(url, it) }
             .filter { it.expiresAt > System.currentTimeMillis() && it.matches(url) }.toList()
+    }
 }

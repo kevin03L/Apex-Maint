@@ -8,15 +8,14 @@ Prérequis : Android Studio récent compatible avec AGP 8.13, JDK **17 au minimu
 
 Ouvrir le dossier **`android/`** dans Android Studio. Déclarer si nécessaire `sdk.dir=C:/Users/.../AppData/Local/Android/Sdk` dans `android/local.properties` (fichier exclu de Git). Choisir le JDK de Gradle dans les paramètres de l’IDE ; le Java 8 éventuellement présent dans le `PATH` ne convient pas.
 
-Le JAR du wrapper est volontairement absent, conformément à la demande. Depuis une installation locale de Gradle **8.13**, dans `android/` :
+Le wrapper Gradle **8.13** est fourni. Depuis `android/`, avec les dépendances déjà en cache :
 
 ```powershell
-gradle wrapper --gradle-version 8.13 --distribution-type bin
-.\gradlew.bat :app:assembleDebug
-.\gradlew.bat :app:testDebugUnitTest
+$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
+.\gradlew.bat --offline assembleDebug testDebugUnitTest lintDebug
 ```
 
-La génération du wrapper peut remplacer les deux lanceurs minimaux fournis par les scripts officiels. Sous Linux/macOS : `chmod +x gradlew`, puis `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
+Sous Linux/macOS : `chmod +x gradlew`, puis `./gradlew --offline assembleDebug testDebugUnitTest lintDebug`. Si le cache n’est pas encore constitué, un premier build connecté est nécessaire.
 
 Brancher un téléphone ou une tablette avec le débogage USB autorisé, puis :
 
@@ -53,11 +52,15 @@ Une réponse 401 ramène à la connexion en conservant la file du même compte. 
 - Scan CameraX / ML Kit, modèle de détection embarqué, permission caméra à la demande et saisie manuelle de secours. Le QR web est le **code équipement seul**. Les liens de la même instance `/#/equipments/ID` et `/#/interventions/ID` sont également reconnus ; les autres origines sont refusées.
 - Synchronisation : file complète, messages métier, comparaison de la modification locale avec l’état distant, nouvelle tentative explicitement choisie ou abandon confirmé.
 
-`currentWindowAdaptiveInfo().windowSizeClass` (Material 3 Adaptive) détermine le mode : barre du bas sur largeur compacte inférieure à **600 dp**, rail et liste/détail simultanés à partir de 600 dp, y compris en paysage. Aucun verrouillage d’orientation ou de taille de texte. Contrôles Material avec cibles d’au moins 48 dp et formulaires défilants. Couleurs du thème clair web : fond `#EEF2F8`, texte `#0F1B2E`, accent `#0284C7`, secondaire `#6366F1`. L’icône vectorielle reprend les tracés et couleurs de `static/icons/icon.svg`.
+`currentWindowAdaptiveInfo().windowSizeClass` (Material 3 Adaptive) détermine le mode : barre du bas sur largeur compacte inférieure à **600 dp**, rail et liste/détail simultanés à partir de 600 dp, y compris en paysage. Aucun verrouillage d’orientation ou de taille de texte. Contrôles Material avec cibles d’au moins 48 dp et formulaires défilants. Couleurs du thème clair web : fond `#EEF2F8`, texte `#0F1B2E`, accent `#0369A1` (bleu web assombri pour le contraste du texte blanc), secondaire `#6366F1`. L’icône vectorielle reprend les tracés et couleurs de `static/icons/icon.svg`.
 
 ## Hors ligne et synchronisation
 
 Room contient les instantanés JSON d’équipements, interventions, pièces utiles, lignes, compteurs et utilisateurs, ainsi que les opérations. Les représentations JSON préservent les champs et les valeurs nulles du serveur. Chaque ligne est isolée par **utilisateur + site**. Les fonctions du dépôt reçoivent un `Actor`. Les suppressions de lignes individuelles et abandons utilisent une marque logique ; l’effacement physique est réservé à la purge complète du cache privé.
+
+Les contenus JSON, corps d’opération et messages de conflit sont chiffrés AES-GCM avec la clé Keystore ; seuls les identifiants, index, états et dates techniques restent lisibles par SQLite. Le contexte authentifié inclut le compte, le site et l’identifiant de ligne. L’ancien cache est converti dans une transaction, sans abandonner la file, puis compacté avec checkpoint WAL et `VACUUM`. Le schéma Room reste inchangé. Une erreur de lecture du stockage sécurisé conserve les données et demande une intervention ; elle ne supprime plus silencieusement les métadonnées. Les exclusions de sauvegarde couvrent aussi le transfert d’appareil Android 12 et ultérieur.
+
+La navigation et les listes sont isolées par compte et site. Les filtres et l’équipement du formulaire passent par `SavedStateHandle`. Les brouillons textuels utilisent un `Saver` chiffré avant leur passage dans l’état sauvegardé Android ; ils survivent à la rotation et à la restauration du processus par Android. Ils ne constituent pas un enregistrement métier : seule la validation ajoute une opération dans Room. Les mots de passe restent uniquement en mémoire et doivent être ressaisis après recréation de l’écran.
 
 Les cinq opérations terrain sont projetées localement et mises en file dans une transaction Room. Leur ordre est une position croissante persistante, indépendante de l’horloge et conservée lors d’une résolution. Les envois sont séquentiels, avec :
 
@@ -74,6 +77,12 @@ Une création reçoit `temp_UUID`. Son acquittement réécrit, dans une transact
 Les refus **400, 403, 409, 412 et 422** deviennent « À résoudre » ; seules les opérations sur la même intervention sont bloquées, y compris aux prochaines synchronisations. Une 401 arrête la file sans la supprimer ; un incident réseau ou serveur conserve les opérations pour reprise avec temporisation exponentielle. Une résolution recharge l’état distant, vérifie qu’il correspond encore à la version comparée, conserve l’ordre et attribue une **nouvelle clé**, car le serveur mémorise aussi les refus 4xx. Seule l’opération explicitement choisie reçoit cette version rechargée ; les autres préconditions restent intactes et peuvent nécessiter leur propre résolution. L’abandon d’une création abandonne aussi ses dépendances temporaires. L’abandon d’une modification reconstruit l’affichage à partir de la dernière base serveur et des autres opérations, sans conserver le champ abandonné.
 
 WorkManager déclenche les envois sur réseau disponible, à l’ouverture, après une action et sur demande. Une tâche périodique de 15 minutes complète ce mécanisme ; Android peut différer son exécution. Une exclusion mutuelle commune sérialise session, dépôt et Worker pour empêcher un envoi concurrent ou un changement d’identité pendant un envoi.
+
+**Synchroniser** signifie envoyer la file, appliquer l’instantané puis recharger toutes les pages des interventions du site et du catalogue autorisé. L’instantané seul est limité aux affectations du compte non administrateur. Le geste tirer-pour-rafraîchir des listes lance cette même synchronisation ; le bouton distinct **Recharger les interventions du site** recharge uniquement cette liste. Les projections encore en attente ou en conflit sont préservées. Une pagination répétant son curseur est arrêtée ; le nettoyage des anciennes entrées n’a lieu qu’après réception de toutes les pages.
+
+La prise en charge envoie explicitement `technician_ids: [utilisateur_connecté]`, car un corps vide n’affecte le compte que si l’intervention n’a aucun technicien. Un temps `null` reste non renseigné ; enregistrer zéro minute est une saisie valide. La clôture est confirmée, exige un compte rendu et au moins un temps enregistré, et signale les sous-interventions actives connues. Le serveur conserve tous ses contrôles. Les limites locales suivent les textes du contrat : titre 128 caractères, description 4 096, compte rendu 16 384 et corps JSON 64 Kio.
+
+Les répétitions automatiques de transport OkHttp sont désactivées. Les cinq opérations de la file reprennent par WorkManager avec leur clé d’idempotence. Une sortie de pièce reste une action en ligne sans idempotence serveur : après une coupure ambiguë, recharger les consommations avant de la répéter. Les fichiers nécessaires à FileProvider et à l’application photo restent temporairement en clair dans le cache privé ; ils sont supprimés après envoi/annulation ou à la déconnexion selon leur usage, sans sauvegarde Android.
 
 Le delta utilise **`GET /api/offline/snapshot?since=...`**, après synchronisation. `full` remplace les collections de référence ; les `deleted_at` deviennent des tombstones ; `intervention_ids` retire les interventions qui ne sont plus visibles. Les techniciens sont remplacés pour chaque intervention reçue, même avec une liste vide. Les modifications locales en attente gardent leur projection jusqu’à résolution. Les pièces consommées, fichiers et photos ne sont pas mis en file hors ligne : ils nécessitent le réseau.
 
@@ -111,11 +120,13 @@ android/
   app/src/main/java/fr/apex/maint/
     MaintApplication (dans AppContainer.kt), AppContainer, SyncWorker
     MainActivity
-    data/  Api, Models, Security, Settings, Database, Queue, LocalProjection, Repository, Documents
-    ui/    MaintViewModel, Screens, ScannerScreen
+    data/  Api, Models, Security, PayloadCipher, Settings, Database, Queue, LocalProjection, TerrainRules, Repository, Documents
+    ui/    MaintViewModel, Screens, ScannerScreen, Presentation
   app/src/main/res/  drawable/ic_apex.xml, xml/...
   app/src/debug/res/xml/network_security_config.xml
-  app/src/test/java/fr/apex/maint/data/  QueueProtocolTest, LocalProjectionTest, ApiTest
+  app/src/test/java/fr/apex/maint/
+    data/  QueueProtocolTest, LocalProjectionTest, ApiTest, PayloadCipherTest, EncryptedDaoTest, TerrainRulesTest
+    ui/    PresentationTest
 ```
 
 Toutes les versions sont figées dans `gradle/libs.versions.toml` :
@@ -136,19 +147,31 @@ Toutes les versions sont figées dans `gradle/libs.versions.toml` :
 
 Repères officiels : [compatibilité AGP et Gradle](https://developer.android.com/build/releases/agp-8-13-0-release-notes), [KSP pour Kotlin 2.2.21](https://github.com/google/ksp/releases/tag/2.2.21-2.0.4), [BOM Compose](https://developer.android.com/develop/ui/compose/bom), [WindowSizeClass](https://developer.android.com/reference/androidx/window/core/layout/WindowSizeClass). Ce socle figé reste à résoudre et compiler dans l’environnement Android cible.
 
-## Vérifications et première recette
+## Vérifications et recette après audit du 20 octobre 2026
 
-**Aucun build Gradle n’a été exécuté**, conformément à la consigne. **22 tests du cœur de file et des projections passent sur JVM**, via le compilateur Kotlin 2.3.10 et les bibliothèques préinstallés dans Android Studio, avec un lanceur local des méthodes JUnit et de leurs exceptions attendues. Les annotations Room sont remplacées uniquement dans ce harnais, sans exécuter Room. Cela ne valide pas la résolution du catalogue Gradle ni l’intégration Android. Les six tests `ApiTest`, dont MockWebServer, restent à exécuter avec Gradle. L’analyse syntaxique de toutes les sources Kotlin et des scripts Kotlin DSL ne signale aucune erreur ; les cinq XML sont bien formés. Cette analyse ne vérifie pas les types Android ni les appels Compose.
+L’audit et ses corrections sont détaillés dans [AUDIT.md](AUDIT.md). Les sources Kotlin, scripts Gradle, manifestes, ressources XML, tests et contrats utilisés ont été revus. Aucun serveur ni base d’exploitation n’a été lancé, aucun fichier Rust ou `static/` n’a été modifié.
 
-Les tests JVM fournis utilisent le même moteur séquentiel et les mêmes transformations de file que la production : ordre, deux PATCH, reprise après coupure, création puis deux PATCH, réécriture temporaire, prise / temps / clôture, acquittement sans précondition, vraie concurrence, blocage ciblé et persistant, isolation d’identité et de site, session expirée, incident serveur, en-têtes et sérialisation. MockWebServer teste le contrat Retrofit, les corps JSON, cookies HttpOnly, préconditions, erreurs et réponses 204. Ils n’utilisent ni appareil ni serveur Apex.
+La commande demandée a été essayée avec le JBR d’Android Studio :
 
-Au premier build et sur instances portables temporaires :
+```powershell
+.\gradlew.bat --offline assembleDebug testDebugUnitTest lintDebug
+```
 
-1. Générer le JAR, résoudre les dépendances, exécuter `:app:assembleDebug`, `:app:testDebugUnitTest` puis `:app:lintDebug`. Vérifier la génération Room/KSP et conserver le schéma Room généré dans `app/schemas/`.
-2. Téléphone et tablette API 26 / 36 : portrait, paysage, redimensionnement, taille de police 200 %, clavier, navigation retour et cibles tactiles.
-3. Certificat utilisateur, nom d’hôte, refus d’une autorité inconnue, refus HTTP release ; connexion, mot de passe imposé, 401, changement de compte et de site, purge à la déconnexion.
-4. Mode avion : créer, prendre, saisir deux fois le temps total, modifier, clôturer ; relancer le processus ; rétablir le réseau et vérifier une seule écriture par clé.
-5. Depuis un second poste, modifier une intervention pour provoquer 412 ; vérifier la comparaison, le blocage des dépendances, la nouvelle tentative et l’abandon.
-6. Quantités par emplacement, sortie de pièces et refus 403/409 ; documents autorisés/refusés, lecteur absent, capture photo et permission caméra refusée, QR équipement et lien d’intervention.
+Elle est bloquée **avant compilation**, par `AccessDeniedException` sur `C:\Users\Lerou\.gradle\wrapper\dists\gradle-8.13-bin\5xuhj0ry160q40clulazy9h7d\gradle-8.13-bin.zip.lck`. Aucun contournement du cache ou des permissions n’a été tenté. **Ni assembleDebug, ni testDebugUnitTest, ni lintDebug ne sont donc validés pour cette révision.** Les tests antérieurement exécutés par un harnais local ne constituent pas une validation de cette révision.
 
-Limites restantes : recette Android et compilation non réalisées ; tests JVM sans intégration Room/Keystore/WorkManager ; pas d’export de file à la déconnexion ; comparaison des conflits sans éditeur de fusion intégré ; lecture hors ligne des sous-interventions limitée aux données disponibles ; pièces, pièces jointes et photos en ligne seulement ; historique récent des opérations acquittées non affiché. La tâche de fond dépend des restrictions de batterie du système. Les textes ne passent pas par HTML : `esc()` et `jsArg()` ne s’appliquent pas à Compose.
+La suite compte maintenant **52 tests JVM déclarés, dont 24 nouveaux**, répartis entre protocole de file (19), projections (7), API / MockWebServer (8), chiffrement AES-GCM (6), adaptation du DAO chiffré avec un DAO mémoire (3), règles de formulaire et de clôture (5), présentation française (4). Les tests ajoutés vérifient notamment l’absence de contenu métier lisible, le contexte compte/site, la conversion des anciennes lignes et tombstones, la reprise avec nouvelle clé, le temps non renseigné distinct de zéro, les limites Unicode et JSON, les acquittements invalides et le changement de mot de passe imposé. Aucun ne contacte un serveur Apex.
+
+Contrôles statiques réalisés : analyse syntaxique des **28 sources Kotlin/Kotlin DSL**, sans vérification des types Android/Compose ; **6 XML** bien formés ; `git diff --check`. La compilation Room/KSP et les tests d’intégration Android restent à exécuter hors du bac à sable.
+
+Recette à réaliser sur instances portables temporaires, sur des ports autres que 3000 et 3100 :
+
+1. Relancer la commande Gradle ci-dessus. Vérifier Room/KSP et lint, puis installer le nouvel APK.
+2. Téléphone 1080×2400 et tablette API 26 / 36 : portrait, paysage, largeur 600 dp, clavier, police 200 %, TalkBack, retour et cibles tactiles. Vérifier rail défilant, sélection et position conservées dans les listes, largeur des formulaires plafonnée à 680 dp.
+3. Vérifier configuration, CA utilisateur et refus TLS/HTTP release ; connexion, mot de passe imposé, 401, changement de compte et de site. Une file non vide bloque désormais le changement de site dans le conteneur aussi.
+4. Synchroniser et comparer au site web : toutes les pages du site doivent être chargées, sans filtre d’affectation serveur supplémentaire. Tester tirer-pour-rafraîchir et le bouton distinct de rechargement du site. Vérifier états vides, filtrage personnel et bandeau absent en ligne avec file vide.
+5. En mode avion : créer, prendre, saisir deux fois le temps total, modifier, clôturer ; restaurer le processus et vérifier brouillons, sélection d’équipement et file ; rétablir le réseau et vérifier une écriture par clé. Tester explicitement zéro minute enregistré.
+6. Depuis un second poste : provoquer 412 ; comparer, réessayer avec une nouvelle clé ou abandonner. Vérifier que seules les dépendances de la même intervention sont bloquées et que les projections locales sont conservées.
+7. Vérifier le cache Android existant avant/après conversion vers les contenus chiffrés ; provoquer une interruption et une indisponibilité de Keystore sur une installation de test. Valider transactions Room, checkpoint/VACUUM et exclusions de transfert d’appareil.
+8. Vérifier consommations et erreurs 403/409 ; documents depuis l’intervention et l’équipement ; erreur documentaire n’empêchant pas les autres rubriques ; permission caméra refusée, absence d’application photo/lecteur, photo annulée, photo JPEG normalisée et QR de la même origine.
+
+Limites explicites : aucune recette visuelle sur émulateur ni compilation de cette révision ; tests JVM avec DAO mémoire, sans moteur Room, Keystore réel, WorkManager ni test Compose instrumenté ; lecture hors ligne des sous-interventions limitée au cache disponible ; documents/photos et sorties de pièces en ligne seulement ; fichiers FileProvider temporairement en clair dans le cache privé et fichiers téléchargés conservés jusqu’à déconnexion ; pas d’export de file ni d’éditeur de fusion ; pas d’historique des opérations acquittées. L’effacement physique sécurisé des anciennes données sur mémoire flash ne peut pas être garanti par SQLite. Les brouillons non validés dépendent de la restauration d’état Android et ne remplacent pas la file persistante. La tâche de fond reste soumise aux restrictions de batterie du système.

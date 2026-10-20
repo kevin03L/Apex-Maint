@@ -147,4 +147,26 @@ class QueueProtocolTest {
         catch (_: IOException) { }
         assertEquals(original, memory.rows)
     }
+    @Test fun `un acquittement vide ou provisoire ne perd pas la creation`() = runBlocking {
+        for (invalid in listOf("", "temp_invalide")) {
+            val creation = op("create_intervention", version = null).copy(tempId = "temp_1", dependsOn = null)
+            val memory = Memory(listOf(creation))
+            try { memory.run(actor) { reply(id = invalid) }; fail() }
+            catch (_: IOException) { }
+            assertEquals(listOf(creation), memory.rows)
+        }
+    }
+    @Test fun `le changement de mot de passe impose arrete sans conflit ni perte de file`() = runBlocking {
+        val original = listOf(op(), op()); val memory = Memory(original)
+        try { memory.run(actor) { throw ApiFailure(403, "Changez le mot de passe", "password_change_required") }; fail() }
+        catch (e: ApiFailure) { assertEquals("password_change_required", e.code) }
+        assertEquals(original, memory.rows)
+        assertEquals(1, memory.sent.size)
+    }
+    @Test fun `prendre en charge affecte explicitement le compte connecte`() {
+        val body = QueueProtocol.bodyForActor(actor, "take_intervention", obj())
+        assertEquals(listOf(actor.userId.j()), body["technician_ids"]?.jsonArray?.toList())
+        val time = obj("duration_minutes" to 25.j())
+        assertEquals(time, QueueProtocol.bodyForActor(actor, "record_time", time))
+    }
 }
