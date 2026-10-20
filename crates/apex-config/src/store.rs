@@ -430,6 +430,30 @@ fn s(v: &str) -> String {
 
 /// Rendu TOML commenté, lisible et modifiable à la main par un administrateur.
 pub fn render(c: &AppConfig) -> String {
+    let trusted_proxies = format!(
+        "[{}]",
+        c.server
+            .trusted_proxies
+            .iter()
+            .map(|ip| format!("\"{}\"", ip))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let self_signed_names = format!(
+        "[{}]",
+        c.server
+            .tls
+            .self_signed_names
+            .iter()
+            .map(|n| s(n))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let redirect_line = match c.server.tls.http_redirect_port {
+        Some(p) => format!("http_redirect_port = {p}"),
+        None => "# http_redirect_port = 80".to_string(),
+    };
+
     format!(
         r#"# Configuration d'Apex Maint — généré par {product} {version}
 # Toute modification de ce fichier nécessite un redémarrage du moteur.
@@ -448,6 +472,22 @@ name = {name}
 bind = {bind}
 # Port HTTP de l'IHM web et de l'API (défaut 3100).
 port = {port}
+# Adresses IP des proxys inverses de confiance (X-Forwarded-For).
+trusted_proxies = {trusted_proxies}
+# Durée de validité de l'en-tête HSTS en secondes (Strict-Transport-Security).
+hsts_max_age = {hsts_max_age}
+
+[server.tls]
+# Mode TLS : "off", "files" (certificat et clé fournis) ou "self_signed" (génération automatique).
+mode = {tls_mode}
+# Fichier de certificat x509 PEM (obligatoire en mode "files").
+cert_file = {tls_cert_file}
+# Fichier de clé privée PEM (obligatoire en mode "files").
+key_file = {tls_key_file}
+# Noms d'hôtes pour le certificat auto-signé (mode "self_signed").
+self_signed_names = {tls_self_signed_names}
+# Port de redirection HTTP vers HTTPS (optionnel).
+{tls_http_redirect_port}
 
 [paths]
 # Répertoires personnalisés (chemins absolus). Vide = emplacement standard du système.
@@ -489,6 +529,13 @@ enabled = {demo_enabled}
         name = s(&c.instance.name),
         bind = s(&c.server.bind),
         port = c.server.port,
+        trusted_proxies = trusted_proxies,
+        hsts_max_age = c.server.hsts_max_age,
+        tls_mode = s(&c.server.tls.mode),
+        tls_cert_file = s(&c.server.tls.cert_file),
+        tls_key_file = s(&c.server.tls.key_file),
+        tls_self_signed_names = self_signed_names,
+        tls_http_redirect_port = redirect_line,
         data_dir = s(&c.paths.data_dir),
         log_dir = s(&c.paths.log_dir),
         web_dir = s(&c.paths.web_dir),
@@ -549,6 +596,31 @@ mod tests {
         let (parsed, migrated) = parse(&raw, Path::new("test.toml")).unwrap();
         assert_eq!(parsed, cfg);
         assert!(migrated.is_none());
+    }
+
+    #[test]
+    fn render_roundtrip_with_tls_files_and_trusted_proxies() {
+        let mut cfg = AppConfig::portable_default();
+        cfg.server.trusted_proxies =
+            vec!["10.0.0.1".parse().unwrap(), "192.168.1.50".parse().unwrap()];
+        cfg.server.hsts_max_age = 31536000;
+        cfg.server.port = 8443;
+        cfg.server.tls.mode = "files".into();
+        cfg.server.tls.cert_file = "/etc/ssl/cert.pem".into();
+        cfg.server.tls.key_file = "/etc/ssl/key.pem".into();
+        cfg.server.tls.self_signed_names = vec!["localhost".into(), "maint.local".into()];
+        cfg.server.tls.http_redirect_port = Some(8080);
+
+        let temp_dir = std::env::temp_dir().join(format!("apex-test-tls-{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let test_file = temp_dir.join("test-render-tls.toml");
+        let raw = render(&cfg);
+        fs::write(&test_file, raw.as_bytes()).unwrap();
+
+        let loaded = load(&test_file).unwrap();
+        assert_eq!(loaded.config, cfg);
+        assert!(!has_errors(&loaded.issues));
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

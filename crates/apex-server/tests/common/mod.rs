@@ -585,3 +585,55 @@ fn decode_chunked(mut raw: &[u8]) -> io::Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+#[allow(dead_code)]
+pub fn login(srv: &Server, name: &str, password: &str) -> (String, Value) {
+    let r = srv.session_call(
+        "POST",
+        "/api/auth/login",
+        None,
+        Some(&serde_json::json!({"username": name, "password": password})),
+    );
+    assert_eq!(r.status, 200, "Connexion de {name} : {}", r.text());
+    let cookie = r.header("set-cookie").expect("cookie de connexion");
+    (
+        cookie.split(';').next().unwrap().to_owned(),
+        r.json()["user"].clone(),
+    )
+}
+
+#[allow(dead_code)]
+pub fn admin(srv: &Server) -> (String, Value) {
+    let (cookie, user) = login(srv, "admin", "admin123");
+    let r = srv.session_call(
+        "POST",
+        "/api/auth/password",
+        Some(&cookie),
+        Some(&serde_json::json!({"current_password": "admin123", "new_password": "Admin-renouvele1"})),
+    );
+    assert_eq!(r.status, 204, "{}", r.text());
+    (cookie, user)
+}
+
+#[allow(dead_code)]
+pub fn demo(name: &str) -> Server {
+    let mut cfg = Settings::new();
+    cfg.demo = true;
+    Server::start_with(name, cfg)
+}
+
+#[allow(dead_code)]
+pub fn create_equipment(srv: &Server, cookie: &str, code: &str, name: &str) -> String {
+    let r = srv.session_call(
+        "POST",
+        "/api/equipments",
+        Some(cookie),
+        Some(&serde_json::json!({
+            "code": code,
+            "name": name,
+            "status": "operational"
+        })),
+    );
+    assert_eq!(r.status, 201, "création équipement {code} : {}", r.text());
+    r.json()["id"].as_str().unwrap().to_string()
+}

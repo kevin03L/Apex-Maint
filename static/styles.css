@@ -1918,15 +1918,6 @@ footer.status {
   color: #f87171;
 }
 
-.tab-count {
-  display: inline-block;
-  padding: .1em .5em;
-  border-radius: 10px;
-  font-size: .82em;
-  background: rgba(120, 160, 220, .14);
-  color: var(--text);
-}
-
 /* Page de détail de l'intervention */
 .intervention-detail {
   display: flex;
@@ -2186,16 +2177,6 @@ footer.status {
   color: var(--muted);
 }
 
-/* Pill de stock à 3 volets (En stock / Réservé / Dispo) */
-.stock-pill-group {
-  display: inline-flex;
-  align-items: center;
-  gap: .35em;
-  font-size: .85em;
-  font-variant-numeric: tabular-nums;
-  flex-wrap: wrap;
-}
-
 .stock-pill {
   padding: .2em .55em;
   border-radius: 4px;
@@ -2257,11 +2238,6 @@ footer.status {
   font-variant-numeric: tabular-nums;
 }
 
-.metric-sub {
-  color: var(--muted);
-  font-size: .85em;
-}
-
 /* Boîte récapitulative des pièces sur intervention */
 .parts-total-box {
   display: flex;
@@ -2290,16 +2266,6 @@ footer.status {
   background: rgba(56, 189, 248, .07);
   border: 1px solid rgba(56, 189, 248, .25);
   border-radius: 7px;
-}
-
-.recommended-parts-title {
-  font-weight: 600;
-  font-size: .9em;
-  margin-bottom: .6em;
-  display: flex;
-  align-items: center;
-  gap: .4em;
-  color: var(--accent);
 }
 
 .recommended-parts-grid {
@@ -2883,13 +2849,7 @@ footer.status {
   color: var(--warn);
 }
 
-/* SECTION COMPTEURS DANS LA FICHE ÉQUIPEMENT */
-.counters-section {
-  display: flex;
-  flex-direction: column;
-  gap: 1em;
-}
-
+/* Section compteurs dans la fiche équipement */
 .counters-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -3235,19 +3195,48 @@ footer.status {
   box-sizing: border-box;
 }
 
-/* Grille de planche d'étiquettes */
-.labels-sheet-grid {
-  display: grid;
-  width: 100%;
-  height: 100%;
+/* Planche d'étiquettes : dimensions, marges et espacements posés par renderLabelsSheet() */
+.label-sheet-page {
   box-sizing: border-box;
+  padding: var(--margin-top, 10mm) 0 0 var(--margin-left, 7mm);
+  background: #ffffff;
+}
+
+.label-page-a4 {
+  width: 210mm;
+  height: 297mm;
+}
+
+.label-page-letter {
+  width: 215.9mm;
+  height: 279.4mm;
+}
+
+.label-sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--sheet-cols, 3), var(--sticker-w, 64mm));
+  grid-auto-rows: var(--sticker-h, 34mm);
+  column-gap: var(--spacing-h, 2mm);
+  row-gap: var(--spacing-v, 0mm);
+}
+
+/* Étiquettes unitaires (imprimante thermique) */
+.labels-single-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4mm;
+}
+
+.labels-single-container .label-sticker {
+  width: var(--label-w, 64mm);
+  height: var(--label-h, 34mm);
 }
 
 .label-sticker {
   display: flex;
   align-items: center;
-  gap: 6mm;
-  padding: 3mm 4mm;
+  gap: 3mm;
+  padding: 2mm 3mm;
   border: 1px dashed #d1d5db;
   box-sizing: border-box;
   background: #ffffff;
@@ -3255,18 +3244,21 @@ footer.status {
   overflow: hidden;
 }
 
-.label-sticker-qr {
+.sticker-qr {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 
-.label-sticker-qr img {
+.sticker-qr img,
+.sticker-qr svg {
   display: block;
+  width: var(--qr-size, 20mm);
+  height: var(--qr-size, 20mm);
 }
 
-.label-sticker-content {
+.sticker-info {
   display: flex;
   flex-direction: column;
   gap: 1mm;
@@ -3274,13 +3266,13 @@ footer.status {
   line-height: 1.2;
 }
 
-.label-sticker-code {
+.sticker-code {
   font-weight: 800;
   font-size: 11pt;
   letter-spacing: .5px;
 }
 
-.label-sticker-name {
+.sticker-name {
   font-size: 9pt;
   font-weight: 600;
   white-space: nowrap;
@@ -3288,18 +3280,18 @@ footer.status {
   text-overflow: ellipsis;
 }
 
-.label-sticker-line {
+.sticker-line {
   font-size: 7.5pt;
   color: #4b5563;
 }
 
-.label-sticker-site {
+.sticker-site {
   font-size: 7pt;
   color: #6b7280;
   text-transform: uppercase;
 }
 
-.label-sticker-empty {
+.sticker-empty {
   border: 1px dashed #e5e7eb;
   background: #f9fafb;
 }
@@ -3673,13 +3665,6 @@ footer.status {
   display: flex;
   align-items: center;
   gap: .4em;
-}
-
-.chart-legend-color {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  flex-shrink: 0;
 }
 
 .chart-accessible-table {
@@ -4058,20 +4043,6 @@ footer.status {
   font-size: .84em;
   font-weight: 400;
   color: var(--muted);
-}
-
-.terrain-sync-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  height: 24px;
-  padding: 0 6px;
-  border-radius: 9999px;
-  background: var(--accent);
-  color: #fff;
-  font-size: .8em;
-  font-weight: 700;
 }
 
 /* 3. LECTEUR QR CODE & CAMÉRA */

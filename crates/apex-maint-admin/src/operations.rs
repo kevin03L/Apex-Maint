@@ -11,6 +11,9 @@ pub struct Operations {
     busy: bool,
     report: String,
     archive: String,
+    password: String,
+    backup_dir: Option<Result<PathBuf, String>>,
+    backup_dir_rx: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     from: String,
     to: String,
     confirm: bool,
@@ -29,6 +32,9 @@ impl Default for Operations {
             busy: false,
             report: String::new(),
             archive: String::new(),
+            password: String::new(),
+            backup_dir: None,
+            backup_dir_rx: None,
             from: String::new(),
             to: String::new(),
             confirm: false,
@@ -93,8 +99,14 @@ impl Operations {
         let tx = self.tx.clone();
         let config = config.to_path_buf();
         let ctx = ui.ctx().clone();
+        let password =
+            if args.first().is_some_and(|arg| arg == "restore") && !self.password.is_empty() {
+                Some(std::mem::take(&mut self.password))
+            } else {
+                None
+            };
         std::thread::spawn(move || {
-            let output = crate::control::engine_command(&config, &args);
+            let output = crate::control::engine_command(&config, &args, password.as_deref());
             let _ = tx.send(output.unwrap_or_else(|e| e));
             ctx.request_repaint();
         });
@@ -186,10 +198,40 @@ impl Operations {
             }
             self.run(ui, config, args, false);
         }
-        if ui.button("Ouvrir le dossier par défaut").clicked() {
-            let _ = crate::control::open_path(&data.join("backups"));
+        if let Some(rx) = &self.backup_dir_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.backup_dir = Some(result);
+                self.backup_dir_rx = None;
+            }
         }
-        if let Ok(entries) = std::fs::read_dir(data.join("backups")) {
+        if (self.backup_dir.is_none()
+            || ui.button("Actualiser le dossier des sauvegardes").clicked())
+            && self.backup_dir_rx.is_none()
+        {
+            let (tx, rx) = mpsc::channel();
+            self.backup_dir_rx = Some(rx);
+            let config = config.to_path_buf();
+            let data = data.to_path_buf();
+            let ctx = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(resolve_backup_dir(&config, &data));
+                ctx.request_repaint();
+            });
+        }
+        if let Some(Err(error)) = &self.backup_dir {
+            ui.label(error);
+        }
+        let directory = self.backup_dir.as_ref().and_then(|r| r.as_ref().ok());
+        if ui
+            .add_enabled(
+                directory.is_some(),
+                egui::Button::new("Ouvrir le dossier des sauvegardes"),
+            )
+            .clicked()
+        {
+            let _ = crate::control::open_path(directory.unwrap());
+        }
+        if let Some(Ok(entries)) = directory.map(std::fs::read_dir) {
             let mut list: Vec<PathBuf> = entries
                 .filter_map(Result::ok)
                 .map(|e| e.path())
@@ -214,6 +256,8 @@ impl Operations {
         }
         ui.label("Archive à restaurer (moteur arrêté)");
         ui.text_edit_singleline(&mut self.archive);
+        ui.label("Mot de passe de l'archive (vide si non chiffrée)");
+        ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
         if ui
             .add_enabled(
                 !self.busy,
@@ -252,12 +296,11 @@ impl Operations {
             .add_enabled(!self.busy, egui::Button::new("Restaurer"))
             .clicked()
         {
-            self.run(
-                ui,
-                config,
-                vec!["restore".into(), self.archive.clone(), "--confirmed".into()],
-                true,
-            );
+            let mut args = vec!["restore".into(), self.archive.clone(), "--confirmed".into()];
+            if !self.password.is_empty() {
+                args.extend(["--password-file".into(), "-".into()]);
+            }
+            self.run(ui, config, args, true);
         }
         self.report(ui);
         ui.collapsing("Planification et rétention (API locale)", |ui| {
@@ -306,5 +349,105 @@ impl Operations {
             let _ = tx.send(result);
             ctx.request_repaint();
         });
+    }
+}
+
+/// Lecture seule, également disponible lorsque le moteur est arrêté pour restauration.
+fn resolve_backup_dir(config: &Path, data: &Path) -> Result<PathBuf, String> {
+    use sqlx::Connection;
+    let cfg = apex_config::store::load(config)
+        .map_err(|e| e.to_string())?
+        .config;
+    let layout = apex_config::Layout::for_config_file(config).with_overrides(&cfg);
+    let database = layout.database_file(&cfg);
+    if !database.exists() {
+        return Ok(data.join("backups"));
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(async {
+            let mut conn = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(database)
+                    .read_only(true),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let value: Option<String> =
+                sqlx::query_scalar("SELECT value FROM app_settings WHERE key='backup.dir'")
+                    .fetch_optional(&mut conn)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            conn.close().await.map_err(|e| e.to_string())?;
+            Ok(value
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data.join("backups")))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dossier_sauvegardes_configure_et_repli_moteur_arrete() {
+        use sqlx::Connection;
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("apex-maint.toml");
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let cfg = apex_config::AppConfig::default();
+        std::fs::write(&config, apex_config::store::render(&cfg)).unwrap();
+        let database = apex_config::Layout::for_config_file(&config)
+            .with_overrides(&cfg)
+            .database_file(&cfg);
+        assert_eq!(
+            resolve_backup_dir(&config, &data).unwrap(),
+            data.join("backups")
+        );
+        let custom = temp.path().join("archives");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut conn = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&database)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+            sqlx::query("CREATE TABLE app_settings(key TEXT, value TEXT)")
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO app_settings VALUES('backup.dir',?)")
+                .bind(custom.to_string_lossy().as_ref())
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            conn.close().await.unwrap();
+        });
+        assert_eq!(resolve_backup_dir(&config, &data).unwrap(), custom);
+        runtime.block_on(async {
+            let mut conn = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new().filename(&database),
+            )
+            .await
+            .unwrap();
+            sqlx::query("UPDATE app_settings SET value=''")
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            conn.close().await.unwrap();
+        });
+        assert_eq!(
+            resolve_backup_dir(&config, &data).unwrap(),
+            data.join("backups")
+        );
     }
 }

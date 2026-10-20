@@ -13,6 +13,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use tower_http::services::ServeDir;
 
+pub(crate) mod errors;
+
 mod auth;
 mod documents;
 mod exploitation;
@@ -67,6 +69,7 @@ pub struct AppState {
     pub shutdown_notify: Arc<tokio::sync::Notify>,
     pub started_at: DateTime<Utc>,
     pub terrain_lock: Arc<tokio::sync::Mutex<()>>,
+    pub files_max_size_mb: u32,
 }
 
 /// Détermine si la requête provient d'un pair direct sur la boucle locale sans proxy inverse.

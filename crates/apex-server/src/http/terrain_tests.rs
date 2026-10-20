@@ -34,6 +34,7 @@ async fn etat(dir: &std::path::Path) -> (AppState, sqlx::SqlitePool) {
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         started_at: Utc::now(),
         terrain_lock: Arc::new(tokio::sync::Mutex::new(())),
+        files_max_size_mb: 50,
     };
     (state, pool)
 }

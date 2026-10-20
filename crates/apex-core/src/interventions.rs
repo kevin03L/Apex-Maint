@@ -6,6 +6,7 @@
 //! les sous-interventions à profondeur 1, l'assignation des techniciens du même site,
 //! et le suivi des temps par technicien conformément aux décisions du 2026-10-18.
 
+use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query, SitePolicy};
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -14,6 +15,7 @@ use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
 
 use crate::{
     domain::pagination::Cursor,
+    domain::sql::{ensure_site_exists, like_pattern, validate_limit},
     referentiel::{NamedRef, PatchField},
     store::{self, Audit},
     Actor, MaintError, Permission, Role,
@@ -512,20 +514,7 @@ struct RawTechRow {
 // SERVICES ET FONCTIONS DE DÉPÔT
 // ============================================================================
 
-/// Liste paginée des interventions avec filtres multiples.
-pub async fn list_interventions(
-    pool: &SqlitePool,
-    actor: &Actor,
-    filter: InterventionFilter,
-) -> Result<crate::referentiel::Page<Intervention>, MaintError> {
-    actor.require_permission(Permission::InterventionsView)?;
-    let limit = validate_limit(filter.limit)?;
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
-
-    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-        r#"
-        SELECT
-            i.id,
+const INTERVENTION_SELECT_FIELDS: &str = r#"i.id,
             i.site_id,
             i.code,
             i.title,
@@ -554,15 +543,27 @@ pub async fn list_interventions(
             p.code AS parent_code,
             p.title AS parent_title,
             (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
+            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count"#;
+const INTERVENTION_FROM_JOINS: &str = r#"FROM interventions i
+LEFT JOIN equipments eq ON eq.id = i.equipment_id
         LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
         LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.deleted_at IS NULL
-        "#,
-    );
+        LEFT JOIN interventions p ON p.id = i.parent_id"#;
+
+/// Liste paginée des interventions avec filtres multiples.
+pub async fn list_interventions(
+    pool: &SqlitePool,
+    actor: &Actor,
+    filter: InterventionFilter,
+) -> Result<crate::referentiel::Page<Intervention>, MaintError> {
+    actor.require_permission(Permission::InterventionsView)?;
+    let limit = validate_limit(filter.limit)?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Strict)?;
+
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
+        "SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.deleted_at IS NULL"
+    ));
 
     if let Some(sid) = site_scope {
         qb.push(" AND i.site_id = ").push_bind(sid);
@@ -736,46 +737,7 @@ pub async fn get_intervention(
 
     // Sous-interventions directes
     let sub_rows: Vec<RawInterventionRow> = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.parent_id = ? AND i.deleted_at IS NULL
-        ORDER BY i.created_at DESC, i.id DESC
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL ORDER BY i.created_at DESC, i.id DESC"),
     )
     .bind(id)
     .fetch_all(pool)
@@ -827,48 +789,10 @@ pub async fn list_sub_interventions(
     let mut conn = pool.acquire().await?;
     // Vérification de l'existence et du périmètre du parent (404 si autre site)
     let _parent = scoped_intervention_raw(&mut conn, actor, parent_id).await?;
+    drop(conn);
 
     let sub_rows: Vec<RawInterventionRow> = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.parent_id = ? AND i.deleted_at IS NULL
-        ORDER BY i.created_at DESC, i.id DESC
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.parent_id = ? AND i.deleted_at IS NULL ORDER BY i.created_at DESC, i.id DESC"),
     )
     .bind(parent_id)
     .fetch_all(pool)
@@ -899,7 +823,7 @@ pub async fn create_intervention(
     if input.parent_id.is_some() {
         actor.require_permission(Permission::InterventionsEdit)?;
     }
-    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref())?;
+    let site_id = resolve_site_id_for_create(actor, input.site_id.as_deref(), SitePolicy::Strict)?;
     let title = validate_title(&input.title)?;
     let description = clean_opt_string(input.description, 4096, "La description")?;
     let int_type = InterventionType::parse(&input.r#type)?;
@@ -957,8 +881,14 @@ pub async fn create_intervention(
         .await?
         .or(normalize_date(input.reported_at, "reported_at")?)
         .unwrap_or_else(|| now.clone());
-    let code =
-        resolve_or_generate_code(&mut tx, &site_id, input.code.as_deref(), &reported_at).await?;
+    let code = resolve_or_generate_code(
+        &mut tx,
+        actor,
+        &site_id,
+        input.code.as_deref(),
+        &reported_at,
+    )
+    .await?;
     let intervention_id = store::id();
     let reported_by_id = if actor.user_id.is_empty() {
         // En mode administrateur sans utilisateur rattaché, cherche l'admin principal
@@ -1168,6 +1098,14 @@ pub async fn take_intervention(
     // Assignation des techniciens fournis ou de l'utilisateur courant si aucun technicien existant
     if let Some(tech_ids) = input.technician_ids {
         if !tech_ids.is_empty() {
+            // Un seul référent principal : remise à 0 de is_lead pour les autres techniciens
+            sqlx::query(
+                "UPDATE intervention_technicians SET is_lead = 0 WHERE intervention_id = ?",
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
             for (idx, uid) in tech_ids.iter().enumerate() {
                 validate_user_for_assignment(&mut tx, &current.site_id, uid).await?;
                 let is_lead = if idx == 0 { 1 } else { 0 };
@@ -1668,6 +1606,12 @@ pub async fn assign_technician(
     .execute(&mut *tx)
     .await?;
 
+    sqlx::query("UPDATE interventions SET updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(intervention_id)
+        .execute(&mut *tx)
+        .await?;
+
     let tech =
         fetch_assigned_technician_with_conn(&mut tx, intervention_id, &input.user_id).await?;
 
@@ -1710,9 +1654,16 @@ pub async fn remove_technician(
         ));
     }
 
+    let now = store::now();
     sqlx::query("DELETE FROM intervention_technicians WHERE intervention_id = ? AND user_id = ?")
         .bind(intervention_id)
         .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("UPDATE interventions SET updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(intervention_id)
         .execute(&mut *tx)
         .await?;
 
@@ -2028,45 +1979,7 @@ pub(crate) async fn scoped_intervention_raw(
     id: &str,
 ) -> Result<RawInterventionRow, MaintError> {
     let row: Option<RawInterventionRow> = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.id = ? AND i.deleted_at IS NULL AND (? OR i.site_id = ?)
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.id = ? AND i.deleted_at IS NULL AND (? OR i.site_id = ?)"),
     )
     .bind(id)
     .bind(actor.is_admin())
@@ -2083,45 +1996,7 @@ pub(crate) async fn fetch_single_intervention_with_conn(
     id: &str,
 ) -> Result<Intervention, MaintError> {
     let raw: RawInterventionRow = sqlx::query_as(
-        r#"
-        SELECT
-            i.id,
-            i.site_id,
-            i.code,
-            i.title,
-            i.description,
-            i.type,
-            i.priority,
-            i.status,
-            i.machine_state,
-            i.equipment_id,
-            i.parent_id,
-            i.reported_by_id,
-            i.reported_at,
-            i.started_at,
-            i.completed_at,
-            i.duration_minutes,
-            i.solution_report,
-            i.cancelled_at,
-            i.cancelled_by_id,
-            i.cancel_reason,
-            i.created_at,
-            i.updated_at,
-            eq.code AS equipment_code,
-            eq.name AS equipment_name,
-            u_rep.display_name AS reported_by_name,
-            u_can.display_name AS cancelled_by_name,
-            p.code AS parent_code,
-            p.title AS parent_title,
-            (SELECT count(*) FROM interventions sub WHERE sub.parent_id = i.id AND sub.deleted_at IS NULL) AS sub_interventions_count,
-            (SELECT count(*) FROM documents d WHERE d.site_id=i.site_id AND d.entity_type='intervention' AND d.entity_id=i.id AND d.deleted_at IS NULL) AS documents_count
-        FROM interventions i
-        LEFT JOIN equipments eq ON eq.id = i.equipment_id
-        LEFT JOIN users u_rep ON u_rep.id = i.reported_by_id
-        LEFT JOIN users u_can ON u_can.id = i.cancelled_by_id
-        LEFT JOIN interventions p ON p.id = i.parent_id
-        WHERE i.id = ? AND i.deleted_at IS NULL
-        "#,
+        &format!("SELECT {INTERVENTION_SELECT_FIELDS} {INTERVENTION_FROM_JOINS} WHERE i.id = ? AND i.deleted_at IS NULL"),
     )
     .bind(id)
     .fetch_one(&mut *conn)
@@ -2313,10 +2188,14 @@ fn assemble_intervention(
 /// Génère ou valide la référence unique d'intervention (format `INT-AAAA-XXXX`).
 pub(crate) async fn resolve_or_generate_code(
     conn: &mut SqliteConnection,
+    actor: &Actor,
     site_id: &str,
     provided_code: Option<&str>,
     reported_at: &str,
 ) -> Result<String, MaintError> {
+    if !actor.is_admin() && actor.site_id.as_deref() != Some(site_id) {
+        return Err(MaintError::NotFound("Site".into()));
+    }
     if let Some(c) = provided_code {
         let trimmed = c.trim();
         if trimmed.is_empty()
@@ -2351,26 +2230,27 @@ pub(crate) async fn resolve_or_generate_code(
         .unwrap_or_else(|| chrono::Utc::now().format("%Y").to_string());
 
     let prefix = format!("INT-{year}-");
-    let pattern = format!("{prefix}%");
-
-    // Les références des interventions supprimées comptent aussi : un numéro n'est jamais réattribué.
-    let existing_codes: Vec<String> =
-        sqlx::query_scalar("SELECT code FROM interventions WHERE site_id = ? AND code LIKE ?")
-            .bind(site_id)
-            .bind(&pattern)
-            .fetch_all(&mut *conn)
-            .await?;
-
-    let mut max_seq = 0u32;
-    for c in &existing_codes {
-        if let Some(suffix) = c.strip_prefix(&prefix) {
-            if let Ok(seq) = suffix.parse::<u32>() {
-                if seq > max_seq {
-                    max_seq = seq;
-                }
-            }
-        }
-    }
+    // Même ensemble que strip_prefix puis parse::<u32>() : casse exacte, signe +
+    // facultatif, chiffres ASCII, zéros initiaux et exclusion des dépassements.
+    // L'index inclut les suppressions logiques, mais suit naturellement les purges.
+    let max_seq: i64 = sqlx::query_scalar(
+        "WITH suffixes AS (
+            SELECT substr(code, length(?) + 1) AS suffix FROM interventions
+            WHERE site_id = ? AND code >= ? AND code < ? AND instr(code, char(0)) = 0
+        ), digits AS (
+            SELECT CASE WHEN substr(suffix,1,1) = '+' THEN substr(suffix,2) ELSE suffix END AS value FROM suffixes
+        )
+        SELECT COALESCE(MAX(CAST(value AS INTEGER)),0) FROM digits
+        WHERE value <> '' AND value NOT GLOB '*[^0-9]*'
+          AND CAST(value AS INTEGER) <= 4294967295",
+    )
+    .bind(&prefix)
+    .bind(site_id)
+    .bind(&prefix)
+    .bind(format!("INT-{year}."))
+    .fetch_one(&mut *conn)
+    .await?;
+    let max_seq = max_seq as u32;
 
     let mut next_seq = max_seq + 1;
     loop {
@@ -2390,71 +2270,6 @@ pub(crate) async fn resolve_or_generate_code(
     }
 }
 
-fn validate_limit(limit: u32) -> Result<u32, MaintError> {
-    if (1..=200).contains(&limit) {
-        Ok(limit)
-    } else {
-        Err(MaintError::BadRequest(
-            "La limite de pagination doit être comprise entre 1 et 200".into(),
-        ))
-    }
-}
-
-fn resolve_site_id_for_create(
-    actor: &Actor,
-    requested_site_id: Option<&str>,
-) -> Result<String, MaintError> {
-    if actor.is_admin() {
-        let sid = requested_site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| MaintError::BadRequest("Le site est obligatoire".into()))?;
-        Ok(sid.to_string())
-    } else {
-        if let Some(sid) = requested_site_id {
-            if sid != actor.site_id.as_deref().unwrap_or_default() {
-                return Err(MaintError::Forbidden(
-                    "Accès refusé : vous ne pouvez pas créer de ressource sur un autre site".into(),
-                ));
-            }
-        }
-        actor
-            .site_id
-            .clone()
-            .ok_or_else(|| MaintError::Forbidden("Aucun site rattaché".into()))
-    }
-}
-
-fn resolve_site_id_for_query<'a>(
-    actor: &'a Actor,
-    requested_site_id: Option<&'a str>,
-) -> Result<Option<&'a str>, MaintError> {
-    if actor.is_admin() {
-        Ok(requested_site_id.filter(|s| !s.is_empty()))
-    } else {
-        let actor_site = actor.site_id.as_deref().unwrap_or_default();
-        if let Some(req_sid) = requested_site_id {
-            if req_sid != actor_site {
-                return Err(MaintError::NotFound("Site".into()));
-            }
-        }
-        Ok(Some(actor_site))
-    }
-}
-
-async fn ensure_site_exists(conn: &mut SqliteConnection, site_id: &str) -> Result<(), MaintError> {
-    let exists: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sites WHERE id = ? AND deleted_at IS NULL")
-            .bind(site_id)
-            .fetch_one(conn)
-            .await?;
-
-    if exists == 0 {
-        return Err(MaintError::BadRequest("Site introuvable".into()));
-    }
-    Ok(())
-}
-
 fn validate_title(title: &str) -> Result<String, MaintError> {
     let trimmed = title.trim();
     if trimmed.is_empty() || trimmed.chars().count() > 128 || trimmed.chars().any(char::is_control)
@@ -2464,14 +2279,6 @@ fn validate_title(title: &str) -> Result<String, MaintError> {
         ));
     }
     Ok(trimmed.to_string())
-}
-
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
 }
 
 fn clean_opt_id(id: Option<String>) -> Option<String> {

@@ -279,7 +279,7 @@ impl Wizard {
         });
         form::hint(
             ui,
-            "Par défaut 3000. L'adresse de l'IHM sera http://<poste>:<port>/.",
+            "Par défaut 3100. L'adresse de l'IHM sera http://<poste>:<port>/.",
         );
         form::show_issues(ui, issues, "server.port");
     }
@@ -330,13 +330,12 @@ impl Wizard {
                 );
                 ui.end_row();
             });
-        form::show_issues(ui, issues, "history.retention_days");
         form::show_issues(ui, issues, "security.session_ttl_hours");
         ui.add_space(10.0);
         form::hint(
             ui,
-            "Comptes initiaux de l'IHM web : admin / superviseur / visu (mots de passe d'usine). \
-             Changez-les à la première connexion : le moteur le rappelle tant que ce n'est pas fait.",
+            "Compte initial de l'IHM web : admin (mot de passe d'usine admin123). \
+             Changez-le à la première connexion : le moteur le rappelle tant que ce n'est pas fait.",
         );
     }
 

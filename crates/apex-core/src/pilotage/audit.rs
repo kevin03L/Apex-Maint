@@ -54,14 +54,7 @@ pub struct Filter {
     pub cursor: Option<String>,
     pub limit: Option<u32>,
 }
-pub fn like_pattern(q: &str) -> String {
-    format!(
-        "%{}%",
-        q.replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    )
-}
+pub use crate::domain::sql::like_pattern;
 pub async fn list(pool: &SqlitePool, actor: &Actor, f: &Filter) -> Result<Value, MaintError> {
     actor.require_permission(Permission::AuditView)?;
     if !actor.is_admin()

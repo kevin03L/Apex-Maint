@@ -13,6 +13,29 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const offline = require('../static/offline.js');
 
+test('U6. Les lectures par statut gardent le résultat et l’ordre de la lecture complète', async () => {
+  const reads = [];
+  const db = createMockIndexedDB(kind => reads.push(kind));
+  offline.setOfflineDBInstance(null);
+  for (const [id, status, created_at] of [
+    ['p2', 'pending', '2026-10-19T12:00:00Z'],
+    ['c1', 'conflict', '2026-10-19T10:00:00Z'],
+    ['p1', 'pending', '2026-10-19T10:00:00Z'],
+    ['terminee', 'done', '2026-10-19T09:00:00Z'],
+    ['c2', 'conflict', '2026-10-19T13:00:00Z']
+  ]) {
+    const operation = await offline.enqueueOperation({ id, created_at, type: 'test', url: '/', method: 'POST' }, db);
+    const opened = await offline.openOfflineDB(db);
+    opened.transaction('outbox', 'readwrite').objectStore('outbox').put({ ...operation, status });
+  }
+  const all = await offline.getAllOperations(db);
+  reads.length = 0;
+  assert.deepEqual(await offline.getPendingOperations(db), all.filter(op => op.status === 'pending'));
+  assert.deepEqual(await offline.getConflictOperations(db), all.filter(op => op.status === 'conflict'));
+  assert.deepEqual(await offline.getUnsyncedOperations(db), all.filter(op => ['pending', 'conflict'].includes(op.status)));
+  assert.deepEqual(reads, ['by_status', 'by_status', 'all']);
+});
+
 test('M3. La déclaration a posteriori conserve tous les champs saisis', async () => {
   const db = createMockIndexedDB();
   offline.setOfflineDBInstance(null);
@@ -45,8 +68,37 @@ test('M2. La progression locale conserve la prise en charge, le temps et la clô
   assert.equal((await offline.getAllOperations(db)).length, 5);
 });
 
+test('U22. Les intervenants de l’instantané sont rattachés et le temps est remplacé', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  await offline.saveSnapshot({
+    full: true,
+    interventions: [{ id: 'I1', site_id: 'site', duration_minutes: 20, updated_at: '2026-10-18T10:00:00.000Z' }],
+    technicians: [{ intervention_id: 'I1', user_id: 'tech', is_lead: true, duration_minutes: 20 }],
+    users: [{ id: 'tech', display_name: 'Technicien' }]
+  }, 'tech', 'site', db);
+  const local = await offline.getLocalIntervention('I1', db);
+  assert.equal(local.technicians[0].display_name, 'Technicien');
+  await offline.localRecordTime('I1', 45, 'tech', 'site', db);
+  const saved = await offline.getSnapshotItem('interventions', 'I1', db);
+  assert.equal(saved.duration_minutes, 45);
+});
+
+test('U23. La création hors ligne garde le site choisi et le parent', async () => {
+  const db = createMockIndexedDB();
+  offline.setOfflineDBInstance(null);
+  const item = await offline.localCreateIntervention(
+    { title: 'Sous-tâche', site_id: 'site-b', parent_id: 'temp_parent' }, 'admin', null, db
+  );
+  const [operation] = await offline.getAllOperations(db);
+  assert.equal(item.site_id, 'site-b');
+  assert.equal(operation.body.site_id, 'site-b');
+  assert.equal(operation.url, '/api/interventions/temp_parent/sub-interventions');
+  assert.equal(operation.depends_on, 'temp_parent');
+});
+
 /** Mock IndexedDB en mémoire pour node:test */
-function createMockIndexedDB() {
+function createMockIndexedDB(onRead = () => {}) {
   const stores = new Map();
 
   function getStore(name) {
@@ -103,6 +155,7 @@ function createMockIndexedDB() {
               return req;
             },
             getAll() {
+              onRead('all');
               const req = { onsuccess: null, onerror: null, result: [] };
               req.result = Array.from(map.values()).map(v => JSON.parse(JSON.stringify(v)));
               queueMicrotask(() => {
@@ -131,6 +184,7 @@ function createMockIndexedDB() {
             index(idxName) {
               return {
                 getAll(query) {
+                  onRead(idxName);
                   const req = { onsuccess: null, onerror: null, result: [] };
                   const all = Array.from(map.values()).map(v => JSON.parse(JSON.stringify(v)));
                   if (query !== undefined) {

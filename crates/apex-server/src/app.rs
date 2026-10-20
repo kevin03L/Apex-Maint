@@ -315,6 +315,7 @@ pub async fn run(
         files.clone(),
         crate::exploitation::context(&eff),
         layout.log_dir.clone(),
+        eff.config.logging.retention_files,
     );
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
@@ -332,6 +333,7 @@ pub async fn run(
         control_token,
         shutdown_notify: Arc::clone(&shutdown_notify),
         started_at,
+        files_max_size_mb: cfg.files.max_size_mb,
     };
     let app = http::router(state, &web_dir);
 

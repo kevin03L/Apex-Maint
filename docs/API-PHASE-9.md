@@ -1,6 +1,6 @@
 # Contrat HTTP — backend de la phase 9
 
-Migration `0010_terrain.sql`, sans migration 0008. Aucune permission nouvelle : les droits
+Migration `0010_terrain.sql`, après `0008_pilotage.sql` et `0009_exploitation.sql`. Aucune permission nouvelle : les droits
 des interventions, équipements et paramètres existants s'appliquent. `static/` n'est pas modifié.
 
 ## Routes et représentations
@@ -112,9 +112,7 @@ refusés dès qu'un en-tête de proxy est présent, même pour un proxy de confi
 L'utilitaire vérifie les connexions TLS avec les autorités système et l'autorité/certificat
 de l'instance locale. Les noms fournis doivent couvrir l'adresse utilisée par la sonde.
 
-## À raccorder à l'IHM et après la phase 7
+## Raccordement IHM réalisé (19 octobre 2026)
 
-L'agent IHM doit réaliser le manifeste, service worker, cache IndexedDB, outbox ordonnée,
-réécriture des identifiants temporaires, résolution des conflits, déconnexion avec effacement,
-QR et téléchargement de l'autorité. Les directives CSP `worker-src` et `manifest-src` sont
-déjà envoyées ; aucun fichier de `static/` n'a été ajouté ou modifié ici.
+L’IHM terrain fournit le manifeste, le service worker, le cache IndexedDB, la file hors ligne,
+la résolution des conflits, l’effacement à la déconnexion, les QR et le téléchargement de l’autorité.

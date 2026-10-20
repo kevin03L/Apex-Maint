@@ -2,7 +2,7 @@
 //! sites, utilisateurs et matrice des permissions.
 use apex_core::{services::Session, store, MaintError, Permission, Role};
 use axum::{
-    extract::{rejection::JsonRejection, ConnectInfo, Path, Request, State},
+    extract::{ConnectInfo, Path, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -15,44 +15,7 @@ use std::net::SocketAddr;
 
 use super::AppState;
 
-pub struct ApiError(MaintError);
-impl From<MaintError> for ApiError {
-    fn from(e: MaintError) -> Self {
-        Self(e)
-    }
-}
-impl From<sqlx::Error> for ApiError {
-    fn from(e: sqlx::Error) -> Self {
-        Self(e.into())
-    }
-}
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let message = if status.is_server_error() {
-            tracing::error!("API : {}", self.0);
-            "Erreur interne du serveur".to_string()
-        } else {
-            match &self.0 {
-                MaintError::Unauthorized(message) => message.clone(),
-                _ => self.0.to_string(),
-            }
-        };
-        (status, Json(json!({"error":true,"message":message}))).into_response()
-    }
-}
-type Result<T> = std::result::Result<T, ApiError>;
-pub(super) type Body<T> = std::result::Result<Json<T>, JsonRejection>;
-pub(super) fn body<T>(input: Body<T>) -> Result<T> {
-    input.map(|Json(v)| v).map_err(|e| {
-        ApiError(if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            MaintError::PayloadTooLarge("Corps JSON trop volumineux (64 Kio maximum)".into())
-        } else {
-            MaintError::BadRequest("Corps JSON invalide ou champs inconnus".into())
-        })
-    })
-}
+pub use super::errors::{body, ApiError, Body, Result};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -60,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .route("/auth/password", post(change_password))
+        .route("/auth/email", put(change_email))
         .route("/sites", get(sites).post(create_site))
         .route(
             "/sites/:id",
@@ -252,6 +216,21 @@ async fn change_password(
         .change_password(&session, input.current_password, input.new_password)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmailChange {
+    email: Option<String>,
+}
+async fn change_email(
+    State(state): State<AppState>,
+    Extension(session): Extension<Session>,
+    input: Body<EmailChange>,
+) -> Result<Json<Value>> {
+    let input = body(input)?;
+    Ok(Json(json!(
+        store::update_own_email(&state.pool, &session.actor, input.email).await?
+    )))
 }
 async fn sites(
     State(state): State<AppState>,

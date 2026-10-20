@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Apex Maint — Administration
-GenericName=Administration GTC/SCADA
+GenericName=Administration GMAO
 Comment=Configuration, état, journaux et diagnostics du moteur Apex Maint
 Exec=apex-maint-admin
 Icon=apex-maint
 Terminal=false
 Categories=System;Settings;
-Keywords=SCADA;GTC;GTB;supervision;configuration;
+Keywords=GMAO;maintenance;équipements;interventions;configuration;
 StartupWMClass=apex-maint-admin

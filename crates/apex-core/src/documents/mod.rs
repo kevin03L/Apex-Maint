@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sqlx::{FromRow, QueryBuilder, SqliteConnection, SqlitePool};
 
 use crate::{
+    domain::sql::like_pattern,
     referentiel::Page,
     store::{self, Audit},
     Actor, Cursor, MaintError, Permission,
@@ -178,10 +179,10 @@ async fn scoped(
     .await?
     .ok_or_else(|| MaintError::NotFound("Document".into()))?;
     let entity = entity(conn, actor, &raw.entity_type, &raw.entity_id, view).await?;
-    let current_version = versions_conn(conn, actor, id)
-        .await?
-        .into_iter()
-        .next()
+    // Conserver la règle existante : la version active au numéro le plus élevé.
+    let current_version: RawVersion = sqlx::query_as("SELECT v.*,u.display_name FROM document_versions v JOIN users u ON u.id=v.uploaded_by_id WHERE v.document_id=? AND v.deleted_at IS NULL AND (? OR v.site_id=?) ORDER BY v.version_no DESC LIMIT 1")
+        .bind(id).bind(actor.is_admin()).bind(&actor.site_id)
+        .fetch_optional(conn).await?
         .ok_or_else(|| MaintError::Internal("Document sans version".into()))?;
     Ok(Document {
         id: raw.id,
@@ -192,7 +193,7 @@ async fn scoped(
         category: raw.category,
         description: raw.description,
         versions_count: raw.versions_count,
-        current_version,
+        current_version: current_version.into(),
         entity,
         created_at: raw.created_at,
         updated_at: raw.updated_at,
@@ -241,14 +242,7 @@ pub struct SearchFilter {
     pub cursor: Option<Cursor>,
     pub limit: u32,
 }
-fn like_pattern(q: &str) -> String {
-    format!(
-        "%{}%",
-        q.replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    )
-}
+
 pub async fn search(
     pool: &SqlitePool,
     actor: &Actor,

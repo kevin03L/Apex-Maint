@@ -184,12 +184,13 @@ pub async fn stock(conn: &mut SqliteConnection, actor: &Actor) -> Result<(), Mai
     if raw(conn, "smtp.enabled").await? != "true" {
         return Ok(());
     }
-    let rows:Vec<(String,String,String,i64,i64)>=sqlx::query_as("SELECT p.id,p.site_id,p.name,COALESCE((SELECT SUM(quantity) FROM stock WHERE part_id=p.id AND site_id=p.site_id),0),COALESCE(p.alert_threshold,CAST((SELECT value FROM app_settings WHERE key='stock_alert_threshold') AS INTEGER)) FROM parts p WHERE p.deleted_at IS NULL AND (? OR p.site_id=?)")
+    // La jointure évite une lecture par pièce sans réduire le contrôle global : une
+    // activation SMTP ou un nouveau seuil doit encore révéler toutes les alertes.
+    let rows:Vec<(String,String,String,i64,i64,String)>=sqlx::query_as("SELECT p.id,p.site_id,p.name,COALESCE((SELECT SUM(quantity) FROM stock WHERE part_id=p.id AND site_id=p.site_id),0),COALESCE(p.alert_threshold,CAST((SELECT value FROM app_settings WHERE key='stock_alert_threshold') AS INTEGER)),COALESCE(a.value,'') FROM parts p LEFT JOIN app_settings a ON a.key='alerts.stock_low.' || p.id WHERE p.deleted_at IS NULL AND (? OR p.site_id=?)")
  .bind(actor.is_admin()).bind(&actor.site_id).fetch_all(&mut *conn).await?;
-    for (id, site, name, quantity, threshold) in rows {
+    for (id, site, name, quantity, threshold, previous) in rows {
         let key = format!("alerts.stock_low.{id}");
-        let previous = raw(conn, &key).await?;
-        if quantity < threshold {
+        if quantity <= threshold {
             if previous != "low" {
                 recipients(
                     conn,
@@ -210,6 +211,103 @@ pub async fn stock(conn: &mut SqliteConnection, actor: &Actor) -> Result<(), Mai
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod equivalence_stock {
+    use super::*;
+
+    // Calcul antérieur conservé comme oracle, avec les lectures individuelles d'état.
+    async fn ancien_stock(conn: &mut SqliteConnection, actor: &Actor) {
+        if raw(conn, "smtp.enabled").await.unwrap() != "true" {
+            return;
+        }
+        let rows: Vec<(String,String,String,i64,i64)> = sqlx::query_as("SELECT p.id,p.site_id,p.name,COALESCE((SELECT SUM(quantity) FROM stock WHERE part_id=p.id AND site_id=p.site_id),0),COALESCE(p.alert_threshold,CAST((SELECT value FROM app_settings WHERE key='stock_alert_threshold') AS INTEGER)) FROM parts p WHERE p.deleted_at IS NULL AND (? OR p.site_id=?)")
+            .bind(actor.is_admin()).bind(&actor.site_id).fetch_all(&mut *conn).await.unwrap();
+        for (id, site, name, quantity, threshold) in rows {
+            let key = format!("alerts.stock_low.{id}");
+            let previous = raw(conn, &key).await.unwrap();
+            if quantity <= threshold {
+                if previous != "low" {
+                    recipients(
+                        conn,
+                        actor,
+                        &site,
+                        "stock_low",
+                        None,
+                        &format!("{id}:{}", store::id()),
+                        &format!("Stock bas : {name}"),
+                        &format!("/#/pieces/{id}"),
+                    )
+                    .await
+                    .unwrap();
+                    put(conn, &key, "low").await.unwrap();
+                }
+            } else {
+                put(conn, &key, "normal").await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn c7_alertes_et_etats_identiques_apres_changements_globaux() {
+        for global in [false, true] {
+            let mut databases = Vec::new();
+            for _ in 0..2 {
+                let (pool, admin) = crate::audit_tests::fixture().await;
+                sqlx::query("UPDATE users SET site_id='a',role='technicien',email='a@example.test' WHERE id=?").bind(&admin.user_id).execute(&pool).await.unwrap();
+                for sql in [
+                    "INSERT INTO users(id,site_id,username,display_name,role,password_hash,email,created_at,updated_at) VALUES('b','b','b','B','technicien','hash','b@example.test','2026','2026')",
+                    "INSERT INTO parts(id,site_id,reference,name,created_at,updated_at) VALUES('normale','a','N','Normale','2026','2026'),('supprimee','a','S','Supprimée','2026','2026')",
+                    "UPDATE parts SET deleted_at='2026' WHERE id='supprimee'",
+                    "INSERT INTO stock(id,site_id,part_id,location_id,quantity,updated_at) VALUES('normal','a','normale','loc',6,'2026')",
+                ] { sqlx::query(sql).execute(&pool).await.unwrap(); }
+                let actor = if global {
+                    admin
+                } else {
+                    Actor::new(&admin.user_id, Some("a".into()), Role::Technicien, [])
+                };
+                databases.push((pool, actor));
+            }
+            for (smtp, threshold, quantity) in [
+                ("false", "5", 1),
+                ("true", "5", 1),
+                ("true", "10", 1),
+                ("true", "10", 1),
+                ("true", "0", 20),
+                ("false", "10", 1),
+                ("true", "10", 1),
+            ] {
+                let mut snapshots = Vec::new();
+                for (index, (pool, actor)) in databases.iter().enumerate() {
+                    let mut conn = pool.acquire().await.unwrap();
+                    put(&mut conn, "smtp.enabled", smtp).await.unwrap();
+                    put(&mut conn, "stock_alert_threshold", threshold)
+                        .await
+                        .unwrap();
+                    sqlx::query("UPDATE stock SET quantity=? WHERE id='stock'")
+                        .bind(quantity)
+                        .execute(&mut *conn)
+                        .await
+                        .unwrap();
+                    sqlx::query("UPDATE app_settings SET updated_at='ancien' WHERE key LIKE 'alerts.stock_low.%'").execute(&mut *conn).await.unwrap();
+                    if index == 0 {
+                        ancien_stock(&mut conn, actor).await;
+                    } else {
+                        stock(&mut conn, actor).await.unwrap();
+                    }
+                    let states: Vec<(String,String,bool)> = sqlx::query_as("SELECT key,value,updated_at='ancien' FROM app_settings WHERE key LIKE 'alerts.stock_low.%' ORDER BY key").fetch_all(&mut *conn).await.unwrap();
+                    let messages: Vec<(Option<String>,String,String,String,String,String)> = sqlx::query_as("SELECT site_id,to_address,event,subject,body_text,body_html FROM outbox_emails ORDER BY rowid").fetch_all(&mut *conn).await.unwrap();
+                    snapshots.push((states, messages));
+                }
+                assert_eq!(
+                    snapshots[0], snapshots[1],
+                    "SMTP {smtp}, seuil {threshold}, quantité {quantity}, global {global}"
+                );
+            }
+        }
+    }
+}
+
 pub async fn generated(
     conn: &mut SqliteConnection,
     actor: &Actor,

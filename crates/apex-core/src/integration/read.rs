@@ -25,12 +25,31 @@ pub async fn statuses(
     cursor: Option<&str>,
     limit: u32,
 ) -> Result<Page<ExternalStatus>, MaintError> {
+    statuses_in(pool, actor, None, None, equipment, state, cursor, limit).await
+}
+
+/// Comme [`statuses`], restreint en plus à un site et à une ligne de production.
+#[allow(clippy::too_many_arguments)]
+pub async fn statuses_in(
+    pool: &SqlitePool,
+    actor: &Actor,
+    site: Option<&str>,
+    line: Option<&str>,
+    equipment: Option<&str>,
+    state: Option<&str>,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<Page<ExternalStatus>, MaintError> {
     actor.require_permission(Permission::EquipmentsView)?;
     let limit = limit.clamp(1, 200) as usize;
-    let sql="WITH visible AS (SELECT e.id AS equipment_id,e.site_id,e.code AS equipment_code,e.name AS equipment_name,e.external_ref,s.source,CASE WHEN (julianday('now')-julianday(s.received_at))*1440>CAST((SELECT value FROM app_settings WHERE key='integration.supervision.status_stale_after_min') AS INTEGER) THEN 'unknown' ELSE s.state END AS state,s.state AS original_state,s.since,s.message,s.received_at,((julianday('now')-julianday(s.received_at))*1440>CAST((SELECT value FROM app_settings WHERE key='integration.supervision.status_stale_after_min') AS INTEGER)) AS stale FROM equipments e JOIN equipment_external_status s ON s.equipment_id=e.id AND s.site_id=e.site_id WHERE e.deleted_at IS NULL AND (? OR e.site_id=?) AND (? IS NULL OR e.id=?)) SELECT * FROM visible WHERE (? IS NULL OR state=? OR (?='attention' AND state IN ('stopped','alarm'))) AND (? IS NULL OR equipment_id>?) ORDER BY equipment_id LIMIT ?";
+    let sql="WITH visible AS (SELECT e.id AS equipment_id,e.site_id,e.code AS equipment_code,e.name AS equipment_name,e.external_ref,s.source,CASE WHEN (julianday('now')-julianday(s.received_at))*1440>CAST((SELECT value FROM app_settings WHERE key='integration.supervision.status_stale_after_min') AS INTEGER) THEN 'unknown' ELSE s.state END AS state,s.state AS original_state,s.since,s.message,s.received_at,((julianday('now')-julianday(s.received_at))*1440>CAST((SELECT value FROM app_settings WHERE key='integration.supervision.status_stale_after_min') AS INTEGER)) AS stale FROM equipments e JOIN equipment_external_status s ON s.equipment_id=e.id AND s.site_id=e.site_id WHERE e.deleted_at IS NULL AND (? OR e.site_id=?) AND (? IS NULL OR e.site_id=?) AND (? IS NULL OR e.production_line_id=?) AND (? IS NULL OR e.id=?)) SELECT * FROM visible WHERE (? IS NULL OR state=? OR (?='attention' AND state IN ('stopped','alarm'))) AND (? IS NULL OR equipment_id>?) ORDER BY equipment_id LIMIT ?";
     let mut items: Vec<ExternalStatus> = sqlx::query_as(sql)
         .bind(actor.is_admin())
         .bind(&actor.site_id)
+        .bind(site)
+        .bind(site)
+        .bind(line)
+        .bind(line)
         .bind(equipment)
         .bind(equipment)
         .bind(state)

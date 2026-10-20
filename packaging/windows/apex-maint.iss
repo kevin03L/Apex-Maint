@@ -103,6 +103,8 @@ Source: "{#SourceDir}\static\*"; DestDir: "{app}\web"; Flags: ignoreversion recu
 Source: "{#SourceDir}\docs\INSTALLATION.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "{#SourceDir}\docs\ADMINISTRATION.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
+Source: "{#SourceDir}\crates\apex-core\assets\fonts\LICENSE-LiberationSans.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+
 [Icons]
 Name: "{group}\{#AppName} — Administration"; Filename: "{app}\{#AdminExe}"
 Name: "{group}\Assistant de configuration"; Filename: "{app}\{#AdminExe}"; Parameters: "--wizard"
@@ -119,8 +121,8 @@ Type: filesandordirs; Name: "{app}\docs"
 [Run]
 ; Première installation : assistant de configuration (droits administrateur conservés pour
 ; écrire la configuration et régler le service)
-Filename: "{app}\{#AdminExe}"; Parameters: "--wizard"; Description: "Lancer l'assistant de configuration"; Flags: postinstall nowait skipifsilent runascurrentuser; Check: not ConfigExists
-Filename: "{app}\{#AdminExe}"; Description: "Ouvrir l'utilitaire d'administration"; Flags: postinstall nowait skipifsilent unchecked runasoriginaluser; Check: ConfigExists
+Filename: "{app}\{#AdminExe}"; Parameters: "--wizard"; Description: "Lancer l'assistant de configuration"; Flags: postinstall nowait skipifsilent runascurrentuser; Check: FirstInstallation
+Filename: "{app}\{#AdminExe}"; Description: "Ouvrir l'utilitaire d'administration"; Flags: postinstall nowait skipifsilent unchecked runasoriginaluser; Check: not FirstInstallation
 
 [UninstallRun]
 ; Arrêt propre et suppression du service (configuration, données et journaux conservés)
@@ -129,6 +131,7 @@ Filename: "{app}\{#EngineExe}"; Parameters: "service uninstall"; Flags: runhidde
 [Code]
 var
   WasRunning: Boolean;
+  ConfigExistedBefore: Boolean;
   ServiceExistedBefore: Boolean;
   InstallDone: Boolean;
   PortPage: TInputQueryWizardPage;
@@ -172,6 +175,11 @@ end;
 function ConfigExists: Boolean;
 begin
   Result := FileExists(ExpandConstant('{#ConfigFile}'));
+end;
+
+function FirstInstallation: Boolean;
+begin
+  Result := not ConfigExistedBefore;
 end;
 
 function ServiceWasRunning: Boolean;
@@ -247,6 +255,7 @@ begin
   WasRunning := False;
   InstallDone := False;
   ServiceExistedBefore := ServiceExists;
+  ConfigExistedBefore := ConfigExists;
   Result := '';
   if ServiceExists then
   begin

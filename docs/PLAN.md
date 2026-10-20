@@ -5,7 +5,7 @@
 > l'outillage et les conventions d'**Apex Supervision** (`D:\Vs-code\Apex-Supervision`, `0.4.0-alpha.1`).
 > Choix validés : **SQLite embarquée** et **IHM web statique** (HTML/CSS/JS sans framework ni build),
 > comme Apex Supervision. Dépôt privé `kevin03L/Apex-Maint` (GPL-3.0).
-> Statut : backend de la phase 7 implémenté (pilotage, exports, paramètres, audit et e-mails) ; contrat : [API-PHASE-7.md](API-PHASE-7.md).
+> Statut au 19 octobre 2026 : phases 1 à 10 implémentées ; corrections d’audit en cours. Contrats et limites : [API-PHASE-8.md](API-PHASE-8.md), [API-PHASE-9.md](API-PHASE-9.md), [API-PHASE-10.md](API-PHASE-10.md).
 
 ---
 

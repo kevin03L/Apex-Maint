@@ -278,7 +278,7 @@ async fn data(
             )
         }
         "costs" => {
-            let mut q=QueryBuilder::new("SELECT i.equipment_id,COALESCE(sum(ip.quantity*ip.unit_price_cents),0) AS cost_cents FROM intervention_parts ip JOIN interventions i ON i.id=ip.intervention_id WHERE i.deleted_at IS NULL AND i.status<>'cancelled'");
+            let mut q=QueryBuilder::new("SELECT i.equipment_id,COALESCE(sum(ip.quantity*ip.unit_price_cents),0) AS cost_cents FROM intervention_parts ip JOIN interventions i ON i.id=ip.intervention_id WHERE i.deleted_at IS NULL AND ip.deleted_at IS NULL AND i.status<>'cancelled'");
             scope(&mut q, actor, f, "ip");
             equipment_scope(&mut q, f, "i.equipment_id");
             if let Some(kind) = &f.kind {
@@ -317,7 +317,7 @@ async fn data(
             }
             q.push(" ORDER BY p.reference,p.id");
             let rows = q.build().fetch_all(pool).await?;
-            let items:Vec<_>=rows.iter().map(|r|{let qty:i64=r.get("quantity");let price:i64=r.get("unit_price_cents");let threshold:i64=r.get("threshold");json!({"part_id":r.get::<String,_>("part_id"),"reference":r.get::<String,_>("reference"),"name":r.get::<String,_>("name"),"quantity":qty,"unit_price_cents":price,"value_cents":qty*price,"threshold":threshold,"low":qty<threshold})}).collect();
+            let items:Vec<_>=rows.iter().map(|r|{let qty:i64=r.get("quantity");let price:i64=r.get("unit_price_cents");let threshold:i64=r.get("threshold");json!({"part_id":r.get::<String,_>("part_id"),"reference":r.get::<String,_>("reference"),"name":r.get::<String,_>("name"),"quantity":qty,"unit_price_cents":price,"value_cents":qty*price,"threshold":threshold,"low":qty<=threshold})}).collect();
             Ok(
                 json!({"value_cents":items.iter().map(|v|v["value_cents"].as_i64().unwrap_or(0)).sum::<i64>(),"items":items}),
             )
@@ -407,10 +407,19 @@ pub async fn widget(
             json!({"items":rows.iter().map(|r|{let due=r.get::<Option<String>,_>("next_due_date");let counter=r.get::<Option<i64>,_>("next_due_counter");let overdue=due.as_deref().is_some_and(|d|d<today.to_string().as_str())||counter.zip(r.get::<Option<i64>,_>("current_value")).is_some_and(|(due,current)|current>=due);json!({"id":r.get::<String,_>("id"),"code":r.get::<String,_>("code"),"title":r.get::<String,_>("title"),"next_due_date":due,"next_due_counter":counter,"overdue":overdue})}).collect::<Vec<_>>()})
         }
         "supervision_status" => {
-            // Phase 10 : état à titre d'information, équipements à l'arrêt ou en alarme.
-            let page =
-                crate::integration::statuses(pool, actor, None, Some("attention"), None, 200)
-                    .await?;
+            // État à titre d'information, équipements à l'arrêt ou en alarme, dans le
+            // périmètre demandé par les filtres du widget.
+            let page = crate::integration::statuses_in(
+                pool,
+                actor,
+                f.site_id.as_deref(),
+                f.line_id.as_deref(),
+                f.equipment_id.as_deref(),
+                Some("attention"),
+                None,
+                200,
+            )
+            .await?;
             json!({"items":page.items})
         }
         _ => return Err(MaintError::NotFound("Widget".into())),

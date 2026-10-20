@@ -25,8 +25,6 @@ pub struct Runtime {
     pub run_mode: String,
     pub pid: u64,
     pub full_version: String,
-    /// Surcharges `SCADA_*` appliquées par le moteur (compatibilité 1.x).
-    pub env_overrides: Vec<String>,
 }
 
 /// Adresse à laquelle joindre le moteur depuis ce poste.
@@ -107,16 +105,19 @@ fn health_with_token(
             run_mode: s("run_mode"),
             pid: r.get("pid").and_then(|x| x.as_u64()).unwrap_or(0),
             full_version: s("full_version"),
-            env_overrides: r
-                .get("env_overrides")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
         }
+    });
+    let uptime_seconds = u("uptime_seconds").unwrap_or_else(|| {
+        v.get("started_at")
+            .and_then(|x| x.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|started| {
+                let now = chrono::Utc::now();
+                now.signed_duration_since(started.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    .max(0) as u64
+            })
+            .unwrap_or(0)
     });
     Ok(Health {
         version: v
@@ -124,7 +125,7 @@ fn health_with_token(
             .and_then(|x| x.as_str())
             .unwrap_or("?")
             .to_string(),
-        uptime_seconds: u("uptime_seconds").unwrap_or(0),
+        uptime_seconds,
         runtime,
     })
 }

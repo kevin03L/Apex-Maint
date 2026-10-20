@@ -6,15 +6,18 @@
 //! - Les occurrences d'échéances et la génération d'interventions préventives (auto et manuelle) ;
 //! - Le suivi des états (en retard, bientôt, à jour, suspendu) et la vue planning projetée.
 
+use crate::domain::site::{resolve_site_id_for_create, resolve_site_id_for_query, SitePolicy};
 use std::fmt;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::json;
 use sqlx::{FromRow, QueryBuilder, SqliteConnection, SqlitePool};
 
 use crate::{
     domain::pagination::Cursor,
+    domain::sql::like_pattern,
     referentiel::{NamedRef, PatchField},
     store::{self, Audit},
     Actor, MaintError, Permission,
@@ -63,10 +66,6 @@ impl Frequency {
             ))),
         }
     }
-
-    pub fn is_calendar(self) -> bool {
-        self != Self::Counter
-    }
 }
 
 impl fmt::Display for Frequency {
@@ -91,98 +90,6 @@ impl<'de> Deserialize<'de> for Frequency {
     {
         let s = String::deserialize(deserializer)?;
         Self::parse(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Statuts d'une occurrence de maintenance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OccurrenceStatus {
-    Generated,
-    Done,
-    Skipped,
-    Missed,
-}
-
-impl OccurrenceStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Generated => "generated",
-            Self::Done => "done",
-            Self::Skipped => "skipped",
-            Self::Missed => "missed",
-        }
-    }
-
-    pub fn parse(s: &str) -> Result<Self, MaintError> {
-        match s.trim() {
-            "generated" => Ok(Self::Generated),
-            "done" => Ok(Self::Done),
-            "skipped" => Ok(Self::Skipped),
-            "missed" => Ok(Self::Missed),
-            other => Err(MaintError::BadRequest(format!(
-                "Statut d'occurrence invalide : « {other} »"
-            ))),
-        }
-    }
-}
-
-impl fmt::Display for OccurrenceStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl Serialize for OccurrenceStatus {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for OccurrenceStatus {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Self::parse(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Mode de génération d'une occurrence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenerationMode {
-    Auto,
-    Manual,
-}
-
-impl GenerationMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Manual => "manual",
-        }
-    }
-
-    pub fn parse(s: &str) -> Result<Self, MaintError> {
-        match s.trim() {
-            "auto" => Ok(Self::Auto),
-            "manual" => Ok(Self::Manual),
-            other => Err(MaintError::BadRequest(format!(
-                "Mode de génération invalide : « {other} »"
-            ))),
-        }
-    }
-}
-
-impl Serialize for GenerationMode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -222,6 +129,33 @@ pub fn last_day_of_month(year: i32, month: u32) -> u32 {
         .and_then(|d| d.pred_opt())
         .map(|d| d.day())
         .unwrap_or(30)
+}
+
+fn validate_calendar_date(value: &str) -> Result<String, MaintError> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .map_err(|_| MaintError::BadRequest("Date calendaire invalide (AAAA-MM-JJ attendu)".into()))
+}
+
+/// Premier pas proche de la borne, en conservant le jour d'ancrage pour les mois.
+fn calendar_step_at(
+    anchor: NaiveDate,
+    frequency: Frequency,
+    interval: Option<i64>,
+    bound: NaiveDate,
+) -> i32 {
+    let days = (bound - anchor).num_days().max(0);
+    let months =
+        ((bound.year() - anchor.year()) * 12 + bound.month() as i32 - anchor.month() as i32).max(0);
+    match frequency {
+        Frequency::Daily => days as i32,
+        Frequency::Weekly => (days / 7) as i32,
+        Frequency::IntervalDays => (days / interval.unwrap_or(1).max(1)) as i32,
+        Frequency::Monthly => months,
+        Frequency::Quarterly => months / 3,
+        Frequency::Yearly => (bound.year() - anchor.year()).max(0),
+        Frequency::Counter => 0,
+    }
 }
 
 /// Calcule la n-ième date ancrée d'un calendrier fixe (step >= 0 ou relatif).
@@ -464,6 +398,8 @@ pub struct CounterReading {
     pub source: String,
     pub is_reset: bool,
     pub recorded_by_id: Option<String>,
+    /// Nom de l'auteur du relevé, renseigné par la liste des relevés.
+    pub recorded_by_name: Option<String>,
     pub note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -479,6 +415,7 @@ struct RawCounterReadingRow {
     source: String,
     is_reset: i64,
     recorded_by_id: Option<String>,
+    recorded_by_name: Option<String>,
     note: Option<String>,
     created_at: String,
     updated_at: String,
@@ -495,6 +432,7 @@ impl From<RawCounterReadingRow> for CounterReading {
             source: r.source,
             is_reset: r.is_reset == 1,
             recorded_by_id: r.recorded_by_id,
+            recorded_by_name: r.recorded_by_name,
             note: r.note,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -545,6 +483,7 @@ pub struct MaintenancePlan {
     pub active: bool,
     pub estimated_minutes: Option<i64>,
     pub default_technician_id: Option<String>,
+    pub default_technician_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub equipment: NamedRef,
@@ -554,7 +493,7 @@ pub struct MaintenancePlan {
 }
 
 /// Occurrence de maintenance traitée ou en cours.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MaintenanceOccurrence {
     pub id: String,
     pub site_id: String,
@@ -711,47 +650,6 @@ fn validate_name(name: &str, field_name: &str, max_len: usize) -> Result<String,
     Ok(trimmed.to_string())
 }
 
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
-}
-
-fn resolve_site_id_for_create(actor: &Actor, site_id: Option<&str>) -> Result<String, MaintError> {
-    if actor.is_admin() {
-        site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                MaintError::BadRequest("Le site_id est requis pour un administrateur".into())
-            })
-    } else {
-        actor
-            .site_id
-            .clone()
-            .ok_or_else(|| MaintError::Forbidden("Utilisateur sans site rattaché".into()))
-    }
-}
-
-fn resolve_site_id_for_query(
-    actor: &Actor,
-    site_id: Option<&str>,
-) -> Result<Option<String>, MaintError> {
-    if actor.is_admin() {
-        Ok(site_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string))
-    } else {
-        Ok(Some(actor.site_id.clone().ok_or_else(|| {
-            MaintError::Forbidden("Utilisateur sans site rattaché".into())
-        })?))
-    }
-}
-
 // ============================================================================
 // GESTION DES COMPTEURS D'ÉQUIPEMENT
 // ============================================================================
@@ -765,7 +663,7 @@ pub async fn list_equipment_counters(
     actor.require_permission(Permission::MaintenanceView)?;
 
     // Vérifier l'équipement dans le scope du site
-    let site_scope = resolve_site_id_for_query(actor, None)?;
+    let site_scope = resolve_site_id_for_query(actor, None, SitePolicy::Maintenance)?;
     let mut qb = QueryBuilder::new("SELECT site_id FROM equipments WHERE id = ");
     qb.push_bind(equipment_id).push(" AND deleted_at IS NULL");
     if let Some(sid) = site_scope {
@@ -818,7 +716,7 @@ pub async fn create_equipment_counter(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     // Récupérer et vérifier l'équipement dans le scope
-    let site_scope = resolve_site_id_for_query(actor, None)?;
+    let site_scope = resolve_site_id_for_query(actor, None, SitePolicy::Maintenance)?;
     let mut qb = QueryBuilder::new("SELECT site_id FROM equipments WHERE id = ");
     qb.push_bind(equipment_id).push(" AND deleted_at IS NULL");
     if let Some(sid) = site_scope {
@@ -1115,28 +1013,30 @@ pub async fn list_counter_readings(
 
     let mut qb = QueryBuilder::new(
         r#"
-        SELECT id, site_id, counter_id, value, read_at, source, is_reset, recorded_by_id, note, created_at, updated_at
-        FROM counter_readings
-        WHERE counter_id = 
+        SELECT r.id, r.site_id, r.counter_id, r.value, r.read_at, r.source, r.is_reset,
+            r.recorded_by_id, u.display_name AS recorded_by_name, r.note, r.created_at, r.updated_at
+        FROM counter_readings r
+        LEFT JOIN users u ON u.id = r.recorded_by_id
+        WHERE r.counter_id = 
         "#,
     );
-    qb.push_bind(counter_id).push(" AND deleted_at IS NULL");
+    qb.push_bind(counter_id).push(" AND r.deleted_at IS NULL");
 
     if let Some(c) = cursor {
         if let Some(ts) = c.timestamp {
-            qb.push(" AND (read_at < ")
+            qb.push(" AND (r.read_at < ")
                 .push_bind(ts.clone())
-                .push(" OR (read_at = ")
+                .push(" OR (r.read_at = ")
                 .push_bind(ts)
-                .push(" AND id < ")
+                .push(" AND r.id < ")
                 .push_bind(c.id)
                 .push("))");
         } else {
-            qb.push(" AND id < ").push_bind(c.id);
+            qb.push(" AND r.id < ").push_bind(c.id);
         }
     }
 
-    qb.push(" ORDER BY read_at DESC, id DESC LIMIT ")
+    qb.push(" ORDER BY r.read_at DESC, r.id DESC LIMIT ")
         .push_bind((limit + 1) as i64);
 
     let mut rows: Vec<RawCounterReadingRow> = qb.build_query_as().fetch_all(pool).await?;
@@ -1298,6 +1198,7 @@ pub async fn record_counter_reading(
         source: "manual".into(),
         is_reset,
         recorded_by_id,
+        recorded_by_name: None,
         note,
         created_at: now,
         updated_at: store::now(),
@@ -1355,6 +1256,7 @@ pub struct RawPlanRow {
     pub active: i64,
     pub estimated_minutes: Option<i64>,
     pub default_technician_id: Option<String>,
+    pub default_technician_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub equipment_code: String,
@@ -1457,6 +1359,7 @@ fn raw_plan_to_plan(r: RawPlanRow, today: NaiveDate) -> MaintenancePlan {
         active: r.active == 1,
         estimated_minutes: r.estimated_minutes,
         default_technician_id: r.default_technician_id,
+        default_technician_name: r.default_technician_name,
         created_at: r.created_at,
         updated_at: r.updated_at,
         equipment: NamedRef {
@@ -1475,7 +1378,7 @@ const PLAN_SELECT_FIELDS: &str = r#"
     p.priority, p.frequency, p.interval_days, p.counter_id, p.counter_interval,
     p.anchor_date, p.next_due_date, p.anchor_counter, p.next_due_counter,
     p.lead_days, p.lead_counter, p.auto_generate, p.active, p.estimated_minutes,
-    p.default_technician_id, p.created_at, p.updated_at,
+    p.default_technician_id, dt.display_name AS default_technician_name, p.created_at, p.updated_at,
     (SELECT count(*) FROM documents d WHERE d.site_id=p.site_id AND d.entity_type='maintenance_plan' AND d.entity_id=p.id AND d.deleted_at IS NULL) AS documents_count,
     eq.code AS equipment_code, eq.name AS equipment_name,
     c.name AS counter_name, c.unit AS counter_unit, c.current_value AS counter_current_value, c.active AS counter_active,
@@ -1488,6 +1391,7 @@ const PLAN_FROM_JOINS: &str = r#"
     LEFT JOIN equipment_counters c ON c.id = p.counter_id
     LEFT JOIN maintenance_occurrences occ ON occ.plan_id = p.id AND occ.status = 'generated' AND occ.deleted_at IS NULL
     LEFT JOIN interventions intv ON intv.id = occ.intervention_id
+    LEFT JOIN users dt ON dt.id = p.default_technician_id
 "#;
 
 /// Liste paginée et filtrable des plannings de maintenance.
@@ -1498,7 +1402,8 @@ pub async fn list_plans(
 ) -> Result<crate::referentiel::Page<MaintenancePlan>, MaintError> {
     actor.require_permission(Permission::MaintenanceView)?;
     let limit = filter.limit.clamp(1, 100);
-    let site_scope = resolve_site_id_for_query(actor, filter.site_id.as_deref())?;
+    let site_scope =
+        resolve_site_id_for_query(actor, filter.site_id.as_deref(), SitePolicy::Maintenance)?;
 
     let mut qb = QueryBuilder::new(format!(
         "SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.deleted_at IS NULL"
@@ -1548,29 +1453,31 @@ pub async fn list_plans(
     }
 
     qb.push(" ORDER BY p.created_at DESC, p.id DESC");
+    if !matches!(filter.due.as_deref(), Some("overdue" | "soon")) {
+        qb.push(" LIMIT ").push_bind(i64::from(limit) + 1);
+    }
 
-    let rows: Vec<RawPlanRow> = qb.build_query_as().fetch_all(pool).await?;
     let today = Local::now().date_naive();
-
-    // Filtre applicatif sur `due` si spécifié
-    let filtered_rows: Vec<RawPlanRow> = if let Some(due) = filter.due.as_deref() {
-        match due {
-            "overdue" => rows
-                .into_iter()
-                .filter(|r| compute_plan_state(r, today) == PlanState::Overdue)
-                .collect(),
-            "soon" => rows
-                .into_iter()
-                .filter(|r| compute_plan_state(r, today) == PlanState::DueSoon)
-                .collect(),
-            _ => rows,
-        }
-    } else {
-        rows
+    let expected_state = match filter.due.as_deref() {
+        Some("overdue") => Some(PlanState::Overdue),
+        Some("soon") => Some(PlanState::DueSoon),
+        _ => None,
     };
+    // Le filtre Rust reste exact, y compris pour les années étendues et les compteurs
+    // suspendus. Seule la page utile est conservée ; la lecture s'arrête au témoin suivant.
+    let mut rows = qb.build_query_as::<RawPlanRow>().fetch(pool);
+    let mut page_rows = Vec::with_capacity(limit as usize + 1);
+    while let Some(row) = rows.try_next().await? {
+        if expected_state.is_none_or(|state| compute_plan_state(&row, today) == state) {
+            page_rows.push(row);
+            if page_rows.len() > limit as usize {
+                break;
+            }
+        }
+    }
+    drop(rows);
 
-    let has_more = filtered_rows.len() > limit as usize;
-    let mut page_rows = filtered_rows;
+    let has_more = page_rows.len() > limit as usize;
     if has_more {
         page_rows.truncate(limit as usize);
     }
@@ -1642,7 +1549,8 @@ pub async fn create_plan(
         }
         _ => None,
     };
-    let site_id = resolve_site_id_for_create(actor, requested_site.as_deref())?;
+    let site_id =
+        resolve_site_id_for_create(actor, requested_site.as_deref(), SitePolicy::Maintenance)?;
     let code = validate_code(&input.code)?;
     let title = validate_name(&input.title, "Le titre du planning", 255)?;
     let frequency = Frequency::parse(&input.frequency)?;
@@ -1724,7 +1632,9 @@ pub async fn create_plan(
                     "La date d'ancrage est obligatoire pour les plannings calendaires".into(),
                 )
             })?;
-            let next_due = input.next_due_date.unwrap_or_else(|| ad.clone());
+            let ad = validate_calendar_date(&ad)?;
+            let next_due =
+                validate_calendar_date(&input.next_due_date.unwrap_or_else(|| ad.clone()))?;
             (Some(days), None, None, Some(ad), Some(next_due), None, None)
         }
         Frequency::Daily
@@ -1737,7 +1647,9 @@ pub async fn create_plan(
                     "La date d'ancrage est obligatoire pour les plannings calendaires".into(),
                 )
             })?;
-            let next_due = input.next_due_date.unwrap_or_else(|| ad.clone());
+            let ad = validate_calendar_date(&ad)?;
+            let next_due =
+                validate_calendar_date(&input.next_due_date.unwrap_or_else(|| ad.clone()))?;
             (None, None, None, Some(ad), Some(next_due), None, None)
         }
         Frequency::Counter => {
@@ -1920,6 +1832,16 @@ pub async fn update_plan(
         return Err(MaintError::NotFound("Planning de maintenance".into()));
     }
 
+    if input
+        .equipment_id
+        .as_ref()
+        .is_some_and(|equipment| equipment != &current.equipment_id)
+    {
+        return Err(MaintError::BadRequest(
+            "Le rattachement du planning à son équipement est immuable".into(),
+        ));
+    }
+
     let schedule_params_changed = input.frequency.is_some()
         || !input.interval_days.is_absent()
         || !input.counter_id.is_absent()
@@ -2051,7 +1973,7 @@ pub async fn update_plan(
     match input.anchor_date {
         PatchField::Absent => {}
         PatchField::Null => anchor_date = None,
-        PatchField::Value(v) => anchor_date = Some(v.trim().to_string()),
+        PatchField::Value(v) => anchor_date = Some(validate_calendar_date(&v)?),
     }
 
     let mut anchor_counter = current.anchor_counter;
@@ -2316,11 +2238,47 @@ async fn do_generate_in_tx(
     generation_mode: &str,
     ip: Option<&str>,
 ) -> Result<(MaintenanceOccurrence, crate::interventions::Intervention), MaintError> {
+    let fresh;
+    let plan = if generation_mode == "auto" {
+        let query = format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.id = ? AND p.site_id = ? AND p.deleted_at IS NULL AND p.active = 1 AND p.auto_generate = 1");
+        fresh = sqlx::query_as::<_, RawPlanRow>(&query)
+            .bind(&plan.id)
+            .bind(&plan.site_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                MaintError::Conflict("Le planning automatique n'est plus actif".into())
+            })?;
+        let due = if fresh.frequency == "counter" {
+            fresh.counter_active == Some(1)
+                && fresh.counter_current_value.unwrap_or(0)
+                    >= fresh
+                        .next_due_counter
+                        .unwrap_or(0)
+                        .saturating_sub(fresh.lead_counter)
+        } else {
+            fresh
+                .next_due_date
+                .as_deref()
+                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .is_some_and(|d| d - Duration::days(fresh.lead_days) <= Local::now().date_naive())
+        };
+        if fresh.open_occ_id.is_some() || !due {
+            return Err(MaintError::Conflict(
+                "Le planning automatique n'est plus à générer".into(),
+            ));
+        }
+        &fresh
+    } else {
+        plan
+    };
+
     let now = store::now();
 
     // 1. Récupération ou génération de la référence d'intervention
     let int_code =
-        crate::interventions::resolve_or_generate_code(&mut *tx, &plan.site_id, None, &now).await?;
+        crate::interventions::resolve_or_generate_code(&mut *tx, actor, &plan.site_id, None, &now)
+            .await?;
 
     // Demandeur de l'intervention
     let reported_by_id = if actor.user_id.is_empty() {
@@ -2662,25 +2620,7 @@ pub async fn list_plan_occurrences(
     qb.push(" ORDER BY o.created_at DESC, o.id DESC LIMIT ")
         .push_bind((limit + 1) as i64);
 
-    #[derive(Debug, FromRow)]
-    struct RawOccurrenceRow {
-        id: String,
-        site_id: String,
-        plan_id: String,
-        due_date: Option<String>,
-        due_counter: Option<i64>,
-        status: String,
-        intervention_id: Option<String>,
-        intervention_code: Option<String>,
-        generated_at: Option<String>,
-        closed_at: Option<String>,
-        generation: Option<String>,
-        skip_reason: Option<String>,
-        created_at: String,
-        updated_at: String,
-    }
-
-    let mut rows: Vec<RawOccurrenceRow> = qb.build_query_as().fetch_all(pool).await?;
+    let mut rows: Vec<MaintenanceOccurrence> = qb.build_query_as().fetch_all(pool).await?;
 
     let next_cursor = if rows.len() > limit as usize {
         rows.truncate(limit as usize);
@@ -2690,25 +2630,7 @@ pub async fn list_plan_occurrences(
         None
     };
 
-    let items = rows
-        .into_iter()
-        .map(|r| MaintenanceOccurrence {
-            id: r.id,
-            site_id: r.site_id,
-            plan_id: r.plan_id,
-            due_date: r.due_date,
-            due_counter: r.due_counter,
-            status: r.status,
-            intervention_id: r.intervention_id,
-            intervention_code: r.intervention_code,
-            generated_at: r.generated_at,
-            closed_at: r.closed_at,
-            generation: r.generation,
-            skip_reason: r.skip_reason,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        })
-        .collect();
+    let items = rows;
 
     Ok(crate::referentiel::Page { items, next_cursor })
 }
@@ -2934,7 +2856,7 @@ pub async fn get_schedule(
         ));
     }
 
-    let site_scope = resolve_site_id_for_query(actor, site_id_filter)?;
+    let site_scope = resolve_site_id_for_query(actor, site_id_filter, SitePolicy::Maintenance)?;
     let today = Local::now().date_naive();
 
     // 1. Récupération de tous les plannings actifs
@@ -3068,8 +2990,10 @@ pub async fn get_schedule(
                     // 3. Projections futures strictement après next_due jusqu'à `to`
                     let anchor_str = p.anchor_date.as_deref().unwrap_or(next_due_str);
                     if let Ok(anchor) = NaiveDate::parse_from_str(anchor_str, "%Y-%m-%d") {
-                        let mut step = 0;
-                        loop {
+                        let first =
+                            calendar_step_at(anchor, freq, p.interval_days, from.max(next_due));
+                        let last = calendar_step_at(anchor, freq, p.interval_days, to);
+                        for step in first..=last {
                             let projected = step_calendar_date(anchor, freq, p.interval_days, step);
                             if projected > to {
                                 break;
@@ -3087,10 +3011,6 @@ pub async fn get_schedule(
                                         intervention_id: None,
                                     });
                                 }
-                            }
-                            step += 1;
-                            if step > 2000 {
-                                break;
                             }
                         }
                     }
@@ -3282,6 +3202,153 @@ pub(crate) async fn generate_counter_in_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn c12_u7_pages_identiques_au_filtrage_integral() {
+        let (pool, admin) = crate::audit_tests::fixture().await;
+        let today = Local::now().date_naive();
+        let dates = [
+            Some((today - Duration::days(1)).to_string()),
+            Some(today.to_string()),
+            Some((today + Duration::days(1)).to_string()),
+            Some((today + Duration::days(30)).to_string()),
+            Some((today + Duration::days(31)).to_string()),
+            Some("+10000-01-01".into()),
+            Some("-0001-01-01".into()),
+            Some("2026-02-30".into()),
+            None,
+        ];
+        sqlx::query("INSERT INTO equipments(id,site_id,code,name,created_at,updated_at) VALUES('eq-b','b','EQ','Autre','2026','2026')")
+            .execute(&pool).await.unwrap();
+        for i in 0..180 {
+            let site = if i % 7 == 0 { "b" } else { "a" };
+            let equipment = if site == "b" { "eq-b" } else { "eq" };
+            let id = format!("plan-{i:03}");
+            let counter = i % 3 == 0;
+            if counter {
+                sqlx::query("INSERT INTO equipment_counters(id,site_id,equipment_id,name,unit,current_value,active,created_at,updated_at,deleted_at) VALUES(?,?,?,?,'h',?,?, '2026','2026',?)")
+                    .bind(&id).bind(site).bind(equipment).bind(&id)
+                    .bind([80,90,100][i % 4 % 3]).bind(i64::from(i % 5 != 0))
+                    .bind((i % 11 == 0).then_some("2026")).execute(&pool).await.unwrap();
+            }
+            sqlx::query("INSERT INTO maintenance_plans(id,site_id,code,title,equipment_id,frequency,counter_id,counter_interval,next_due_counter,lead_counter,next_due_date,active,created_at,updated_at,deleted_at) VALUES(?,?,?,'Plan',?,?,?,?,100,10,?,?,?,'2026',?)")
+                .bind(&id).bind(site).bind(&id).bind(equipment)
+                .bind(if counter {"counter"} else {"daily"})
+                .bind(counter.then_some(&id)).bind(counter.then_some(100))
+                .bind(&dates[(i / 3) % dates.len()]).bind(i64::from(i % 13 != 0))
+                .bind(format!("2026-{:02}", i % 4))
+                .bind((i % 17 == 0).then_some("2026")).execute(&pool).await.unwrap();
+        }
+        let technician = Actor::new(
+            &admin.user_id,
+            Some("a".into()),
+            crate::Role::Technicien,
+            [Permission::MaintenanceView],
+        );
+        for actor in [&admin, &technician] {
+            for due in ["overdue", "soon", "inconnu"] {
+                for limit in [1, 25, 100] {
+                    // Ancien calcul : chargement intégral, état Rust, puis pagination.
+                    let query = format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.deleted_at IS NULL AND (? OR p.site_id=?) ORDER BY p.created_at DESC,p.id DESC");
+                    let all: Vec<RawPlanRow> = sqlx::query_as(&query)
+                        .bind(actor.is_admin())
+                        .bind(&actor.site_id)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                    let expected: Vec<_> = all
+                        .into_iter()
+                        .filter(|r| match due {
+                            "overdue" => compute_plan_state(r, today) == PlanState::Overdue,
+                            "soon" => compute_plan_state(r, today) == PlanState::DueSoon,
+                            _ => true,
+                        })
+                        .map(|r| {
+                            let eq_id = r.equipment_id.clone();
+                            let mut plan = raw_plan_to_plan(r, today);
+                            plan.equipment.id = eq_id;
+                            plan
+                        })
+                        .collect();
+                    let mut cursor = None;
+                    let mut offset = 0;
+                    loop {
+                        let page = list_plans(
+                            &pool,
+                            actor,
+                            PlanFilter {
+                                due: Some(due.into()),
+                                limit,
+                                cursor,
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        let end = (offset + limit as usize).min(expected.len());
+                        assert_eq!(
+                            json!(page.items),
+                            json!(expected[offset..end]),
+                            "{due}, limite {limit}"
+                        );
+                        let expected_cursor = (end < expected.len()).then(|| {
+                            Cursor::with_timestamp(
+                                &expected[end - 1].id,
+                                &expected[end - 1].created_at,
+                            )
+                            .encode()
+                        });
+                        assert_eq!(page.next_cursor, expected_cursor);
+                        offset = end;
+                        cursor = page.next_cursor.map(|c| Cursor::decode(&c).unwrap());
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_automatique_reverifie_le_planning_sous_verrou() {
+        let (pool, actor) = crate::audit_tests::fixture().await;
+        let plan = crate::audit_tests::plan(&pool, &actor).await;
+        sqlx::query("UPDATE maintenance_plans SET next_due_date='2000-01-01' WHERE id=?")
+            .bind(&plan.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let query = format!("SELECT {PLAN_SELECT_FIELDS} {PLAN_FROM_JOINS} WHERE p.id=?");
+        let stale: RawPlanRow = sqlx::query_as(&query)
+            .bind(&plan.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        for change in [
+            "active=0",
+            "auto_generate=0",
+            "deleted_at='2026'",
+            "next_due_date='2099-01-01'",
+        ] {
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            sqlx::query(&format!("UPDATE maintenance_plans SET {change} WHERE id=?"))
+                .bind(&plan.id)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert!(matches!(
+                do_generate_in_tx(&mut tx, &stale, &actor, "auto", None).await,
+                Err(MaintError::Conflict(_))
+            ));
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM maintenance_occurrences")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
+            tx.rollback().await.unwrap();
+        }
+    }
 
     #[test]
     fn test_calcul_chaque_frequence() {
