@@ -8,6 +8,9 @@
 //! - la consommation et l'annulation de pièces sur les interventions
 //! - la préparation, consommation et libération des réservations de pièces
 //! - la nomenclature et les pièces préconisées sur les équipements
+//!
+//! Les deux consommations acceptent Idempotency-Key via le middleware terrain commun ;
+//! le dépôt stock enregistre la réponse avant le commit du mouvement et de l'audit.
 
 use std::net::SocketAddr;
 

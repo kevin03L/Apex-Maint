@@ -1689,9 +1689,10 @@ pub async fn consume_part_on_intervention(
     .await?;
 
     crate::pilotage::notifications::stock(&mut tx, actor).await?;
+    let item = fetch_intervention_part_by_id(&mut tx, actor, &item_id).await?;
+    crate::terrain::record(&mut tx, actor, &item, 201).await?;
     tx.commit().await?;
-
-    fetch_intervention_part_by_id(pool, &item_id).await
+    Ok(item)
 }
 
 pub async fn delete_intervention_part(
@@ -2171,9 +2172,10 @@ pub async fn consume_stock_reservation(
     .await?;
 
     crate::pilotage::notifications::stock(&mut tx, actor).await?;
+    let item = fetch_intervention_part_by_id(&mut tx, actor, &item_id).await?;
+    crate::terrain::record(&mut tx, actor, &item, 200).await?;
     tx.commit().await?;
-
-    fetch_intervention_part_by_id(pool, &item_id).await
+    Ok(item)
 }
 
 pub async fn release_stock_reservation(
@@ -2696,7 +2698,8 @@ async fn fetch_stock_movement_by_id(
 }
 
 async fn fetch_intervention_part_by_id(
-    pool: &SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
+    actor: &Actor,
     id: &str,
 ) -> Result<InterventionPart, MaintError> {
     let r: Option<InterventionPart> = sqlx::query_as(
@@ -2709,11 +2712,13 @@ async fn fetch_intervention_part_by_id(
         FROM intervention_parts ip
         JOIN parts p ON p.id = ip.part_id
         JOIN locations l ON l.id = ip.location_id
-        WHERE ip.id = ? AND ip.deleted_at IS NULL
+        WHERE ip.id = ? AND ip.deleted_at IS NULL AND (? OR ip.site_id = ?)
         "#,
     )
     .bind(id)
-    .fetch_optional(pool)
+    .bind(actor.is_admin())
+    .bind(&actor.site_id)
+    .fetch_optional(conn)
     .await?;
 
     r.ok_or_else(|| MaintError::NotFound("Pièce d'intervention".into()))

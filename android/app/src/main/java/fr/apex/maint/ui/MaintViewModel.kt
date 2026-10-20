@@ -216,8 +216,7 @@ class MaintViewModel(val container: AppContainer, private val saved: SavedStateH
         container.gate.withLock { container.repo.resolve(requireNotNull(container.actor), id, retry, reviewedVersion) }
         reload(); container.schedule()
     }
-    fun consume(interventionId: String, partId: String, locationId: String, quantity: Int) = run(
-        "Connexion interrompue. Rechargez les pièces consommées avant de répéter la sortie : le serveur peut l’avoir enregistrée.") {
+    fun consume(interventionId: String, partId: String, locationId: String, quantity: Int) = run {
         container.gate.withLock {
             container.repo.consume(requireNotNull(container.actor), interventionId, partId, locationId, quantity)
         }
@@ -229,13 +228,18 @@ class MaintViewModel(val container: AppContainer, private val saved: SavedStateH
         withContext(Dispatchers.Main) { done(result) }
     }
     fun upload(id: String, uri: Uri, photo: Boolean) = run {
-        container.gate.withLock {
+        try { container.gate.withLock {
             val a = requireNotNull(container.actor)
             container.repo.detail(a, "interventions", id)
             documents.upload(a, id, uri, photo)
-        }
+        } } finally { if (photo) java.io.File(requireNotNull(uri.path)).delete() }
         withContext(Dispatchers.Main) { if (mutable.value.resourceKey == "interventions:$id") select("interventions", id) }
         message("Document ajouté sur le serveur")
+    }
+    fun photoCaptured(id: String, uri: Uri) {
+        // Déplacer avant onResume, même si l’envoi attend le verrou de session.
+        try { upload(id, documents.claimPhoto(uri), true) }
+        catch (_: Exception) { documents.deletePhoto(uri); message("Capture indisponible") }
     }
     fun openDocument(document: JsonObject) = run {
         val version = document["current_version"] as? JsonObject ?: error("Version du document absente")

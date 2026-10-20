@@ -40,9 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.*
 import fr.apex.maint.data.*
 import kotlinx.serialization.json.*
-import java.io.File
 import java.time.Instant
-import java.util.UUID
 
 private val labels = mapOf(
     "open" to "Ouverte", "in_progress" to "En cours", "completed" to "Clôturée", "cancelled" to "Annulée",
@@ -606,16 +604,17 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         uri?.let { vm.upload(interventionId, it, false) }
     }
     val photo = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) photoUri?.let { vm.upload(interventionId, Uri.parse(it), true) }
+        if (success) photoUri?.let { vm.photoCaptured(interventionId, Uri.parse(it)) }
         else photoUri?.let { context.contentResolver.delete(Uri.parse(it), null, null) }
         photoUri = null
     }
     fun takePhoto() {
-        val file = File(File(context.cacheDir, "photos").apply { mkdirs() }, "${UUID.randomUUID()}.jpg")
+        val file = TemporaryFiles(context.cacheDir).create("jpg")
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         photoUri = uri.toString()
-        try { photo.launch(uri) } catch (_: android.content.ActivityNotFoundException) {
-            file.delete(); photoUri = null; vm.message("Aucune application photo disponible")
+        try { photo.launch(uri) } catch (e: Exception) {
+            file.delete(); photoUri = null
+            vm.message(if (e is android.content.ActivityNotFoundException) "Aucune application photo disponible" else "Capture indisponible")
         }
     }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->

@@ -6,7 +6,8 @@ import java.time.Instant
 import java.util.UUID
 
 /** Le conteneur sérialise ses appels avec la session et le Worker. */
-class Repository(private val db: MaintDatabase, cipher: PayloadCipher, private val api: () -> MaintApi) {
+class Repository(private val db: MaintDatabase, cipher: PayloadCipher,
+    private val stockConsumption: StockConsumption, private val api: () -> MaintApi) {
     private val dao = EncryptedDao(db.dao(), cipher)
     private var protected = false
     suspend fun protectCache() {
@@ -244,9 +245,8 @@ class Repository(private val db: MaintDatabase, cipher: PayloadCipher, private v
     suspend fun consume(actor: Actor, interventionId: String, partId: String, locationId: String, quantity: Int) {
         require(actor.can("stock.movements")) { "Sortie de pièces non autorisée" }
         require(quantity > 0) { "La quantité doit être positive" }
-        detail(actor, "interventions", interventionId)
-        api().post("api/interventions/${encode(interventionId)}/parts", obj("part_id" to partId.j(),
-            "location_id" to locationId.j(), "quantity" to quantity.j()).requestBody()).checked()
+        stockConsumption.consume(actor, interventionId, obj("part_id" to partId.j(),
+            "location_id" to locationId.j(), "quantity" to quantity.j()))
     }
 }
 fun encode(value: String): String = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")

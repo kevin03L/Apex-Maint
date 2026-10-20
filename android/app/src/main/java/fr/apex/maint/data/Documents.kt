@@ -14,9 +14,11 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
-import java.util.UUID
 
 class Documents(private val context: Context, private val api: () -> MaintApi) {
+    private val temporary = TemporaryFiles(context.cacheDir)
+    fun claimPhoto(uri: Uri): Uri = Uri.fromFile(temporary.claimPhoto(requireNotNull(uri.lastPathSegment)))
+    fun deletePhoto(uri: Uri) { context.contentResolver.delete(uri, null, null) }
     // Les deux plafonds serveur ont un minimum de 1 Mio, mais seul le plafond documentaire
     // est exposé aux comptes settings.view. Ce client utilise le minimum sûr pour tous.
     val limit = 1024L * 1024
@@ -24,13 +26,12 @@ class Documents(private val context: Context, private val api: () -> MaintApi) {
         require(actor.can("documents.create")) { "Ajout de documents non autorisé" }
         require(!interventionId.startsWith("temp_")) { "Synchronisez d’abord l’intervention" }
         val resolver = context.contentResolver
-        val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+        val name = if (photo) "photo.jpg" else resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
-        } ?: if (photo) "photo.jpg" else "document"
+        } ?: "document"
         val safeName = if (photo) "photo.jpg" else name.substringAfterLast('/').substringAfterLast('\\')
             .filter { it >= ' ' && it != '"' }.take(180).ifBlank { "document" }
-        val folder = File(context.cacheDir, "documents").apply { mkdirs() }
-        val file = File(folder, "envoi_${UUID.randomUUID()}")
+        val file = temporary.create(external = false)
         try {
             requireNotNull(resolver.openInputStream(uri)).use { input -> file.outputStream().use { output ->
                 val buffer = ByteArray(8192); var size = 0L
@@ -41,6 +42,7 @@ class Documents(private val context: Context, private val api: () -> MaintApi) {
                     output.write(buffer, 0, count)
                 }
             } }
+            if (photo) File(requireNotNull(uri.path)).delete()
             if (photo) {
                 val orientation = runCatching { ExifInterface(file.path).getAttributeInt(
                     ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
@@ -74,13 +76,13 @@ class Documents(private val context: Context, private val api: () -> MaintApi) {
             api().post("api/documents", multipart).checked()
         } finally {
             file.delete()
-            if (photo && uri.authority == "${context.packageName}.files") resolver.delete(uri, null, null)
+            if (photo) File(requireNotNull(uri.path)).delete()
         }
     }
     suspend fun download(actor: Actor, documentId: String, extension: String): File {
         require(actor.can("documents.view")) { "Lecture non autorisée" }
         val suffix = extension.filter { it.isLetterOrDigit() }.take(10).ifBlank { "bin" }
-        val file = File(File(context.cacheDir, "documents").apply { mkdirs() }, "${UUID.randomUUID()}.$suffix")
+        val file = temporary.create(suffix)
         try {
             requireNotNull(api().download("api/documents/${encode(documentId)}/download?download=1").checked()).use { body ->
                 body.byteStream().use { input -> file.outputStream().use { output -> input.copyTo(output) } }
@@ -92,6 +94,7 @@ class Documents(private val context: Context, private val api: () -> MaintApi) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        try { context.startActivity(intent) }
+        catch (e: Exception) { file.delete(); throw e }
     }
 }

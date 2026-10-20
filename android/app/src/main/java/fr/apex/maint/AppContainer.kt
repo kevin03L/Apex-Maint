@@ -28,13 +28,16 @@ class AppContainer(val context: Context) {
     val gate = Mutex()
     val settings = Settings(context)
     val secure = SecureStore(context)
+    val temporary = TemporaryFiles(context.cacheDir).apply { purgeExpired() }
+    private val stockConsumption = StockConsumption({ secure.get("stock_attempts") },
+        { secure.put("stock_attempts", it) }) { api }
     val expired = MutableStateFlow(false)
     val revision = MutableStateFlow(0)
     val online = MutableStateFlow(isOnline())
     private var apiInstance: MaintApi? = null
     val api get() = requireNotNull(apiInstance) { "Configurez le serveur" }
     private val database = Room.databaseBuilder(context, MaintDatabase::class.java, "terrain.db").build()
-    val repo = Repository(database, secure.cipher) { api }
+    val repo = Repository(database, secure.cipher, stockConsumption) { api }
     var session: Session? = null; private set
     var actor: Actor? = null; private set
     var serverUrl: String? = null; private set
@@ -138,8 +141,8 @@ class AppContainer(val context: Context) {
         }
     }
     private fun clearFiles() {
-        // Uniquement les fichiers privés temporaires appartenant à ce client.
-        listOf("documents", "photos").forEach { java.io.File(context.cacheDir, it).deleteRecursively() }
+        temporary.clear()
+        secure.put("stock_attempts", null)
     }
     fun schedule() {
         val work = OneTimeWorkRequestBuilder<SyncWorker>()

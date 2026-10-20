@@ -1,4 +1,4 @@
-//! Tests boîte noire du catalogue de pièces et gestion du stock (Phase 4).
+﻿//! Tests boîte noire du catalogue de pièces et gestion du stock (Phase 4).
 //!
 //! Couvre l'ensemble des exigences de docs/specs/phase-4.md §6 et les décisions du 2026-10-18 (§7) :
 //! 1. CRUD et catalogue de pièces (référence unique par site, patch partiel, blocage suppression si stock > 0)
@@ -17,6 +17,100 @@ mod common;
 
 use common::{admin, create_equipment, demo, login, Server};
 use serde_json::json;
+
+#[test]
+fn idempotence_sorties_et_reservations() {
+    let srv = demo("stock-idempotence");
+    let (cookie, _) = login(&srv, "responsable", "demo1234");
+    let (other, _) = login(&srv, "technicien", "demo1234");
+    let (location, _) = create_location_hierarchy(&srv, &cookie, "IDEM");
+    let part = create_part(&srv, &cookie, "IDEM", "Pièce idempotente", 100, None);
+    let equipment = create_equipment(&srv, &cookie, "EQ-IDEM", "Équipement de test");
+    let entry = srv.session_call(
+        "POST",
+        "/api/stock/movements",
+        Some(&cookie),
+        Some(&json!({
+            "part_id":part,"movement_type":"in","to_location_id":location,"quantity":30,
+            "unit_price_cents":100,"reason":"Stock de test"
+        })),
+    );
+    assert_eq!(entry.status, 201, "{}", entry.text());
+    let intervention = srv.session_call("POST", "/api/interventions", Some(&cookie), Some(&json!({
+        "title":"Test idempotence stock","type":"corrective","priority":"high","equipment_id":equipment
+    })));
+    assert_eq!(intervention.status, 201, "{}", intervention.text());
+    let id = intervention.json()["id"].as_str().unwrap().to_owned();
+    let route = format!("/api/interventions/{id}/parts");
+    let body = json!({"part_id":part,"location_id":location,"quantity":2});
+    let key = uuid::Uuid::now_v7().to_string();
+    let call = |path: &str, cookie: &str, key: &str, body: &serde_json::Value| {
+        common::request_with_headers(
+            srv.port(),
+            "POST",
+            path,
+            None,
+            Some(body),
+            &[("Cookie", cookie), ("Idempotency-Key", key)],
+        )
+        .unwrap()
+    };
+    let first = call(&route, &cookie, &key, &body);
+    assert_eq!(first.status, 201, "{}", first.text());
+    let replay = call(&route, &cookie, &key, &body);
+    assert_eq!(replay.status, first.status);
+    assert_eq!(replay.text(), first.text());
+    let changed = json!({"part_id":part,"location_id":location,"quantity":3});
+    assert_eq!(call(&route, &cookie, &key, &changed).status, 422);
+    assert_eq!(call(&route, &other, &key, &body).status, 422);
+    let movements = srv.session_call(
+        "GET",
+        &format!("/api/stock/movements?part_id={part}&movement_type=out"),
+        Some(&cookie),
+        None,
+    );
+    assert_eq!(movements.json()["items"].as_array().unwrap().len(), 1);
+    // Sans clé, deux validations restent deux sorties distinctes.
+    let a = srv.session_call("POST", &route, Some(&cookie), Some(&body));
+    let b = srv.session_call("POST", &route, Some(&cookie), Some(&body));
+    assert_eq!(a.status, 201);
+    assert_eq!(b.status, 201);
+    assert_ne!(a.json()["id"], b.json()["id"]);
+    let reservation = srv.session_call(
+        "POST",
+        &format!("/api/interventions/{id}/reservations"),
+        Some(&cookie),
+        Some(&json!({
+            "part_id":part,"location_id":location,"quantity":4
+        })),
+    );
+    assert_eq!(reservation.status, 201, "{}", reservation.text());
+    let consume = format!(
+        "/api/reservations/{}/consume",
+        reservation.json()["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        call(&consume, &cookie, &key, &json!({"quantity":2})).status,
+        422
+    );
+    let key = uuid::Uuid::now_v7().to_string();
+    let a = call(&consume, &cookie, &key, &json!({"quantity":2}));
+    let b = call(&consume, &cookie, &key, &json!({"quantity":2}));
+    assert_eq!(a.status, 200, "{}", a.text());
+    assert_eq!(a.status, b.status);
+    assert_eq!(a.text(), b.text());
+    assert_eq!(
+        call(&consume, &cookie, &key, &json!({"quantity":1})).status,
+        422
+    );
+    let movements = srv.session_call(
+        "GET",
+        &format!("/api/stock/movements?part_id={part}&movement_type=out"),
+        Some(&cookie),
+        None,
+    );
+    assert_eq!(movements.json()["items"].as_array().unwrap().len(), 4);
+}
 
 fn create_location_hierarchy(srv: &Server, cookie: &str, suffix: &str) -> (String, String) {
     let r_mag = srv.session_call(

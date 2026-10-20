@@ -64,7 +64,7 @@ Les cinq routes de la spécification conservent leurs corps/réponses de phase 3
 - `Idempotency-Key: UUID` : réponse réussie stockée dans la même transaction que l'écriture et
   l'audit. Une répétition renvoie le même code et le même corps, même après redémarrage.
   Les refus métier 4xx sont également mémorisés après annulation de l'opération.
-- Réutilisation par un autre utilisateur, un autre site actuel ou une autre route : 422.
+- Réutilisation par un autre utilisateur, un autre site actuel, un autre corps ou une autre route : 422.
   Les permissions actuelles sont contrôlées avant le rejeu. Conservation : trente jours.
 - `X-Occurred-At: RFC3339` : date d'action entre réception −7 jours et réception +5 minutes,
   jamais antérieure à l'étape précédente. Sinon, date de réception et audit
@@ -77,6 +77,12 @@ Les cinq routes de la spécification conservent leurs corps/réponses de phase 3
 Les requêtes sans précondition restent acceptées. La version `updated_at` de la réponse
 de saisie de temps est celle de l'intervention après recalcul de sa durée, lue et mémorisée
 avec la réponse idempotente dans la même transaction.
+
+Le mécanisme couvre aussi les deux routes de consommation de stock décrites dans
+[API-PHASE-4.md](API-PHASE-4.md). La migration **0016** ajoute une empreinte SHA-256
+des octets exacts du corps (maximum 64 Kio avec clé) à toutes les nouvelles clés.
+Les anciennes clés sans empreinte restent compatibles jusqu’à leur purge habituelle.
+Un rejeu doit donc conserver exactement le corps initial, y compris sa sérialisation.
 
 La file hors ligne envoie la version initiale de l'instantané sur chaque opération portant
 sur une intervention existante. Après un acquittement conditionné, elle chaîne uniquement

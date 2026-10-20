@@ -12,6 +12,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 pub struct Operation {
     pub key: Option<String>,
     pub route: String,
+    pub request_hash: Option<String>,
     pub occurred_at: Option<String>,
     pub unmodified_since: Option<String>,
 }
@@ -26,9 +27,9 @@ pub async fn record<T: Serialize>(
     let context = OPERATION.try_with(Clone::clone).ok();
     if let Some(context) = context {
         if let Some(key) = context.key {
-            sqlx::query("INSERT INTO idempotency_keys(key,user_id,site_id,route,response_code,response_body,created_at) VALUES(?,?,?,?,?,?,?)")
+            sqlx::query("INSERT INTO idempotency_keys(key,user_id,site_id,route,response_code,response_body,created_at,request_hash) VALUES(?,?,?,?,?,?,?,?)")
                 .bind(key).bind(&actor.user_id).bind(&actor.site_id).bind(context.route).bind(i64::from(code))
-                .bind(serde_json::to_string(value).map_err(|e| MaintError::Internal(e.to_string()))?).bind(store::now()).execute(conn).await?;
+                .bind(serde_json::to_string(value).map_err(|e| MaintError::Internal(e.to_string()))?).bind(store::now()).bind(context.request_hash).execute(conn).await?;
         }
     }
     Ok(())

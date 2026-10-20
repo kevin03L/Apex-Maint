@@ -15,6 +15,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -109,6 +110,8 @@ fn synchronizable(method: &str, path: &str) -> bool {
                 ]
             )
             | ("PUT", ["interventions", _, "technicians", _, "time"])
+            | ("POST", ["interventions", _, "parts"])
+            | ("POST", ["reservations", _, "consume"])
     )
 }
 
@@ -117,8 +120,13 @@ pub async fn synchronize(State(state): State<AppState>, req: Request, next: Next
         .uri()
         .path()
         .strip_prefix("/api")
-        .unwrap_or(req.uri().path());
-    if !synchronizable(req.method().as_str(), path) {
+        .unwrap_or(req.uri().path())
+        .to_owned();
+    if !synchronizable(req.method().as_str(), &path) {
+        return next.run(req).await;
+    }
+    let stock = path.ends_with("/parts") || path.starts_with("/reservations/");
+    if stock && !req.headers().contains_key("idempotency-key") {
         return next.run(req).await;
     }
     let Some(session) = req.extensions().get::<Session>().cloned() else {
@@ -147,17 +155,40 @@ pub async fn synchronize(State(state): State<AppState>, req: Request, next: Next
             Ok(Operation {
                 key,
                 route,
+                request_hash: None,
                 occurred_at: header("x-occurred-at")?,
                 unmodified_since: header("if-unmodified-since")?,
             })
         })()
     };
-    let context = match context {
+    let mut context = match context {
         Ok(c) => c,
         Err(e) => return ApiError::from(e).into_response(),
     };
+    // Le corps exact identifie la tentative et est restitué au handler.
+    let req = if context.key.is_some() {
+        let (parts, body) = req.into_parts();
+        let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return ApiError::from(MaintError::BadRequest("Corps limité à 64 Kio".into()))
+                    .into_response()
+            }
+        };
+        context.request_hash = Some(format!("{:x}", Sha256::digest(&bytes)));
+        Request::from_parts(parts, axum::body::Body::from(bytes))
+    } else {
+        req
+    };
+    if stock {
+        if let Err(e) = session.actor.require_permission(Permission::StockMovements) {
+            return ApiError::from(e).into_response();
+        }
+    }
     if let Err(e) = session.actor.require_permission(
-        if req.method() == "POST"
+        if stock && context.route.starts_with("POST /reservations/") {
+            Permission::StockMovements
+        } else if req.method() == "POST"
             && (path == "/interventions" || path.ends_with("/sub-interventions"))
         {
             Permission::InterventionsCreate
@@ -184,21 +215,22 @@ pub async fn synchronize(State(state): State<AppState>, req: Request, next: Next
         None
     };
     if let Some(key) = &context.key {
-        let cached = sqlx::query_as::<_, (String, Option<String>, String, i64, String)>(
-            "SELECT user_id,site_id,route,response_code,response_body FROM idempotency_keys WHERE key=?",
+        let cached = sqlx::query_as::<_, (String, Option<String>, String, i64, String, Option<String>)>(
+            "SELECT user_id,site_id,route,response_code,response_body,request_hash FROM idempotency_keys WHERE key=?",
         )
         .bind(key)
         .fetch_optional(&state.pool)
         .await;
         match cached {
             Err(e) => return ApiError::from(e).into_response(),
-            Ok(Some((user, site, route, code, body))) => {
+            Ok(Some((user, site, route, code, body, request_hash))) => {
                 if user != session.actor.user_id
                     || site != session.actor.site_id
                     || route != context.route
+                    || request_hash.is_some_and(|hash| Some(&hash) != context.request_hash.as_ref())
                 {
                     return ApiError::from(MaintError::Unprocessable(
-                        "Clé déjà utilisée par un autre utilisateur ou une autre route".into(),
+                        "Clé déjà utilisée par un autre utilisateur, site, corps ou une autre route".into(),
                     ))
                     .into_response();
                 }

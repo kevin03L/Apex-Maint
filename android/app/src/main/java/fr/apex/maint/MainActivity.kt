@@ -14,6 +14,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import fr.apex.maint.ui.*
 
 class MainActivity : ComponentActivity() {
+    override fun onPause() {
+        (application as MaintApplication).container.temporary.paused()
+        super.onPause()
+    }
+    override fun onResume() {
+        super.onResume()
+        // Les résultats de capture sont distribués avant la reprise de l’activité.
+        (application as MaintApplication).container.temporary.resumed()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
