@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -15,6 +17,25 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+    }
+    // Signature release : fichier hors dépôt (chemin par défaut ou APEX_MAINT_KEYSTORE_PROPERTIES).
+    // Sans ce fichier, la variante release est produite non signée.
+    val signature = file(
+        System.getenv("APEX_MAINT_KEYSTORE_PROPERTIES")
+            ?: "${System.getProperty("user.home")}/.apex-maint/signature/keystore.properties"
+    )
+    if (signature.isFile) {
+        val props = Properties()
+        signature.inputStream().use { stream -> props.load(stream) }
+        signingConfigs {
+            create("release") {
+                storeFile = file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+        buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {

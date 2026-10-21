@@ -24,7 +24,24 @@ adb devices
 adb -s IDENTIFIANT install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Android Studio peut également lancer l’application sur un émulateur téléphone et un émulateur tablette API 36. Les versions release ne sont pas signées : aucune clé ni configuration de signature privée n’est fournie.
+Android Studio peut également lancer l’application sur un émulateur téléphone et un émulateur tablette API 36.
+
+### Version release signée
+
+La clé de signature n’est jamais dans le dépôt. Gradle lit un fichier `keystore.properties`
+(`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) situé par défaut dans
+`%USERPROFILE%\.apex-maint\signature\`, ou à l’emplacement indiqué par la variable
+d’environnement `APEX_MAINT_KEYSTORE_PROPERTIES`. Sans ce fichier, la variante release est produite
+non signée.
+
+```powershell
+.\gradlew.bat assembleRelease
+```
+
+L’APK signé est produit dans `app/build/outputs/apk/release/app-release.apk`. Sauvegarder la clé
+et son fichier de propriétés hors de la machine (coffre de mots de passe ou support chiffré) : une
+clé perdue empêche toute mise à jour de l’application déjà installée. La minification R8 n’est pas
+activée.
 
 ## Serveur, certificat et connexion
 
