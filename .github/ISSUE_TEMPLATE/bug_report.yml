@@ -1,0 +1,54 @@
+name: Signaler un bogue
+description: Décrire un problème reproductible dans Apex Maint.
+title: "Bogue : "
+body:
+  - type: markdown
+    attributes:
+      value: "Pour une vulnérabilité, utilisez le [signalement privé](https://github.com/kevin03L/Apex-Maint/security/advisories/new). Ne joignez ni secrets ni données d’exploitation."
+  - type: input
+    id: revision
+    attributes:
+      label: Version ou révision
+      description: Version du serveur, commit et version Android si concernée.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Composant
+      options:
+        - Interface web / PWA
+        - Application Android
+        - Serveur / API
+        - Installation / administration
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environnement
+      description: Système, navigateur ou appareil Android, mode portable/service, rôle et configuration pertinente sans secret.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Étapes de reproduction
+      description: Sur une instance de test temporaire, sans données d’exploitation.
+      placeholder: "1. Ouvrir…\n2. Choisir…\n3. Observer…"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportement attendu
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Comportement observé
+      description: Messages d’erreur, captures de démonstration et extraits de journaux expurgés si utiles.
+    validations:
+      required: true

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260" role="img" aria-labelledby="titre description">
+  <title id="titre">Apex Maint</title>
+  <desc id="description">GMAO multi-sites de la gamme Apex, logo sur fond bleu nuit avec accents cyan et indigo.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="1198" height="258" rx="24" fill="#070d1a" stroke="#818cf8" stroke-opacity="0.6"/>
+  <path d="M840 258 975 28 1110 258M945 258 1080 28 1198 230" fill="none" stroke="url(#accent)" stroke-width="2" opacity="0.18"/>
+  <!-- Tracés du logo existant : packaging/icons/apex-maint.svg. -->
+  <g transform="translate(48 42) scale(0.6875)">
+    <rect x="8" y="8" width="240" height="240" rx="52" fill="#17375E"/>
+    <polyline points="56,188 128,64 200,188" fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="128" cy="166" r="20" fill="#3DDC84"/>
+  </g>
+  <g font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+    <text x="260" y="127" fill="#f8fafc" font-size="60" font-weight="700">Apex Maint</text>
+    <text x="263" y="174" fill="#38bdf8" font-size="25">GMAO multi-sites</text>
+  </g>
+  <rect x="263" y="197" width="270" height="3" rx="1.5" fill="url(#accent)"/>
+</svg>

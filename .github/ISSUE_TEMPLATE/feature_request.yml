@@ -1,0 +1,28 @@
+name: Proposer une évolution
+description: Expliquer un besoin métier et le résultat souhaité.
+title: "Évolution : "
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Besoin et contexte
+      description: Qui rencontre ce besoin et dans quel parcours de maintenance ?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Résultat souhaité
+      description: Décrivez un exemple concret et les critères de réussite.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Solutions alternatives
+      description: Contournements actuels et autres solutions envisagées.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Périmètre et contraintes
+      description: Web, Android, API, rôles, sites, hors ligne ou exploitation ; liens vers les tickets connexes si utiles.
