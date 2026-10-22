@@ -11,6 +11,9 @@ trap 'rm -rf "$root"' EXIT HUP INT TERM
 install -d "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/apex-maint/static" "$root/usr/share/applications" "$root/usr/share/polkit-1/rules.d" "$root/lib/systemd/system" "$root/usr/share/doc/apex-maint" "$root/etc/apex-maint"
 install -m755 target/release/apex-maint target/release/apex-maint-admin "$root/usr/bin/"
 cp -R static/. "$root/usr/share/apex-maint/static/"
+# Droits fixes : une copie depuis un volume Windows rendrait les fichiers web exécutables.
+find "$root/usr/share/apex-maint/static" -type d -exec chmod 755 {} +
+find "$root/usr/share/apex-maint/static" -type f -exec chmod 644 {} +
 install -m644 packaging/linux/systemd/apex-maint.service "$root/lib/systemd/system/"
 install -m644 packaging/linux/polkit/50-apex-maint.rules "$root/usr/share/polkit-1/rules.d/"
 install -m644 packaging/linux/apex-maint-admin.desktop "$root/usr/share/applications/"
