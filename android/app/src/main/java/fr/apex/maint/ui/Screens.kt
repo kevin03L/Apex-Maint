@@ -95,7 +95,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
 }
 @Composable internal fun rememberDraft(vm: MaintViewModel, key: String, initial: String): MutableState<String> {
     val s by vm.state.collectAsStateWithLifecycle()
-    val context = "brouillon:${s.server}:${s.actor?.scope}:$key"
+    val context = draftContext(s.server, s.actor?.scope, key, s.draftRevisions)
     val cipher = vm.container.secure.cipher
     val saver = Saver<MutableState<String>, String>(
         save = { cipher.encrypt(context, it.value) },
@@ -183,7 +183,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             if (s.actor != null && route in setOf("terrain/{id}", "stock/{id}", "equipement/{id}", "creation"))
                 IconButton({ if (!nav.popBackStack()) nav.navigate("terrain") }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Retour à la liste") }
         }, actions = {
-            if (s.actor != null && !s.expired && s.session?.must_change_password != true && s.session?.user?.must_change_password != true) IconButton({ vm.sync() }, enabled = !s.busy && s.online) {
+            if (s.actor != null && !s.expired && s.session?.must_change_password != true && s.session?.user?.must_change_password != true) IconButton({ vm.sync() }, enabled = !s.busy) {
                 Icon(Icons.Default.Sync, "Synchroniser puis actualiser les données")
             }
             if (s.session != null) IconButton({ logout = true }) { Icon(Icons.Default.Logout, "Se déconnecter") }
@@ -212,7 +212,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
                                 if (s.operations.isNotEmpty()) operationCount(s.operations.size) else "Consultation du cache local",
                                 if (conflicts > 0) "$conflicts à résoudre" else null).joinToString(" · "),
                                 Modifier.weight(1f).padding(vertical = 12.dp))
-                            IconButton({ nav.navigate("sync") { launchSingleTop = true } }) { Icon(Icons.Default.CloudUpload, "Voir la file et les conflits") }
+                            IconButton({ destination("sync") }) { Icon(Icons.Default.CloudUpload, "Voir la file et les conflits") }
                         }
                     }
                     val entries = buildList {
@@ -656,7 +656,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
     Page {
         Text("Synchronisation", style = MaterialTheme.typography.headlineSmall)
         Text("Dernier instantané : ${if (s.lastSync == null) "Aucun" else frenchDate(s.lastSync)}")
-        Action("Synchroniser maintenant", s.online && !s.busy) { vm.sync() }
+        Action("Synchroniser maintenant", !s.busy) { vm.sync() }
         if (!s.online) Text("Vos modifications seront envoyées au retour du réseau.")
         s.operations.forEach { op ->
             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

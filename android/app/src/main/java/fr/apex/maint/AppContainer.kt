@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
 import androidx.room.Room
 import androidx.work.*
 import fr.apex.maint.data.*
@@ -14,7 +13,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
-import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -34,6 +32,11 @@ class AppContainer(val context: Context) {
     val expired = MutableStateFlow(false)
     val revision = MutableStateFlow(0)
     val online = MutableStateFlow(isOnline())
+    private val networkState = NetworkState<Network> { value ->
+        val wasOnline = online.value
+        online.value = value
+        if (value && !wasOnline) schedule()
+    }
     private var apiInstance: MaintApi? = null
     val api get() = requireNotNull(apiInstance) { "Configurez le serveur" }
     private val database = Room.databaseBuilder(context, MaintDatabase::class.java, "terrain.db").build()
@@ -44,18 +47,18 @@ class AppContainer(val context: Context) {
 
     fun isOnline(): Boolean {
         val cm = context.getSystemService(ConnectivityManager::class.java)
-        return cm.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        return cm.activeNetwork != null
+    }
+    fun refreshNetwork() {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        networkState.refresh(cm.activeNetwork)
     }
     fun observeNetwork() {
+        refreshNetwork()
         context.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(
             object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { online.value = isOnline(); if (online.value) schedule() }
-                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                    val wasOnline = online.value
-                    online.value = isOnline()
-                    if (online.value && !wasOnline) schedule()
-                }
-                override fun onLost(network: Network) { online.value = isOnline() }
+                override fun onAvailable(network: Network) { networkState.available(network) }
+                override fun onLost(network: Network) { networkState.lost(network) }
             })
         val periodic = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
@@ -64,8 +67,8 @@ class AppContainer(val context: Context) {
     private fun configure(url: String) {
         serverUrl = url
         // Refus de toute redirection : aucun identifiant ou document vers une autre origine.
-        val client = OkHttpClient.Builder().cookieJar(PersistentCookieJar(secure))
-            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).callTimeout(60, TimeUnit.SECONDS)
+        val client = maintHttpClientBuilder().cookieJar(PersistentCookieJar(secure))
+            .followRedirects(false).followSslRedirects(false).callTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val expected = url.toHttpUrl()
                 val request = chain.request()

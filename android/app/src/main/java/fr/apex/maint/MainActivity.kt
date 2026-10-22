@@ -22,6 +22,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Les résultats de capture sont distribués avant la reprise de l’activité.
         (application as MaintApplication).container.temporary.resumed()
+        (application as MaintApplication).container.refreshNetwork()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

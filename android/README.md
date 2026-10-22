@@ -168,6 +168,8 @@ Repères officiels : [compatibilité AGP et Gradle](https://developer.android.co
 
 ## Vérifications et recette après audit du 20 octobre 2026
 
+**Révision de recette du 21 octobre :** voir [les causes, corrections, tests et résultats A1–A4](AUDIT.md#recette-du-21-octobre-2026--corrections-et-diagnostic). Pool HTTP inactif limité à 5 secondes et reprise protégée contre les doubles écritures ; réseau local accepté sans validation Internet ; synchronisation manuelle toujours tentée ; abandon avec rechargement serveur et invalidation des brouillons ; ouverture de Synchronisation par la gestion commune des onglets. Build, tests et lint de cette révision bloqués avant compilation par le verrou Gradle ; aucun nouvel APK ni rejeu émulateur. Les résultats ci-dessous concernent les révisions précédentes.
+
 L’audit et ses corrections sont détaillés dans [AUDIT.md](AUDIT.md). Le complément corrige l’idempotence du stock côté Rust/Android et la durée de vie des fichiers temporaires. Aucun serveur ni base d’exploitation n’a été lancé et aucun fichier `static/` n’a été modifié. Les tests serveur utilisent uniquement leurs instances portables temporaires.
 
 La commande demandée a été essayée avec le JBR d’Android Studio :

@@ -29,6 +29,7 @@ data class UiState(
     val lastSync: String? = null,
     val refreshing: Boolean = false,
     val aliases: Map<String, String> = emptyMap(),
+    val draftRevisions: Map<String, String> = emptyMap(),
 )
 
 class MaintViewModel(val container: AppContainer, private val saved: SavedStateHandle) : ViewModel() {
@@ -59,13 +60,16 @@ class MaintViewModel(val container: AppContainer, private val saved: SavedStateH
             try { withContext(Dispatchers.IO) { work() } }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
+                debugFailure("action au premier plan", e)
                 if (e is ApiFailure && e.code == "password_change_required")
                     mutable.update { it.copy(session = it.session?.copy(must_change_password = true)) }
-                val message = if (networkMessage != null && e is IOException && e !is LocalStorageFailure) networkMessage else when (e) {
+                val message = if (networkMessage != null && e is IOException && e !is LocalStorageFailure && e !is DocumentFileFailure) networkMessage else when (e) {
                     is javax.net.ssl.SSLException -> "Certificat refusé. Vérifiez l’autorité installée et le nom du serveur."
                     is java.net.UnknownHostException -> "Nom du serveur introuvable. Vérifiez l’URL et le réseau."
                     is java.net.SocketTimeoutException -> "Le serveur ne répond pas dans le délai prévu."
                     is LocalStorageFailure -> e.message.orEmpty()
+                    is DocumentFileFailure -> e.message.orEmpty()
+                    is java.io.FileNotFoundException -> "Le fichier local est indisponible. Sélectionnez-le à nouveau."
                     is IOException -> "Connexion impossible. Vérifiez le réseau puis réessayez."
                     is kotlinx.serialization.SerializationException -> "La réponse du serveur est illisible."
                     is android.content.ActivityNotFoundException -> "Aucune application ne peut ouvrir ce document."
@@ -91,13 +95,15 @@ class MaintViewModel(val container: AppContainer, private val saved: SavedStateH
             val lastSync = actor?.let { container.repo.item(it, "meta", "delta")?.text("generated_at") }
             val aliases = actor?.let { a -> container.repo.collection(a, "aliases").associate {
                 requireNotNull(it.text("id")) to requireNotNull(it.text("real_id")) } }.orEmpty()
+            val draftRevisions = actor?.let { a -> container.repo.collection(a, "draft_revisions").associate {
+                requireNotNull(it.text("id")) to requireNotNull(it.text("revision")) } }.orEmpty()
             val selected = if (actor?.scope == oldScope) mutable.value.resourceKey?.let { key ->
                 val collection = key.substringBefore(':'); val id = key.substringAfter(':')
                 actor?.let { container.repo.item(it, collection, id) }
             } else null
             mutable.update { old -> old.copy(ready = true, server = container.serverUrl, session = session, actor = actor,
                 interventions = interventions, equipments = equipments, parts = parts,
-                operations = operations, lastSync = lastSync, aliases = aliases,
+                operations = operations, lastSync = lastSync, aliases = aliases, draftRevisions = draftRevisions,
                 selected = selected,
                 documents = old.documents.takeIf { actor?.scope == oldScope }.orEmpty(),
                 consumed = old.consumed.takeIf { actor?.scope == oldScope }.orEmpty(),
@@ -128,6 +134,7 @@ class MaintViewModel(val container: AppContainer, private val saved: SavedStateH
         try { work() } finally { mutable.update { it.copy(refreshing = false) } }
     }
     fun sync() = refresh {
+        container.refreshNetwork()
         val done = container.synchronize(); reload()
         mutable.update { it.copy(message = if (done) "Synchronisation terminée : données actualisées" else "Envoi interrompu : une nouvelle tentative est prévue") }
         if (!done) container.schedule()
@@ -239,7 +246,7 @@ class MaintViewModel(val container: AppContainer, private val saved: SavedStateH
     fun photoCaptured(id: String, uri: Uri) {
         // Déplacer avant onResume, même si l’envoi attend le verrou de session.
         try { upload(id, documents.claimPhoto(uri), true) }
-        catch (_: Exception) { documents.deletePhoto(uri); message("Capture indisponible") }
+        catch (e: Exception) { debugFailure("récupération de capture", e); documents.deletePhoto(uri); message("Capture indisponible") }
     }
     fun openDocument(document: JsonObject) = run {
         val version = document["current_version"] as? JsonObject ?: error("Version du document absente")

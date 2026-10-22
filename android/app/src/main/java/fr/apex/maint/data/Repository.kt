@@ -207,37 +207,8 @@ class Repository(private val db: MaintDatabase, cipher: PayloadCipher,
         })
     }
     suspend fun resolve(actor: Actor, id: String, retry: Boolean, reviewedVersion: String? = null) {
-        val op = operations(actor).first { it.id == id && it.state == "conflict" }
-        if (!retry) {
-            db.withTransaction {
-                val target = op.tempId ?: op.dependsOn
-                operations(actor).filter { it.id == id || (op.tempId != null && it.dependsOn == op.tempId) }
-                    .forEach { dao.operation(it.copy(state = "abandoned", deletedAt = Instant.now().toString())) }
-                if (op.tempId != null) retireItem(actor, "interventions", op.tempId)
-                else if (target != null) {
-                    item(actor, "server_interventions", target)?.let { server ->
-                        save(actor, "interventions", LocalProjection.replay(server,
-                            operations(actor).filter { it.dependsOn == target }))
-                    }
-                }
-            }
-            return
-        }
-        val fresh = op.dependsOn?.takeUnless { it.startsWith("temp_") }?.let {
-            api().get("api/interventions/${encode(it)}").checked().objectOrEmpty()
-        }
-        require(fresh == null || fresh.text("updated_at") == reviewedVersion) {
-            "L’intervention a encore changé. Rechargez et comparez à nouveau."
-        }
-        db.withTransaction {
-            if (fresh != null) save(actor, "server_interventions", fresh)
-            // Un refus 4xx est mémorisé côté serveur : une nouvelle tentative doit avoir une nouvelle clé.
-            dao.operation(op.copy(state = "replaced", deletedAt = Instant.now().toString()))
-            dao.operation(op.copy(id = UUID.randomUUID().toString(), state = "pending", error = null,
-                errorStatus = null, version = fresh?.text("updated_at")))
-            if (fresh != null) save(actor, "interventions", LocalProjection.replay(fresh,
-                operations(actor).filter { it.dependsOn == op.dependsOn }))
-        }
+        ConflictResolver(dao, api) { work -> db.withTransaction { work() } }
+            .resolve(actor, id, retry, reviewedVersion)
     }
     suspend fun get(actor: Actor, path: String): JsonElement? {
         require(actor.siteId.isNotEmpty()); return api().get(path).checked()

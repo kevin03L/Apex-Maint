@@ -4,6 +4,44 @@ Revue des sources Kotlin de production et des tests, scripts Gradle et wrapper, 
 
 La revue est statique : aucun constat ne vaut certification de fonctionnement sur Android. Le build demandé est bloqué avant compilation par les permissions du bac à sable.
 
+## Recette du 21 octobre 2026 : corrections et diagnostic
+
+Relecture d'AGENTS.md, du rapport `C:/Users/Lerou/AppData/Local/Temp/apex-recette-20261021/RAPPORT.txt`, du diff et de tous les fichiers Kotlin non suivis de la session précédente. Modifications limitées à `android/`, sans commit ni branche, sans changement du serveur ni de `static/`. Les sections du 20 octobre ci-dessous sont historiques.
+
+**État : corrections terminées dans les sources, validation Android bloquée par le verrou Gradle. Aucun nouvel APK installé, aucun rejeu émulateur effectué pendant cette révision.** Les 70 tests du harnais JVM de la session précédente ne valident pas cette révision.
+
+| Recette | Cause réelle et correction |
+|---|---|
+| A1, documents | Le diagnostic complémentaire fourni montre une `SocketException` dans `socketWrite0`/`OutputStreamSink.write` : connexion keep-alive fermée pendant le sélecteur ou la capture, réutilisée sans reprise car `retryOnConnectionFailure(false)`. Le même envoi PC reçoit 201 pour technicien et responsable. `HttpTransport.kt` configure un pool de cinq connexions inactives au maximum, éviction après **5 secondes**, et active la récupération native OkHttp avec protection du rejeu. `AppContainer.configure` utilise ce constructeur avec le CookieJar existant, le contrôle d'origine, les redirections interdites et le délai global de 60 secondes. |
+| A2, abandon de conflit | Le cache serveur pouvait être ancien et le brouillon Compose survivait à l'abandon. `ConflictResolver.resolve` recharge la version serveur, contrôle site et identité, puis reconstruit la projection avec les seules opérations restantes et enregistre une révision de brouillon dans la même transaction Room. Un échec de rechargement conserve file et brouillon. `MaintViewModel.reload` publie ensemble projection et révisions. `DraftContext.kt` et `Screens.rememberDraft` utilisent cette révision dans la clé Compose et le contexte AES-GCM : l'ancien brouillon sauvegardé devient illisible et le formulaire repart de la projection serveur. Les autres interventions conservent leurs brouillons. Le réessai garde corps et ordre, renouvelle la clé et refuse une version modifiée depuis la comparaison. |
+| A3, réseau et régression | Relire `activeNetwork` dans `onLost` pouvait conserver un ancien réseau. La session précédente a introduit deux régressions : exigence INTERNET + VALIDATED, incompatible avec un atelier local ou l'émulateur, puis état hors ligne figé après toute IOException. `NetworkState` publie maintenant la présence du réseau par défaut dès `onAvailable`, traite directement sa perte et ignore la perte d'un ancien réseau après bascule. `isOnline`/`refreshNetwork` n'exigent aucune capacité Internet. La reprise d'activité relit le réseau. Les exceptions HTTP/E/S ne modifient plus cet indicateur et restent signalées par le message d'action. Les deux boutons Synchroniser restent activables hors ligne si aucune action n'est en cours ; la synchronisation manuelle relit l'état puis tente effectivement la requête. |
+| A4, Terrain restaure Synchronisation | Le bandeau empilait `sync` sur le détail Terrain ; cette pile était ensuite sauvegardée sous Terrain. Il passe maintenant par `destination("sync")`, comme la barre et le rail. La même fonction applique `popUpTo`, `saveState`, `restoreState` et `launchSingleTop`. Relecture des trois chemins de navigation ; validation visuelle encore nécessaire. |
+
+### Sécurité de la reprise HTTP
+
+La récupération native OkHttp écarte une connexion en échec et peut reprendre sur une connexion neuve ; aucun intercepteur ne rappelle manuellement `proceed`. Le corps enveloppé indique à OkHttp si la requête peut encore être rejouée (`isOneShot`). Les lectures et les opérations portant une `Idempotency-Key` restent rejouables ; terrain et sorties de pièces gardent exactement leur clé et leur corps. Les autres écritures sont marquées non rejouables dès le départ, notamment l'authentification et le changement de mot de passe, même si leur JSON serait techniquement relisible.
+
+Pour **POST /api/documents multipart**, sans clé serveur, le corps reste rejouable seulement tant que son écriture n'est pas terminée. Une rupture pendant l'écriture ne peut pas avoir créé le document selon le contrat établi pour cette route. Dès que le multipart complet est remis au transport, il devient non rejouable : une réponse perdue peut cacher un succès, donc aucune seconde création automatique. Cette règle est volontairement prudente si les derniers octets étaient encore tamponnés. Une erreur de fichier local désactive également la reprise. Les fichiers privés restent possédés jusqu'à la fin de l'appel suspendu ; champs multipart, limites mobiles et cookies restent inchangés. La distinction erreur locale/transport/refus HTTP et le diagnostic debug sans données sensibles de la session précédente sont conservés.
+
+### Tests et résultats de cette révision
+
+- `HttpTransportTest` : **5 nouveaux tests JVM**, utilisant le constructeur de production : fermeture après première réponse (`DISCONNECT_AT_END`) puis multipart réussi sur connexion neuve ; rupture pendant l'écriture sur connexion réutilisée (`DISCONNECT_DURING_REQUEST_BODY`) puis succès avec corps entier ; réponse perdue après document complet sans rejeu ; POST sans clé sans rejeu ; opération avec clé rejouée sur connexion neuve avec corps/clé identiques. Le test de rupture utilise 16 Mio pour dépasser les tampons socket ; il teste le transport, pas la limite mobile de 1 Mio.
+- `DocumentUploadTest` : **4 tests existants relus**, photo/PNG, cookie HttpOnly, MIME/métadonnées/longueur/octets exacts après purge de reprise, erreur locale et refus HTTP 415.
+- `ConflictResolverTest` : **6 tests**, dont deux ajouts : échec du rechargement pendant l'abandon sans mutation et refus d'une entité d'un autre site. Les autres couvrent projection serveur, conservation des autres actions, invalidation AES-GCM, réessai et abandon de création.
+- `NetworkStateTest` : **5 tests actualisés**, démarrage/reprise sans réseau, disponibilité immédiate du réseau local sans validation Internet, perte directe, bascule ignorant l'ancien réseau et récupération à la reprise sans nouveau callback. Les erreurs de transport n'entrent plus dans cette machine d'état.
+- Commande demandée exécutée dans `android/`, avec `JAVA_HOME=C:/Program Files/Android/Android Studio/jbr` : `gradlew.bat assembleDebug testDebugUnitTest lintDebug`. **Échec avant toute tâche**, code 1 : `FileNotFoundException`, causée par `AccessDeniedException`, sur `C:/Users/Lerou/.gradle/wrapper/dists/gradle-8.13-bin/5xuhj0ry160q40clulazy9h7d/gradle-8.13-bin.zip.lck` (Accès refusé). Compilation, tests JVM et lint de cette révision **non exécutés**. Aucun changement des permissions, déplacement du cache ou autre contournement.
+- Conformément à la consigne explicite de s'arrêter après les modifications si le verrou est refusé : **aucune commande adb, aucune réinstallation et aucun rejeu émulateur**. L'accessibilité actuelle d'adb n'a donc pas été évaluée. L'émulateur, le proxy et le serveur de recette n'ont été ni lancés ni arrêtés.
+- Aucun fichier Rust ou JavaScript modifié ; leurs suites ne sont pas relancées pour cette correction Android.
+
+### Rejeux restant à effectuer après build réussi
+
+Conserver l'émulateur `emulator-5554`, le proxy de diagnostic `http://10.0.2.2:3457` et le serveur de démonstration PC sur 3459 actifs. Installer uniquement le nouvel APK debug avec `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+
+1. Technicien : PNG depuis Downloads après **30 secondes dans le sélecteur**, puis capture photo ; attendre succès, document listé et 201 dans le proxy.
+2. Couper Wi-Fi/données : bandeau immédiat, actions locales disponibles, Synchroniser tente et signale l'échec ; rétablir puis vérifier actualisation/synchronisation sans exiger Internet public.
+3. Provoquer un conflit avec modification distante par responsable, abandonner et confirmer ; vérifier texte distant, file vide, passage Pièces/Terrain et rotation sans restauration de la saisie abandonnée.
+4. Depuis le détail Terrain, ouvrir Synchronisation par le bandeau, puis Pièces et Terrain, plusieurs fois et avec Retour : aucun écran Synchronisation restauré sous Terrain. Refaire avec le rail en largeur suffisante lorsque possible.
+
 ## Constats et corrections par gravité
 
 Aucun défaut critique confirmé lors de cette revue statique. Les défauts suivants ont été corrigés dans les sources ; leur validation Android reste à faire.
