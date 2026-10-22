@@ -4,6 +4,80 @@ Revue des sources Kotlin de production et des tests, scripts Gradle et wrapper, 
 
 La revue est statique : aucun constat ne vaut certification de fonctionnement sur Android. Le build demandé est bloqué avant compilation par les permissions du bac à sable.
 
+## Ergonomie — refonte visuelle du 22 octobre 2026
+
+Périmètre limité à `android/`, sans commit ni branche. Lecture d’AGENTS.md, README, audit, des deux palettes de `static/styles.css`, de `static/theme.js`, de l’en-tête/icônes de `static/index.html` et de `static/icons/icon.svg`. Aucun changement serveur/web, aucune utilisation de base d’exploitation. Les sections des 20 et 21 octobre ci-dessous sont historiques ; leurs palettes et seuils d’affichage sont remplacés par ceux de cette section.
+
+### Correspondance des jetons
+
+`ui/theme/ApexTheme.kt` conserve les valeurs CSS, y compris les alpha, dans `DarkTokens` et `LightTokens`. `ApexTokens.scheme` renseigne tous les rôles du ColorScheme Material 3, y compris les surfaces, couleurs inversées et couleurs fixes ; aucune palette dynamique Android. Les rôles Material sans équivalent CSS direct réemploient les jetons existants.
+
+| Site → jeton Compose | Usage |
+|---|---|
+| `--bg` → `bg` | Fond `background` : sombre `#070D1A`, clair `#EEF2F8`. |
+| `--glass`, `--glass-2` → `glass`, `glass2` | Cartes translucides, menus et surfaces ; alpha sombre `.78`/`.9`, clair `.82`/opaque. |
+| `--line`, `--line-2` → `line`, `line2` | Contours de cartes/champs, séparateurs et rôles `outlineVariant`/`outline`. |
+| `--text`, `--muted` → `text`, `muted` | Texte principal `#E8EEF8` / `#0F1B2E`, secondaire `#8EA2C0` / `#56667F`. |
+| `--accent`, `--accent-2`, `--on-accent` → `accent`, `accent2`, `onAccent` | Accent exact `#38BDF8` / `#0284C7`, action primaire et sélection. L’ancien bleu Android `#0369A1` est retiré. |
+| `--violet`, `--run`, `--stop`, `--warn`, `--crit` → mêmes noms | Rôles secondaires et états ; `stop` reste `#64748B` dans les deux thèmes comme en CSS. |
+| `--glow`, `--bar`, `--nav`, `--nav-solid`, `--field` → `glow`, `bar`, `nav`, `navSolid`, `field` | Lueur radiale proportionnée au conteneur, en-tête, barre/rail, surfaces fortes et champs. |
+| `--selected`, `--avatar`, `--backdrop` → `selected`, `avatar`, `backdrop` | Sélection, surfaces secondaires et scrim. |
+| `--ok-*`, `--ko-*` → `okText/Bg/Line`, `koText/Bg/Line` | Badges achevés, critiques et états machine ; fonds/contours/transparences exacts. |
+| `.badge-status-*`, `.badge-priority-*` → `badge(value)` | Ouverte bleue, en cours/haute ambre, clôturée verte, annulée atténuée et barrée ; priorité basse atténuée, normale bleue, critique rouge. Les fonds CSS fixes restent identiques même en thème clair. |
+| `--r: 10px` → `ApexLayout.radius = 10.dp` | Cartes, surfaces et dialogues ; champ 7 dp, badge 12 dp. |
+
+`ApexTypography` fournit une seule échelle en sp, sans désactiver la police système. Le sans-serif Android remplace la pile Inter/Segoe UI/system-ui du site sans ajouter de téléchargement de police. Les indicateurs d’état restent accompagnés de texte. Le verre est reproduit par alpha et lueur, sans flou d’arrière-plan temps réel. Le démarrage XML est bleu nuit ; après lecture DataStore, le thème et les icônes des barres système suivent le choix. L’icône vectorielle existante est déjà conforme au SVG web et reste inchangée.
+
+### Problèmes trouvés et corrections par écran
+
+| Écran / élément | Constat et correction, ou garde-fou conservé |
+|---|---|
+| Tous les écrans | Palette claire unique, absence du bleu nuit/verre, couleurs de badges locales : deux palettes centralisées, formes 10 dp, contours CSS, fond lumineux, badges avec texte/fond/contour et texte secondaire atténué. |
+| Réglages / compte | Aucun choix de thème : dialogue défilant « Réglages et compte » accessible dans l’en-tête avant/après connexion, avec Système/Clair/Sombre. Choix aussi dans la configuration serveur. Lignes radio entièrement tactiles ≥ 48 dp et sémantique de groupe. Défaut Sombre ; changement DataStore observé immédiatement sans reconstruire le ViewModel ni la navigation. |
+| Navigation téléphone | Les éléments Material usuels ont une hauteur contrainte, défavorable aux libellés longs à 200 % : contenu de NavigationBar à hauteur libre, texte multiligne, libellé compact « Synchro », sélection visible et rôle d’onglet. |
+| Navigation tablette/paysage | Rail 88 dp et deux volets dès 600 dp : rail élargi à 112 dp avec entrées à hauteur libre et défilement conservé. Rail dès 600 dp, deux volets à partir de 840 dp (classe « expanded », seuil le plus large de la classification par défaut), un seul volet si police ≥ 130 %. En dessous, parcours liste puis détail conservé. |
+| En-tête | Le titre Material pouvait occuper trop de place avec les actions et la police agrandie : échelle `titleLarge`, une ligne avec ellipsis intentionnel. Icônes d’action Material avec descriptions conservées. En-tête et navigation prennent les couleurs `bar`/`nav`. |
+| Connexion, serveur, mot de passe, choix du site | Bornage commun à 680 dp et défilement/IME déjà présents, conservés. Champs aux couleurs `field`, contour `line`, coins 7 dp ; aides et adresse atténuées. Commandes secondaires désormais ≥ 48 dp, texte pouvant grandir. |
+| Terrain liste et détail | Double volet trop étroit sur tablette moyenne : seuils séparés du rail. Cartes de hauteur libre conservées, espacements de 6 dp remplacés par 8 dp. Titres de section dans un emplacement pondéré pour revenir à la ligne après l’icône. Badges fidèles au web, sélection bordée d’accent. Listes paresseuses, filtres, positions et brouillons conservés. |
+| Création d’intervention | Même correction des titres et boutons secondaires, largeur maximale/IME conservés. Une seule échelle de police, champs multilignes jusqu’à six lignes avec défilement interne existant. Titre/identifiant/champs courts restent monolignes avec défilement horizontal de saisie intentionnel. Aucun changement des limites de saisie ni de la création hors ligne. |
+| Pièces et sortie de pièce | Même seuil de double volet que Terrain, bornage par volet et hauteur libre conservés. Boutons de sélection d’équipement/pièce/emplacement ≥ 48 dp, noms longs autorisés sur plusieurs lignes. Recherche et données de disponibilité inchangées. |
+| Documents | Boutons de document/rafraîchissement à hauteur libre et ≥ 48 dp ; les noms peuvent revenir à la ligne après l’icône. Aucun aperçu d’image documentaire intégré : ouverture externe conservée, sans nouvelle hauteur d’image à corriger. |
+| Synchronisation / « À résoudre » | Cartes précédemment Material opaques par défaut : cartes verre avec contour web. Comparaison locale/distante défilante conservée ; boutons de comparaison/réessai/abandon ≥ 48 dp et multiligne. File, abandon, rechargement serveur et nouvelle tentative inchangés. |
+| Scanner | Aperçu imposé à 280 dp : ratio 4:3 suivant la largeur bornée, sans étirement ; toute la page reste défilante. Autorisation caméra et reprise ≥ 48 dp, champ manuel aux couleurs web. Cycle caméra et secours manuel inchangés. |
+| Dialogues / insets | Dialogues Material bornés nativement à 560 dp, textes longs de comparaison/clôture déjà défilants ; conservés. Nouveau dialogue de réglages défilant. Insets Scaffold consommés et `imePadding` des pages/listes conservés ; barres système transparentes avec icônes selon le thème. Pas de feuille inférieure dans les écrans actuels. |
+
+Les hauteurs fixes restantes concernent des éléments décoratifs (progression 4 dp) et les icônes Material, pas les cartes ou le contenu textuel. Les dimensions tactiles, espacements, rayon et largeur de formulaire sont regroupés dans `ApexLayout`. Aucun changement des API, permissions, droits, du cache chiffré, des brouillons, des conflits ou du protocole de synchronisation.
+
+### Fichiers de cette refonte
+
+Repères relatifs à `android/` :
+
+| Fichier:ligne | Modification |
+|---|---|
+| `app/src/main/java/fr/apex/maint/ui/theme/ApexTheme.kt:1` | Jetons, ColorScheme complet, typographie, formes, dimensions, fond et badges. |
+| `app/src/main/java/fr/apex/maint/data/Settings.kt:17` | Mapping des trois choix et persistance dans le DataStore existant ; repli sombre si lecture impossible pour garder l’interface accessible. |
+| `app/src/main/java/fr/apex/maint/ui/MaintViewModel.kt:40` | Flux de thème observé et enregistrement avec signalement d’erreur. |
+| `app/src/main/java/fr/apex/maint/MainActivity.kt:44` | Application du thème, attente du choix sauvegardé, edge-to-edge et icônes système. |
+| `app/src/main/java/fr/apex/maint/ui/Screens.kt:68` | Composants partagés, badges, champs, navigation, seuils adaptatifs et réglages. |
+| `app/src/main/java/fr/apex/maint/ui/ScannerScreen.kt:38` | Ratio caméra, champ thémé et cibles tactiles. |
+| `app/src/main/java/fr/apex/maint/ui/TouchButtons.kt:1` | Boutons secondaires à hauteur minimale 48 dp et libre au-delà. |
+| `app/src/main/java/fr/apex/maint/ui/ApexPreviews.kt:1` | 15 variantes d’aperçu de composants : connexion, Terrain et détail/déclaration, sans réseau ni Keystore. |
+| `app/src/test/java/fr/apex/maint/data/SettingsTest.kt:14` | Quatre tests JVM avec DataStore de fichiers temporaires. |
+| `app/src/main/AndroidManifest.xml:9` | Thème natif Apex. |
+| `app/src/main/res/values/styles.xml:1`, `app/src/main/res/values-v31/styles.xml:1` | Fond natif/splash bleu nuit et icône de marque Android 12+. |
+| `app/build.gradle.kts:51`, `gradle/libs.versions.toml:24` | Dépendances de prévisualisation Compose sous la BOM existante, outils complets en debug seulement. |
+| `README.md:5`, `AUDIT.md:7` | Réglage Thème, ergonomie et recette. |
+
+### Vérifications et recette à terminer
+
+Quatre tests ajoutés : valeur absente/inconnue et aller-retour des valeurs ; mapping Système selon le mode nuit et indépendance des choix explicites ; publication des trois choix par DataStore sans effacer l’URL ; persistance après fermeture/recréation réelle du DataStore pour chacun des choix. Les tests existants sont conservés sans modification. Les aperçus combinent téléphone 360×800 dp, tablette 1280×800 dp, clair/sombre et téléphone à police 200 % ; ils réemploient les composants réels, sans constituer une simulation des écrans connectés.
+
+Commande exécutée dans `android/` avec `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr` : `gradlew.bat assembleDebug testDebugUnitTest lintDebug`. **Échec avant compilation**, code 1 : `FileNotFoundException`, causée par `AccessDeniedException`, sur `C:\Users\Lerou\.gradle\wrapper\dists\gradle-8.13-bin\5xuhj0ry160q40clulazy9h7d\gradle-8.13-bin.zip.lck` (Accès refusé). **Aucune des trois tâches n’a démarré** : aucun nouvel APK, aucun test JVM ni lint validé pour cette refonte. Conformément à la consigne, arrêt après les modifications, sans contournement du verrou ni utilisation d’adb/émulateur. Aucun résultat des anciennes révisions n’est utilisé pour déclarer les tests actuels réussis.
+
+Avant cette tentative : `git diff --check` réussi ; huit ressources/manifestes XML bien formés ; vérification de la présence des rôles de couleur fixes dans le binaire Material 3 1.4.0 déjà en cache. Les couleurs littérales et tailles en sp des sources Compose sont limitées au fichier de jetons (hors couleur transparente structurelle). Ces contrôles statiques ne valident ni les types Kotlin/Compose, ni le rendu Android. Seul `android/` a été modifié.
+
+Recette sur instances portables temporaires seulement, hors ports 3000/3100 : téléphone et tablette, portrait/paysage, largeurs 599/600 puis 839/840 dp, un seul volet à grande police ; police 100/130/200 %, clavier ouvert et navigation gestuelle/à trois boutons ; aucun texte de section, bouton, badge ou dialogue coupé. Vérifier les trois thèmes avant/après connexion, bascule du mode nuit en Système, retour arrière, rotation et redémarrage après choix, barres système, contraste, TalkBack et superposition du clavier. Comparer chaque thème au site. Rejouer création hors ligne, brouillons/restauration, file et conflits, droits, documents et scan pour confirmer la conservation des comportements.
+
 ## Recette du 21 octobre 2026 : corrections et diagnostic
 
 Relecture d'AGENTS.md, du rapport `C:/Users/Lerou/AppData/Local/Temp/apex-recette-20261021/RAPPORT.txt`, du diff et de tous les fichiers Kotlin non suivis de la session précédente. Modifications limitées à `android/`, sans commit ni branche, sans changement du serveur ni de `static/`. Les sections du 20 octobre ci-dessous sont historiques.

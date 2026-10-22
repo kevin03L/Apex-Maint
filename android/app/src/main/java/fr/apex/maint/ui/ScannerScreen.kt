@@ -20,6 +20,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import fr.apex.maint.ui.theme.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -36,15 +37,17 @@ import java.util.concurrent.atomic.AtomicBoolean
     Page {
         Text("Scanner un QR", style = MaterialTheme.typography.headlineSmall)
         Text("Présentez le code d’un équipement devant la caméra.")
-        if (!allowed) Button({ request.launch(Manifest.permission.CAMERA) }) { Text("Autoriser la caméra") }
-        if (allowed && !paused) CameraPreview(Modifier.fillMaxWidth().height(280.dp), { code ->
+        if (!allowed) Button({ request.launch(Manifest.permission.CAMERA) }, modifier = Modifier.heightIn(min = ApexLayout.touch)) { Text("Autoriser la caméra") }
+        if (allowed && !paused) CameraPreview(Modifier.fillMaxWidth().aspectRatio(4f / 3f), { code ->
             paused = true; manual = code; currentDetected(code)
         }, { error = it })
-        if (paused) OutlinedButton({ paused = false }) { Text("Reprendre la lecture") }
+        if (paused) ApexOutlinedButton({ paused = false }) { Text("Reprendre la lecture") }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        OutlinedTextField(manual, { manual = it }, label = { Text("Code équipement ou lien de l’instance") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(manual, { manual = it }, label = { Text("Code équipement ou lien de l’instance") }, modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = LocalApexTokens.current.field,
+                unfocusedContainerColor = LocalApexTokens.current.field, unfocusedBorderColor = LocalApexTokens.current.line))
         Button({ if (manual.isNotBlank()) currentDetected(manual) }, enabled = manual.isNotBlank(),
-            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Ouvrir la fiche") }
+            modifier = Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch)) { Text("Ouvrir la fiche") }
     }
 }
 

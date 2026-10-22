@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.ApexMaint" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#070D1A</item>
+        <item name="android:windowSplashScreenBackground">#070D1A</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_apex</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">#38BDF8</item>
+    </style>
+</resources>

@@ -1,0 +1,10 @@
+<resources>
+    <!-- Démarrage bleu nuit, identique au fond web sombre ; le choix DataStore prend ensuite le relais. -->
+    <style name="Theme.ApexMaint" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#070D1A</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">#070D1A</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">#38BDF8</item>
+    </style>
+</resources>

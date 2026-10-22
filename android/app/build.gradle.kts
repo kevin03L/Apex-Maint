@@ -48,6 +48,8 @@ ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
+    implementation(libs.compose.preview)
+    debugImplementation(libs.compose.tooling)
     implementation(libs.compose.material3)
     implementation(libs.compose.icons)
     implementation(libs.compose.adaptive)

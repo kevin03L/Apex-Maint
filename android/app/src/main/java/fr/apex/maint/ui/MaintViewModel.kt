@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import java.io.IOException
@@ -33,6 +35,11 @@ data class UiState(
 )
 
 class MaintViewModel(val container: AppContainer, private val saved: SavedStateHandle) : ViewModel() {
+    val theme = container.settings.theme.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    fun theme(value: ThemeChoice) = viewModelScope.launch {
+        try { container.settings.saveTheme(value) }
+        catch (_: IOException) { message("Le thème n’a pas pu être enregistré. Réessayez.") }
+    }
     val mine = saved.getStateFlow("mine", true)
     val status = saved.getStateFlow("status", "")
     fun filterMine(value: Boolean) { saved["mine"] = value }

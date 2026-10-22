@@ -5,7 +5,10 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +35,10 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -39,6 +46,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.*
 import fr.apex.maint.data.*
+import fr.apex.maint.ui.theme.*
 import kotlinx.serialization.json.*
 import java.time.Instant
 
@@ -61,33 +69,34 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
     onRefresh: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
     val body: @Composable () -> Unit = {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        Column(Modifier.widthIn(max = 680.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
+        Column(Modifier.widthIn(max = ApexLayout.formWidth).fillMaxWidth().verticalScroll(rememberScrollState()).padding(ApexLayout.padding),
+            verticalArrangement = Arrangement.spacedBy(ApexLayout.padding), content = content)
         }
     }
     if (onRefresh != null) PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh,
         modifier = modifier.fillMaxSize().imePadding()) { body() }
     else Box(modifier.fillMaxSize().imePadding()) { body() }
 }
-@Composable private fun Section(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
-    OutlinedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+@Composable internal fun Section(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
+    OutlinedCard(Modifier.fillMaxWidth(), colors = CardDefaults.outlinedCardColors(containerColor = LocalApexTokens.current.glass),
+        border = BorderStroke(1.dp, LocalApexTokens.current.line)) {
+        Column(Modifier.padding(ApexLayout.padding), verticalArrangement = Arrangement.spacedBy(ApexLayout.itemGap)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(ApexLayout.gap), verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
-                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).semantics { heading() })
             }
             content()
         }
     }
 }
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun EntityListPage(modifier: Modifier, state: LazyListState, refreshing: Boolean,
+@Composable internal fun EntityListPage(modifier: Modifier, state: LazyListState, refreshing: Boolean,
     refresh: () -> Unit, entries: List<JsonObject>, header: @Composable ColumnScope.() -> Unit,
     empty: @Composable ColumnScope.() -> Unit, card: @Composable (JsonObject) -> Unit) {
     PullToRefreshBox(isRefreshing = refreshing, onRefresh = refresh, modifier = modifier.fillMaxSize().imePadding()) {
-        LazyColumn(state = state, modifier = Modifier.widthIn(max = 680.dp).fillMaxSize().align(Alignment.TopCenter),
-            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item(key = "entete") { Column(verticalArrangement = Arrangement.spacedBy(16.dp), content = header) }
+        LazyColumn(state = state, modifier = Modifier.widthIn(max = ApexLayout.formWidth).fillMaxSize().align(Alignment.TopCenter),
+            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(ApexLayout.itemGap)) {
+            item(key = "entete") { Column(verticalArrangement = Arrangement.spacedBy(ApexLayout.padding), content = header) }
             if (entries.isEmpty()) item(key = "vide") { Column(content = empty) }
             items(entries, key = { requireNotNull(it.text("id")) }) { card(it) }
         }
@@ -110,26 +119,27 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
 }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable private fun Badges(item: JsonObject) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOfNotNull(item.text("status"), item.text("priority")).forEach { value ->
-            val color = when (value) {
-                "completed", "operational", "low" -> Color(0xFF15803D)
-                "in_progress", "high", "degraded" -> Color(0xFF92400E)
-                "critical", "out_of_service" -> Color(0xFFB91C1C)
-                else -> MaterialTheme.colorScheme.primary
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.size(8.dp).background(color, CircleShape))
-                Text(label(value), color = color, style = MaterialTheme.typography.labelLarge)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(ApexLayout.itemGap), verticalArrangement = Arrangement.spacedBy(ApexLayout.gap)) {
+        listOfNotNull(item.text("status"), item.text("priority"), item.text("machine_state")).forEach { value ->
+            val colors = LocalApexTokens.current.badge(value)
+            Surface(color = colors.background, contentColor = colors.text,
+                shape = RoundedCornerShape(ApexLayout.badgeRadius), border = BorderStroke(1.dp, colors.border)) {
+                Text(label(value), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    textDecoration = if (value == "cancelled") TextDecoration.LineThrough else null,
+                    style = MaterialTheme.typography.labelMedium)
             }
         }
     }
 }
-@Composable private fun Field(label: String, value: String, change: (String) -> Unit,
+@Composable internal fun Field(label: String, value: String, change: (String) -> Unit,
     secret: Boolean = false, lines: Int = 1, number: Boolean = false, limit: Int? = null) {
     var visible by remember { mutableStateOf(false) }
     val length = value.codePointCount(0, value.length)
     OutlinedTextField(value, change, label = { Text(label) }, modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(ApexLayout.fieldRadius),
+        colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = LocalApexTokens.current.field,
+            unfocusedContainerColor = LocalApexTokens.current.field, errorContainerColor = LocalApexTokens.current.field,
+            unfocusedBorderColor = LocalApexTokens.current.line),
         minLines = lines, maxLines = if (lines == 1) 1 else 6, singleLine = lines == 1,
         isError = limit != null && length > limit,
         supportingText = if (limit != null) ({ Text("$length / $limit caractères") }) else null,
@@ -140,13 +150,45 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         } }) else null,
         visualTransformation = if (secret && !visible) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None)
 }
-@Composable private fun Action(text: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Button(onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(text) }
+@Composable internal fun Action(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Button(onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch)) { Text(text) }
+}
+@Composable private fun NavigationEntry(title: String, icon: ImageVector, selected: Boolean,
+    modifier: Modifier = Modifier, click: () -> Unit) {
+    val tokens = LocalApexTokens.current
+    Column(modifier.padding(4.dp).background(if (selected) tokens.selected else Color.Transparent,
+        RoundedCornerShape(ApexLayout.radius)).selectable(selected, role = Role.Tab, onClick = click)
+        .heightIn(min = ApexLayout.touch).padding(horizontal = 4.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(ApexLayout.unit)) {
+        Icon(icon, null, tint = if (selected) tokens.accent else tokens.muted)
+        Text(title, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,
+            color = if (selected) tokens.text else tokens.muted)
+    }
+}
+@Composable private fun ThemeSetting(vm: MaintViewModel) {
+    val choice by vm.theme.collectAsStateWithLifecycle()
+    ThemeOptions(choice ?: ThemeChoice.DARK) { vm.theme(it) }
+}
+@Composable internal fun ThemeOptions(choice: ThemeChoice, choose: (ThemeChoice) -> Unit) {
+    Column(Modifier.selectableGroup()) {
+        Text("Thème", style = MaterialTheme.typography.titleMedium)
+        ThemeChoice.entries.forEach { option ->
+            Row(Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch)
+                .selectable(choice == option, role = Role.RadioButton, onClick = { choose(option) })
+                .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = choice == option, onClick = null)
+                Spacer(Modifier.width(8.dp))
+                Text(option.title, modifier = Modifier.weight(1f))
+            }
+        }
+        Text("Système suit le mode d’affichage de l’appareil.", style = MaterialTheme.typography.bodyMedium,
+            color = LocalApexTokens.current.muted)
+    }
 }
 @Composable private fun Picker(title: String, selected: String, choices: List<Pair<String, String>>, choose: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton({ expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        ApexOutlinedButton({ expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch)) {
             Text("$title : ${choices.find { it.first == selected }?.second ?: selected}")
         }
         DropdownMenu(expanded, { expanded = false }) {
@@ -174,15 +216,22 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             launchSingleTop = true; restoreState = true
         }
     }
-    val wide = currentWindowAdaptiveInfo().windowSizeClass.isWidthAtLeastBreakpoint(600)
+    val window = currentWindowAdaptiveInfo().windowSizeClass
+    val rail = window.isWidthAtLeastBreakpoint(ApexLayout.railBreakpoint)
+    // Deux volets dès la classe « expanded » (840 dp, seuil le plus large connu par défaut) ;
+    // à police agrandie (130 % et plus), un seul volet pour garder des formulaires lisibles.
+    val wide = LocalDensity.current.fontScale < 1.3f && window.isWidthAtLeastBreakpoint(ApexLayout.detailBreakpoint)
+    var settings by rememberSaveable { mutableStateOf(false) }
     var logout by remember { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(s.message) { s.message?.let { snack.showSnackbar(it); vm.message(null) } }
-    Scaffold(snackbarHost = { SnackbarHost(snack) }, topBar = {
-        TopAppBar(title = { Text("Apex Maint") }, navigationIcon = {
+    Scaffold(containerColor = Color.Transparent, snackbarHost = { SnackbarHost(snack) }, topBar = {
+        TopAppBar(colors = TopAppBarDefaults.topAppBarColors(containerColor = LocalApexTokens.current.bar),
+            title = { Text("Apex Maint", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis) }, navigationIcon = {
             if (s.actor != null && route in setOf("terrain/{id}", "stock/{id}", "equipement/{id}", "creation"))
                 IconButton({ if (!nav.popBackStack()) nav.navigate("terrain") }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Retour à la liste") }
         }, actions = {
+            IconButton({ settings = true }) { Icon(Icons.Default.Settings, "Réglages et compte") }
             if (s.actor != null && !s.expired && s.session?.must_change_password != true && s.session?.user?.must_change_password != true) IconButton({ vm.sync() }, enabled = !s.busy) {
                 Icon(Icons.Default.Sync, "Synchroniser puis actualiser les données")
             }
@@ -228,12 +277,10 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
                         } }
                     }
                     Row(Modifier.weight(1f)) {
-                        if (wide) NavigationRail(modifier = Modifier.width(88.dp)) {
+                        if (rail) NavigationRail(modifier = Modifier.width(ApexLayout.railWidth), containerColor = LocalApexTokens.current.nav) {
                             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                            entries.forEach { (id, title, icon) -> NavigationRailItem(
-                                selected = route?.startsWith(id) == true,
-                                onClick = { destination(id) },
-                                icon = { Icon(icon, title) }, label = { Text(title) }) }
+                            entries.forEach { (id, title, icon) -> NavigationEntry(title, icon,
+                                route?.startsWith(id) == true, Modifier.fillMaxWidth()) { destination(id) } }
                             }
                         }
                         NavHost(nav, startDestination = home, modifier = Modifier.weight(1f)) {
@@ -255,24 +302,28 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
                             composable("sync") { SyncScreen(vm, s) }
                         }
                     }
-                    if (!wide) NavigationBar {
-                        entries.forEach { (id, title, icon) -> NavigationBarItem(
-                            selected = route?.startsWith(id) == true,
-                            onClick = { destination(id) },
-                            icon = { Icon(icon, title) }, label = { Text(title) }) }
+                    if (!rail) NavigationBar(containerColor = LocalApexTokens.current.nav) {
+                        entries.forEach { (id, title, icon) -> NavigationEntry(if (id == "sync") "Synchro" else title, icon,
+                            route?.startsWith(id) == true, Modifier.weight(1f)) { destination(id) } }
                     }
                 }
             }
         }
     }
+    if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("Réglages et compte") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(ApexLayout.padding)) {
+            s.session?.user?.display_name?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
+            Text(s.server ?: "Serveur non configuré", color = LocalApexTokens.current.muted)
+            ThemeSetting(vm)
+        } }, confirmButton = { ApexTextButton({ settings = false }) { Text("Fermer") } })
     if (logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("Se déconnecter") },
         text = { Text("Le cache sera effacé. " + when (s.operations.size) {
             0 -> "Aucune opération à envoyer."
             1 -> "Une opération non synchronisée sera perdue."
             else -> "${s.operations.size} opérations non synchronisées seront perdues."
         }) },
-        confirmButton = { TextButton({ logout = false; vm.logout() }) { Text("Se déconnecter") } },
-        dismissButton = { TextButton({ logout = false }) { Text("Annuler") } })
+        confirmButton = { ApexTextButton({ logout = false; vm.logout() }) { Text("Se déconnecter") } },
+        dismissButton = { ApexTextButton({ logout = false }) { Text("Annuler") } })
 }
 
 @Composable private fun ServerScreen(vm: MaintViewModel, s: UiState) {
@@ -281,11 +332,12 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         Text("Configurer le serveur", style = MaterialTheme.typography.headlineSmall)
         Text("Indiquez l’adresse complète fournie par votre administrateur, avec https:// et le port éventuel.")
         Field("Adresse HTTPS du serveur", url, { url = it })
-        Text("Exemple : https://maint.atelier.local:8443/\nUtilisez l’adresse racine, sans /api ni autre chemin.", style = MaterialTheme.typography.bodyMedium)
+        Text("Exemple : https://maint.atelier.local:8443/\nUtilisez l’adresse racine, sans /api ni autre chemin.", color = LocalApexTokens.current.muted, style = MaterialTheme.typography.bodyMedium)
         Section("Certificat de l’instance", Icons.Default.Security) {
             Text("Si votre instance utilise une autorité privée, faites vérifier puis installer son certificat CA dans les paramètres de sécurité Android. L’adresse saisie doit correspondre au certificat.")
         }
         Action("Enregistrer le serveur", !s.busy && url.isNotBlank()) { vm.server(url) }
+        ThemeSetting(vm)
     }
 }
 @Composable private fun LoginScreen(vm: MaintViewModel, s: UiState) {
@@ -294,20 +346,20 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
     val context = LocalContext.current
     Page {
         Text("Connexion", style = MaterialTheme.typography.headlineSmall)
-        Text(s.server.orEmpty())
+        Text(s.server.orEmpty(), color = LocalApexTokens.current.muted)
         if (s.expired) Text("Votre session a expiré. Reconnectez-vous avec le même compte pour conserver la file.")
         Field("Identifiant", user, { user = it })
         Field("Mot de passe", password, { password = it }, secret = true)
         Action("Se connecter", !s.busy && user.isNotBlank() && password.isNotEmpty()) {
             vm.login(user, password); password = ""
         }
-        OutlinedButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(s.server + "api/tls/ca.pem"))) }) {
+        ApexOutlinedButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(s.server + "api/tls/ca.pem"))) }) {
             Text("Télécharger l’autorité dans le navigateur")
         }
         Text("Après vérification de son empreinte, installez cette autorité comme certificat CA. Un premier transfert peut nécessiter votre administrateur.")
         if (s.session == null) {
             var edit by remember { mutableStateOf(false) }
-            TextButton({ edit = !edit }) { Text("Modifier l’URL") }
+            ApexTextButton({ edit = !edit }) { Text("Modifier l’URL") }
             if (edit) { var url by rememberSaveable { mutableStateOf(s.server.orEmpty()) }
                 Field("URL du serveur", url, { url = it }); Action("Enregistrer", !s.busy) { vm.server(url) } }
         }
@@ -340,13 +392,13 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             refresh = { if (s.online && !s.busy) vm.sync() else if (!s.online) vm.message("Le rafraîchissement nécessite le réseau") },
             entries = entries, header = {
                 Text("Interventions", style = MaterialTheme.typography.headlineSmall)
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(mine, role = Role.Checkbox,
+                Row(Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch).toggleable(mine, role = Role.Checkbox,
                     onValueChange = { vm.filterMine(it); if (!it && s.online && !s.busy) vm.siteList() }),
                     verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(mine, null); Text("Mes interventions")
                 }
                 Picker("Statut", status, listOf("" to "Tous") + listOf("open", "in_progress", "completed", "cancelled").map { it to label(it) }) { vm.filterStatus(it) }
-                OutlinedButton({ vm.siteList() }, enabled = s.online && !s.busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                ApexOutlinedButton({ vm.siteList() }, enabled = s.online && !s.busy, modifier = Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch)) {
                     Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Recharger les interventions du site")
                 }
                 if (s.actor?.can("interventions.create") == true) Action("Déclarer une intervention", !s.busy, create)
@@ -355,7 +407,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
                     Text(if (mine) "Aucune intervention ne vous est affectée dans ce filtre. Consultez celles du site pour en prendre une en charge."
                         else "Aucune intervention ne correspond au filtre. Retirez le filtre ou rechargez les données du site.")
                     if (mine) Action("Voir les interventions du site") { vm.filterMine(false); if (s.online && !s.busy) vm.siteList() }
-                    if (status.isNotEmpty()) TextButton({ vm.filterStatus("") }) { Text("Afficher tous les statuts") }
+                    if (status.isNotEmpty()) ApexTextButton({ vm.filterStatus("") }) { Text("Afficher tous les statuts") }
                     if (!s.online) Text("Hors ligne : seules les données déjà chargées sont disponibles.")
                 }
             }) { item -> EntityCard(item, item.text("title").orEmpty(), "", selected = item.text("id") == id) {
@@ -368,15 +420,16 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         }
     }
 }
-@Composable private fun EntityCard(item: JsonObject, title: String, subtitle: String,
+@Composable internal fun EntityCard(item: JsonObject, title: String, subtitle: String,
     selected: Boolean = false, click: () -> Unit) {
     Card(onClick = click, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceContainerLow)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(item.text("code") ?: item.text("reference").orEmpty(), style = MaterialTheme.typography.labelLarge)
+            else LocalApexTokens.current.glass),
+        border = BorderStroke(1.dp, if (selected) LocalApexTokens.current.accent else LocalApexTokens.current.line)) {
+        Column(Modifier.padding(ApexLayout.padding), verticalArrangement = Arrangement.spacedBy(ApexLayout.gap)) {
+            Text(item.text("code") ?: item.text("reference").orEmpty(), color = LocalApexTokens.current.muted, style = MaterialTheme.typography.labelLarge)
             Text(title, style = MaterialTheme.typography.titleMedium)
-            if (item.text("status") != null || item.text("priority") != null) Badges(item) else Text(subtitle)
+            if (item.text("status") != null || item.text("priority") != null) Badges(item) else Text(subtitle, color = LocalApexTokens.current.muted)
         }
     }
 }
@@ -389,7 +442,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             if (!s.busy) Action("Réessayer", s.online) { vm.select("interventions", id) }
             return@Page
         }
-        Text(item.text("code").orEmpty(), style = MaterialTheme.typography.labelLarge)
+        Text(item.text("code").orEmpty(), color = LocalApexTokens.current.muted, style = MaterialTheme.typography.labelLarge)
         Text(item.text("title").orEmpty(), style = MaterialTheme.typography.headlineSmall)
         Badges(item)
         var description by rememberDraft(vm, "$id:description", item.text("description").orEmpty())
@@ -405,7 +458,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
                 Action("Prendre en charge", !s.busy) { vm.mutate(id, "take_intervention", obj()) }
             } else if (editable) {
                 Action("Clôturer l’intervention", !s.busy && completionProblem == null) { complete = true }
-                completionProblem?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                completionProblem?.let { Text(it, color = LocalApexTokens.current.muted, style = MaterialTheme.typography.bodyMedium) }
             } else {
                 Text("Vous devez être affecté à cette intervention pour la modifier. Contactez votre responsable.")
             }
@@ -417,7 +470,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             Text("Type : ${label(item.text("type"))} · Machine : ${label(item.text("machine_state"))}")
             item.text("equipment_id")?.let { equipmentId ->
                 val equipmentItem = s.equipments.find { it.text("id") == equipmentId }
-                if (s.actor?.can("equipments.view") == true) OutlinedButton({ equipment(equipmentId) }) {
+                if (s.actor?.can("equipments.view") == true) ApexOutlinedButton({ equipment(equipmentId) }) {
                     Icon(Icons.Default.PrecisionManufacturing, null); Spacer(Modifier.width(8.dp))
                     Text(equipmentItem?.let { "${it.text("code")} · ${it.text("name")}" } ?: "Voir l’équipement et ses documents")
                 }
@@ -436,7 +489,7 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             Text("Temps total : ${frenchDuration(item.text("duration_minutes")?.toIntOrNull() ?: 0)}")
             if (editable && assigned) {
                 Field("Mon temps total en minutes", time, { time = it }, number = true)
-                Text("Cette valeur remplace votre temps déjà saisi.", style = MaterialTheme.typography.bodyMedium)
+                Text("Cette valeur remplace votre temps déjà saisi.", color = LocalApexTokens.current.muted, style = MaterialTheme.typography.bodyMedium)
                 Action("Enregistrer mon temps", !s.busy && (time.toIntOrNull() ?: -1) >= 0) {
                     vm.mutate(id, "record_time", obj("duration_minutes" to requireNotNull(time.toIntOrNull()).j())) }
             }
@@ -453,13 +506,13 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             s.children.forEach { child -> EntityCard(child, child.text("title").orEmpty(), label(child.text("status"))) { select(requireNotNull(child.text("id"))) } }
         }
         if (complete) AlertDialog(onDismissRequest = { complete = false }, title = { Text("Confirmer la clôture") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(ApexLayout.itemGap)) {
                 Text("L’intervention sera clôturée avec ce compte rendu. Cette action sera envoyée au serveur dès que possible.")
                 Text(report)
                 if (description != item.text("description").orEmpty()) Text("La description modifiée doit être enregistrée séparément avant la clôture.")
-            } }, confirmButton = { TextButton({ complete = false
+            } }, confirmButton = { ApexTextButton({ complete = false
                 vm.mutate(id, "complete_intervention", obj("solution_report" to report.j())) }, enabled = !s.busy && editable && completionProblem == null) { Text("Clôturer") } },
-            dismissButton = { TextButton({ complete = false }) { Text("Annuler") } })
+            dismissButton = { ApexTextButton({ complete = false }) { Text("Annuler") } })
     }
 }
 @Composable private fun CreateScreen(vm: MaintViewModel, s: UiState, scan: () -> Unit, done: (String) -> Unit) {
@@ -480,11 +533,11 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         if (s.actor?.can("equipments.view") == true) Action("Scanner un équipement", onClick = scan)
         Field("Rechercher un équipement", search, { search = it })
         Text("Équipement : " + (s.equipments.find { it.text("id") == equipment }?.let { "${it.text("code")} · ${it.text("name")}" } ?: "Non sélectionné"))
-        if (equipment != null) TextButton({ vm.equipmentForForm(null) }) { Text("Retirer l’équipement") }
+        if (equipment != null) ApexTextButton({ vm.equipmentForForm(null) }) { Text("Retirer l’équipement") }
         if (search.isNotBlank()) s.equipments.filter { "${it.text("code")} ${it.text("name")}".contains(search, true) }.take(30).forEach { e ->
-            OutlinedButton({ vm.equipmentForForm(e.text("id")); search = "" }, Modifier.fillMaxWidth()) { Text("${e.text("code")} · ${e.text("name")}") }
+            ApexOutlinedButton({ vm.equipmentForForm(e.text("id")); search = "" }, Modifier.fillMaxWidth()) { Text("${e.text("code")} · ${e.text("name")}") }
         }
-        if (equipment == null) Text("Choisissez un équipement, ou le type Hors équipement pour une déclaration sans machine.", style = MaterialTheme.typography.bodyMedium)
+        if (equipment == null) Text("Choisissez un équipement, ou le type Hors équipement pour une déclaration sans machine.", color = LocalApexTokens.current.muted, style = MaterialTheme.typography.bodyMedium)
         }
         if (type == "a_posteriori") Section("Travaux déjà réalisés", Icons.Default.AssignmentTurnedIn) {
             Field("Compte rendu obligatoire", report, { report = it }, lines = 3, limit = 16384)
@@ -567,12 +620,12 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         part = null
         if (open) selectedPart?.let { id -> vm.part(id) { if (selectedPart == id) part = it } }
     }
-    OutlinedButton({ open = !open; if (open) vm.catalogue() }, enabled = !s.busy) { Text("Sortir une pièce") }
+    ApexOutlinedButton({ open = !open; if (open) vm.catalogue() }, enabled = !s.busy) { Text("Sortir une pièce") }
     if (open) {
         var search by remember { mutableStateOf("") }
         Field("Rechercher la pièce à sortir", search, { search = it })
         s.parts.filter { "${it.text("reference")} ${it.text("name")}".contains(search, true) }.take(20).forEach { candidate ->
-            OutlinedButton({ location = ""; selectedPart = requireNotNull(candidate.text("id")) }, enabled = !s.busy) { Text("${candidate.text("reference")} · ${candidate.text("name")}") }
+            ApexOutlinedButton({ location = ""; selectedPart = requireNotNull(candidate.text("id")) }, enabled = !s.busy) { Text("${candidate.text("reference")} · ${candidate.text("name")}") }
         }
         // Les détails de pièce sont chargés séparément pour conserver la fiche intervention visible.
         val locations = part?.list("locations").orEmpty()
@@ -590,11 +643,11 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
 @Composable private fun ColumnScope.DocumentSection(vm: MaintViewModel, s: UiState, interventionId: String?) {
     if (s.actor?.can("documents.view") == true) {
         if (s.documents.isEmpty()) Text(if (s.online) "Aucun document chargé pour cette fiche." else "Connectez-vous au réseau pour consulter les documents.")
-        s.documents.forEach { doc -> OutlinedButton({ vm.openDocument(doc) }, enabled = s.online && !s.busy,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        s.documents.forEach { doc -> ApexOutlinedButton({ vm.openDocument(doc) }, enabled = s.online && !s.busy,
+            modifier = Modifier.fillMaxWidth().heightIn(min = ApexLayout.touch)) {
             Icon(Icons.Default.Description, null); Spacer(Modifier.width(8.dp)); Text(doc.text("title").orEmpty())
         } }
-        s.resourceKey?.let { key -> OutlinedButton({ vm.select(key.substringBefore(':'), key.substringAfter(':')) },
+        s.resourceKey?.let { key -> ApexOutlinedButton({ vm.select(key.substringBefore(':'), key.substringAfter(':')) },
             enabled = s.online && !s.busy && !key.substringAfter(':').startsWith("temp_")) { Text("Recharger les documents") } }
     } else Text("Votre compte ne permet pas de consulter les documents.")
     if (interventionId == null || s.actor?.can("documents.create") != true) return
@@ -659,13 +712,13 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
         Action("Synchroniser maintenant", !s.busy) { vm.sync() }
         if (!s.online) Text("Vos modifications seront envoyées au retour du réseau.")
         s.operations.forEach { op ->
-            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedCard(Modifier.fillMaxWidth(), colors = CardDefaults.outlinedCardColors(containerColor = LocalApexTokens.current.glass), border = BorderStroke(1.dp, LocalApexTokens.current.line)) { Column(Modifier.padding(ApexLayout.padding), verticalArrangement = Arrangement.spacedBy(ApexLayout.gap)) {
                 Text("${label(op.kind)} · ${label(op.state)}", style = MaterialTheme.typography.titleMedium)
                 Text(frenchDate(op.occurredAt)); Text(s.interventions.find { it.text("id") == op.dependsOn }?.text("title") ?: "Nouvelle intervention")
                 op.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (op.state == "conflict") {
                     Action("Recharger et comparer", s.online && !s.busy) { vm.review(op) { fresh -> review = op to fresh } }
-                    OutlinedButton({ abandon = op }) { Text("Abandonner") }
+                    ApexOutlinedButton({ abandon = op }) { Text("Abandonner") }
                 }
             } }
         }
@@ -686,10 +739,10 @@ private fun label(value: String?) = labels[value] ?: value.orEmpty()
             Text("État actuel du serveur :"); Text(fresh?.let { "${label(it.text("status"))}\n${it.text("description").orEmpty()}\n${it.text("solution_report").orEmpty()}\nVersion : ${it.text("updated_at")}" }
                 ?: "Création locale sans version distante")
             Text("Réessayer applique votre opération à la version rechargée. Un nouveau refus reste à résoudre.")
-        } }, confirmButton = { TextButton({ review = null; vm.resolve(op.id, true, fresh?.text("updated_at")) }) { Text("Réessayer après rechargement") } },
-        dismissButton = { TextButton({ review = null }) { Text("Annuler") } }) }
+        } }, confirmButton = { ApexTextButton({ review = null; vm.resolve(op.id, true, fresh?.text("updated_at")) }) { Text("Réessayer après rechargement") } },
+        dismissButton = { ApexTextButton({ review = null }) { Text("Annuler") } }) }
     abandon?.let { op -> AlertDialog(onDismissRequest = { abandon = null }, title = { Text("Abandonner cette opération") },
         text = { Text("L’opération sera abandonnée. Pour une création, ses actions dépendantes seront également abandonnées.") },
-        confirmButton = { TextButton({ abandon = null; vm.resolve(op.id, false) }) { Text("Abandonner") } },
-        dismissButton = { TextButton({ abandon = null }) { Text("Annuler") } }) }
+        confirmButton = { ApexTextButton({ abandon = null; vm.resolve(op.id, false) }) { Text("Abandonner") } },
+        dismissButton = { ApexTextButton({ abandon = null }) { Text("Annuler") } }) }
 }

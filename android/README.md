@@ -2,6 +2,18 @@
 
 Client natif Kotlin / Jetpack Compose de l’API Apex Maint existante. Aucun changement du serveur Rust ou de `static/`. Les données d’exploitation ne sont jamais utilisées par les tests.
 
+## Apparence et thème — 22 octobre 2026
+
+Ouvrir **Réglages et compte** avec l’icône de réglages de l’en-tête, disponible avant et après connexion. Le réglage **Thème** propose **Système**, **Clair** et **Sombre**. Il est également affiché directement dans la configuration initiale du serveur. **Sombre est le défaut mobile**, conformément au fond bleu nuit demandé ; Système suit les changements du mode nuit Android. Le choix est enregistré dans le DataStore existant `serveur`, indépendamment du compte et de l’URL, et s’applique immédiatement sans redémarrage ni réinitialisation de navigation ou de brouillon.
+
+Les deux palettes reprennent les jetons et les alpha de `static/styles.css`, sans couleurs dynamiques Material You : `ui/theme/ApexTheme.kt` centralise couleurs, correspondance complète Material 3, badges, typographie en sp, rayons et dimensions communes. Le fond possède une lueur dimensionnée au conteneur et les cartes translucides ont un rayon de 10 dp. Les barres système transparentes prolongent les surfaces de l’application ; leurs icônes suivent le thème choisi. Le démarrage natif conserve un fond de marque bleu nuit jusqu’au chargement du choix ; l’icône existante correspond déjà exactement à `static/icons/icon.svg`.
+
+La barre de navigation compacte et le rail dès **600 dp** ont des libellés pouvant grandir avec la police. Les deux volets Terrain/Pièces s’affichent à partir de **840 dp** (classe « expanded »), et jamais à partir de 130 % de police. Entre ces seuils, la navigation reste liste puis détail. Formulaires, détails et listes restent plafonnés à **680 dp** par volet et défilants avec marge clavier. Les commandes textuelles ont une hauteur minimale de 48 dp ; les cartes restent de hauteur libre. L’aperçu caméra utilise un ratio 4:3.
+
+`ApexPreviews.kt` fournit des aperçus des composants de connexion, Terrain et détail/déclaration : téléphone/tablette, clair/sombre, plus téléphone à police 200 %. Ils ne démarrent ni réseau, ni caméra, ni Keystore ; ils ne remplacent pas la recette des écrans connectés. `SettingsTest.kt` ajoute quatre tests JVM du défaut, du mapping système et de la persistance réelle DataStore, avec recréation et conservation de l’URL. Voir [l’audit ergonomique](AUDIT.md#ergonomie--refonte-visuelle-du-22-octobre-2026) pour les constats et vérifications de cette révision.
+
+**Validation du 22 octobre :** `gradlew.bat assembleDebug testDebugUnitTest lintDebug`, avec le JBR demandé, échoue avant toute tâche sur l’accès refusé à `gradle-8.13-bin.zip.lck`. Aucun APK, test JVM ou lint validé pour cette refonte ; arrêt sans contournement ni recette émulateur. Contrôles préalables réussis : `git diff --check` et huit XML bien formés. Relancer la commande et la recette téléphone/tablette hors du bac à sable.
+
 ## Ouvrir et construire
 
 Prérequis : Android Studio récent compatible avec AGP 8.13, JDK **17 au minimum** (le JBR d’Android Studio convient), SDK Android **36**, Build Tools **36.0.0**, Platform Tools. Android 8.0 / API 26 minimum sur téléphone ou tablette. Le premier téléchargement des dépendances nécessite un accès à Google Maven et Maven Central.
@@ -69,7 +81,7 @@ Une réponse 401 ramène à la connexion en conservant la file du même compte. 
 - Scan CameraX / ML Kit, modèle de détection embarqué, permission caméra à la demande et saisie manuelle de secours. Le QR web est le **code équipement seul**. Les liens de la même instance `/#/equipments/ID` et `/#/interventions/ID` sont également reconnus ; les autres origines sont refusées.
 - Synchronisation : file complète, messages métier, comparaison de la modification locale avec l’état distant, nouvelle tentative explicitement choisie ou abandon confirmé.
 
-`currentWindowAdaptiveInfo().windowSizeClass` (Material 3 Adaptive) détermine le mode : barre du bas sur largeur compacte inférieure à **600 dp**, rail et liste/détail simultanés à partir de 600 dp, y compris en paysage. Aucun verrouillage d’orientation ou de taille de texte. Contrôles Material avec cibles d’au moins 48 dp et formulaires défilants. Couleurs du thème clair web : fond `#EEF2F8`, texte `#0F1B2E`, accent `#0369A1` (bleu web assombri pour le contraste du texte blanc), secondaire `#6366F1`. L’icône vectorielle reprend les tracés et couleurs de `static/icons/icon.svg`.
+`currentWindowAdaptiveInfo().windowSizeClass` (Material 3 Adaptive) détermine le mode : barre du bas sous **600 dp**, rail au-delà ; deux volets à partir de **840 dp** (un seul volet à police ≥ 130 %). Aucun verrouillage d’orientation ou de taille de texte. Formulaires défilants, largeur plafonnée à 680 dp par volet, cibles tactiles de 48 dp minimum. Les deux palettes web exactes sont centralisées dans `ui/theme/ApexTheme.kt`, avec accent clair **#0284C7** et sombre **#38BDF8**. L’icône vectorielle reprend les tracés et couleurs de `static/icons/icon.svg`.
 
 ## Hors ligne et synchronisation
 
