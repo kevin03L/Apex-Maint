@@ -315,6 +315,8 @@ impl AppConfig {
             ));
         }
 
+        // Avec TLS (certificat fourni ou auto-signé), l'exposition réseau est chiffrée : pas d'alerte.
+        let clear_http = tls.mode == "off";
         match self.server.bind.trim().parse::<IpAddr>() {
             Err(_) => issues.push(Issue::error(
                 "server.bind",
@@ -323,6 +325,7 @@ impl AppConfig {
                     self.server.bind
                 ),
             )),
+            Ok(_) if !clear_http => {}
             Ok(ip) if ip.is_unspecified() => issues.push(Issue::warning(
                 "server.bind",
                 "le serveur sera accessible depuis tout le réseau en HTTP non chiffré : \
@@ -584,6 +587,22 @@ mod tests {
         assert!(issues
             .iter()
             .any(|i| i.field == "server.bind" && i.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn network_exposure_with_tls_is_not_a_clear_http_warning() {
+        for mode in ["files", "self_signed"] {
+            let mut cfg = AppConfig::default();
+            cfg.server.bind = "0.0.0.0".into();
+            cfg.server.tls.mode = mode.into();
+            cfg.server.tls.cert_file = "cert.pem".into();
+            cfg.server.tls.key_file = "key.pem".into();
+            let issues = cfg.validate();
+            assert!(
+                !issues.iter().any(|i| i.field == "server.bind"),
+                "aucune alerte HTTP en clair en mode TLS {mode} : {issues:?}"
+            );
+        }
     }
 
     #[test]

@@ -338,8 +338,13 @@ pub async fn run(
     };
     let app = http::router(state, &web_dir);
 
-    info!("IHM web : http://{}:{}", display_host(ip), cfg.server.port);
-    if !ip.is_loopback() {
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    info!(
+        "IHM web : {scheme}://{}:{}",
+        display_host(ip),
+        cfg.server.port
+    );
+    if tls.is_none() && !ip.is_loopback() {
         warn!("Le serveur est accessible depuis le réseau ({addr}) en HTTP non chiffré");
     }
 
